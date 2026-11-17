@@ -879,6 +879,36 @@ def test_the_page_stops_saving_when_the_room_says_there_was_nothing_to_save(
     )
 
 
+def test_a_hidden_tab_rejoins_the_room_only_when_shown(client: TestClient):
+    """An open socket is billed instance time on Cloud Run, so a hidden tab does
+    not reconnect when the server closes it, and a visible one still does."""
+    answer = run_js(
+        client.get(f"/detail/{TASK}?editor=plain").text,
+        "(() => {"
+        "  flipEditing();"
+        "  __socket.opened();"
+        "  __socket.refused(1006, '');"
+        "  __tick();"
+        "  const visible = __socket.made();"
+        "  __socket.opened();"
+        "  __hide();"
+        "  __socket.refused(1006, '');"
+        "  __tick();"
+        "  const hidden = __socket.made();"
+        "  __show();"
+        "  const shown = __socket.made();"
+        "  __show();"
+        "  return {visible, hidden, shown, again: __socket.made()};"
+        "})()",
+        page=True,
+        socket=True,
+    )
+    assert not answer["errors"], answer["errors"]
+    assert answer["value"] == {"visible": 2, "hidden": 2, "shown": 3, "again": 3}, (
+        answer["value"]
+    )
+
+
 def test_the_last_person_out_commits(client: TestClient, plan: Path):
     """Leaving is a commit, so a room nobody comes back to has already put its
     work in git. The twenty-second window is the floor for a crash, not for

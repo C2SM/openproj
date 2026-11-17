@@ -2121,6 +2121,11 @@ const COEDIT = (() => {
       // it can carry any of this.
       if (event && event.code >= 4000 && event.code <= 4999)
         return stop(event.reason || 'you can no longer edit this — reload the page');
+      // An open socket is billed instance time on Cloud Run, the same as the
+      // shell's event stream, so a hidden tab rejoins only once it is looked at
+      // again (below). Back after the room's LINGER_SECONDS, it gets a new room
+      // and `welcomed` asks for a reload. The old room committed on the way out.
+      if (document.hidden) return;
       // A socket that has worked once and then closed is the normal case, not a
       // fault: Cloud Run closes every one of them at five minutes. A socket that
       // has never worked is a deployment without websockets, a proxy that drops
@@ -2172,6 +2177,12 @@ const COEDIT = (() => {
       names([]);
       if (socket) socket.close();
     }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !wanted || dead) return;
+    if (socket && socket.readyState !== WebSocket.CLOSED) return;
+    clearTimeout(retry);
+    connect();
   });
   // A session that began before this script ran, whose `openproj:session` had
   // no listener yet: a restored draft — the one place where landing does not

@@ -163,6 +163,20 @@ else
   note "${IMAGE_REPO} created"
 fi
 
+# Every deploy pushes an image and nothing deleted them: 5.2 GiB by October 2026
+# against 0.5 GiB free. The last five are kept for a rollback.
+CLEANUP="$(mktemp)"
+cat > "$CLEANUP" <<'EOF'
+[
+  {"name": "keep-recent", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 5}},
+  {"name": "delete-older", "action": {"type": "Delete"}, "condition": {"tagState": "any"}}
+]
+EOF
+gcloud artifacts repositories set-cleanup-policies "$SERVICE" --location="$REGION" \
+  --policy="$CLEANUP" --no-dry-run >/dev/null
+rm -f "$CLEANUP"
+note "images past the newest five are deleted"
+
 # Tagged with the commit, so a revision can be traced to the source that built
 # it. `-dirty` when the working tree has uncommitted changes, because an image
 # built from something that is not in git is an image nobody can reproduce.
