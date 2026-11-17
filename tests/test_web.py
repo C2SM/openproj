@@ -6470,10 +6470,51 @@ def test_the_banner_appears_with_nobody_calling_showpile_by_hand(client: TestCli
     # can have raised it — and with the third body's numbers, so a stale
     # sentence cannot pass for a fresh read.
     assert got["polled"]["hidden"] is False, (
-        "the pile grew back and the minute poll never noticed: "
-        "setInterval(readPile, PILE_POLL_MS) is gone"
+        "the pile grew back and the minute poll never noticed: the poll is gone"
     )
     assert "7 saves" in got["polled"]["said"], got["polled"]["said"]
+
+
+def test_a_hidden_tab_lets_its_stream_go_and_catches_up_when_shown(client: TestClient):
+    """An open stream is billed instance time on Cloud Run, so a tab left in the
+    background kept the service billed all night. Hidden, the page lets the
+    stream go when the server closes it and does not poll. Shown again, it
+    listens again and says if the plan moved meanwhile."""
+    from test_injection import run_js
+
+    quiet = {"ok": True, "unpushed": 0, "oldest_unpushed_age": None, "parked": 0, "detail": None}
+    answer = run_js(
+        client.get("/table").text,
+        "(async () => {"
+        "  const settle = async () => { for (let i = 0; i < 10; i++) await null; };"
+        "  const look = () => ({streams: __streams(), moved: !moved.hidden,"
+        "                       said: moved.innerHTML});"
+        "  await settle();"
+        "  __drop();"
+        "  const visible = look();"
+        "  __hide();"
+        "  __drop();"
+        "  __interval();"
+        "  await settle();"
+        "  const hidden = look();"
+        "  __show();"
+        "  await settle();"
+        "  return {visible, hidden, shown: look()};"
+        "})()",
+        page=True,
+        health=[{**quiet, "head": "a" * 40}, {**quiet, "head": "b" * 40}],
+    )
+
+    assert not answer["errors"], answer["errors"]
+    got = answer["value"]
+    # A visible tab leaves the reconnect to the browser
+    assert got["visible"]["streams"] == {"opened": 1, "open": 1}, got["visible"]
+    assert got["hidden"]["streams"]["open"] == 0, "a hidden tab kept its stream open"
+    # The second head is only read by a poll, so a hidden poll would raise the banner here
+    assert not got["hidden"]["moved"], "a hidden tab polled /api/health"
+    assert got["shown"]["streams"] == {"opened": 2, "open": 1}, got["shown"]
+    assert got["shown"]["moved"], "the plan moved while the tab was hidden and nobody said so"
+    assert "The plan changed." in got["shown"]["said"], got["shown"]["said"]
 
 
 # --- the open pull requests, live -------------------------------------------

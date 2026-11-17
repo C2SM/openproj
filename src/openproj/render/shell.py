@@ -4678,12 +4678,38 @@ let source = null;
 function listen() {
   source = new EventSource('/api/events');
   source.onmessage = onPlanNews;
+  source.onerror = () => { if (document.hidden) unlisten(); };
 }
 addEventListener('pagehide', () => { if (source) source.close(); source = null; });
 addEventListener('pageshow', event => { if (event.persisted && !source) listen(); });
 
+// Cloud Run bills the instance while any request is open, and this stream is
+// one, so a tab left in the background can keep the service billed all night
+// (936k vCPU-seconds in October 2026, against 180k free). A hidden tab does not
+// reconnect when Cloud Run closes the stream at five minutes, and listens again
+// once it is looked at.
+//
+// Nothing missed is replayed, so the first health read after that compares the
+// plan's head with the last one this page heard of.
+let deaf = false;
+let heardHead = null;
+function unlisten() {
+  source.close();
+  source = null;
+  deaf = true;
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !source) listen();
+});
+function heardOf(commit) {
+  if (deaf && heardHead && commit !== heardHead) showMoved({commit, changed: []});
+  deaf = false;
+  heardHead = commit;
+}
+
 function onPlanNews(event) {
   const message = JSON.parse(event.data);
+  if (message.t === undefined) heardHead = message.commit;
   // The pusher's landed frame — {t: 'landed', landed, remapped, parked},
   // defined at web.py's `broadcast` — re-broadcast as a DOM event because its
   // consumers (the table's row marks, the editor's save state) live in other
@@ -4780,11 +4806,15 @@ async function readPile() {
     const health = await (await fetch('/api/health')).json();
     showPile(health);
     showHead(health);
+    if (health.head) heardOf(health.head);
   } catch {}
 }
 
 readPile();
-setInterval(readPile, PILE_POLL_MS);
+// Not while hidden: a poll can be the request that cold-starts the instance,
+// and a cold start clones the plan
+setInterval(() => { if (!document.hidden) readPile(); }, PILE_POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) readPile(); });
 // A landing is the moment the news changes, so re-ask at once rather than in
 // up to a minute — but only while the banner is up: on the quiet day this
 // frame follows every save, and a health read per save per open tab is a poll
