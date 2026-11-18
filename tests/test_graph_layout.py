@@ -1015,6 +1015,7 @@ _WHAT_IS_LIT = """(() => {
     lit: ids(lit),
     unlit: cy.edges('.unlit').length,
     width: lit.length ? lit[0].style('width') : null,
+    weight: lit.length ? edgeWidth(lit[0]) : null,
     depth: lit.length ? lit[0].style('z-compound-depth') : null,
     faded: cy.edges('.unlit').length ? cy.edges('.unlit')[0].style('opacity') : null,
   };
@@ -1062,7 +1063,11 @@ def test_pointing_at_a_card_lights_its_own_edges_and_fades_the_rest(
     assert during["unlit"] == card["edges"] - len(during["own"]), (
         "the edges that are not the card's were not all faded"
     )
-    assert during["width"] == "3.5px" and during["depth"] == "top", during
+    # A step thicker than its own weight, not one width for all: the weight is
+    # the second channel telling two edges apart, and they are lit to be read.
+    lit_width = float(during["width"].removesuffix("px"))
+    assert lit_width == pytest.approx(during["weight"] + 1.5), during
+    assert during["depth"] == "top", during
     assert float(during["faded"] or 1) < 0.5, during
     assert after["lit"] == [] and after["unlit"] == 0, (
         f"the pointer left and the drawing stayed lit: {after}"
