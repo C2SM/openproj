@@ -2,7 +2,7 @@ name: Release
 
 # Publish to PyPI, so that `uvx openproj new …` is the whole of what somebody has
 # to type. It already works without this file — `uvx --from
-# git+https://github.com/jcanton/openproj openproj new …` builds the wheel from
+# git+https://github.com/C2SM/openproj openproj new …` builds the wheel from
 # a public clone in about four seconds — and the difference PyPI buys is only
 # that a person or an agent does not have to know the repository URL to reach
 # the tool. That is a real difference for a command whose whole reason to exist
@@ -38,7 +38,7 @@ jobs:
       #
       # It needs one thing done by hand, once, by somebody signed in to PyPI:
       # add a pending publisher at https://pypi.org/manage/account/publishing/
-      # naming project `openproj`, owner `jcanton`, repository `openproj`,
+      # naming project `openproj`, owner `C2SM`, repository `openproj`,
       # workflow `release.yml`, environment `pypi`. Until that exists this job
       # fails at the last step with `invalid-publisher`, having built and
       # checked the distributions perfectly well.
