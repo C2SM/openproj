@@ -62,7 +62,7 @@ own page.
 The tool and the plan are separate repositories, and stay separate in production.
 
 ```
-jcanton/openproj        this repo — code, tests, and fixtures. No real plan data.
+C2SM/openproj           this repo — code, tests, and fixtures. No real plan data.
 <your plan repository>  the data — markdown records and config. No code.
 ```
 

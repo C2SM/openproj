@@ -214,7 +214,7 @@ openproj.lock
 
 The plan. One markdown file per record — the fields in frontmatter, the shaping
 document as the body — and git is the database: there is no other copy and no
-export step. [openproj](https://github.com/jcanton/openproj) serves and edits
+export step. [openproj](https://github.com/C2SM/openproj) serves and edits
 these files, and everything it shows is derived from what is here.
 
 The plan is deliberately separate from the tool's source. A plan commit must not

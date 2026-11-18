@@ -167,7 +167,7 @@ from a script, a CI job, or a coding agent working in the codebase a plan is abo
 
 ```bash
 uvx openproj new issue . --title "The roast profile parser lives in two places" --as jackdawrie
-uvx --from git+https://github.com/jcanton/openproj openproj check .   # unreleased main
+uvx --from git+https://github.com/C2SM/openproj openproj check .   # unreleased main
 ```
 
 That includes `serve`, `render` and `demo`. Since 0.43.0 the wheel carries `static/` and `seed/`
