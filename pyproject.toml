@@ -53,8 +53,8 @@ version = "0.80.0"
 openproj = "openproj.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jcanton/openproj"
-Source = "https://github.com/jcanton/openproj"
+Homepage = "https://github.com/C2SM/openproj"
+Source = "https://github.com/C2SM/openproj"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openproj"]

@@ -126,7 +126,7 @@ the org's; either kind can be installed on the one repository:
 
 1. **GitHub App name:** anything not already taken, e.g. `openproj-kilnlab`. This
    is a name, not a repository — there is no repo behind it.
-   **Homepage URL:** `https://github.com/jcanton/openproj`. The field is required
+   **Homepage URL:** `https://github.com/C2SM/openproj`. The field is required
    and entirely cosmetic: GitHub shows it on the App's page and nothing reads it.
    Unlike the OAuth callback in step 3 it does not have to match anything, so it
    does not have to wait for the service URL to exist, and it can be edited later
@@ -198,7 +198,7 @@ Register at **https://github.com/settings/applications/new**.
 
 - **Application name:** anything, e.g. `openproj`.
 
-- **Homepage URL:** `https://github.com/jcanton/openproj`. Cosmetic, like the
+- **Homepage URL:** `https://github.com/C2SM/openproj`. Cosmetic, like the
   App's in step 2.
 
 - **Redirect URIs** — the field older docs call the authorization callback URL.

@@ -4072,7 +4072,7 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
     `#planhead:empty` takes the span out and `* + *::before` takes its dot with
     it. -#}
 <footer id="build">
-  <a id="version" href="https://github.com/jcanton/openproj/releases/tag/v{{ version }}">openproj
+  <a id="version" href="https://github.com/C2SM/openproj/releases/tag/v{{ version }}">openproj
     {{ version }}</a>
   {%- if live %}<span id="planhead" title="the plan's own commit"></span>{% endif %}
   {#- jcanton, 2026-08-27, asking for it here and not in the nav: it is the thing
@@ -4095,7 +4095,7 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       mark without making the row any taller on the one page that draws it. -#}
   <span id="buildhelp"><a href="{{ links.help }}"
     {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
-  <a id="report" href="https://github.com/jcanton/openproj/issues/new">Report issue</a>
+  <a id="report" href="https://github.com/C2SM/openproj/issues/new">Report issue</a>
   {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
       "on mobile takes up too much space: I'd rather it be only one line with a
       meatball/hamburger/arrow menu where the items that do not fit get hidden".

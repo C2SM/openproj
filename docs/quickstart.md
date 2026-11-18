@@ -273,7 +273,7 @@ checkout of the tool.
 
 ```bash
 uvx openproj new issue . --title "…"                              # from PyPI
-uvx --from git+https://github.com/jcanton/openproj openproj new …  # straight from this repository
+uvx --from git+https://github.com/C2SM/openproj openproj new …  # straight from this repository
 ```
 
 🤖 Written by an agent on behalf of @jcanton
