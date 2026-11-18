@@ -447,8 +447,10 @@ const lift = hue => {
 // plan it is whatever the plan has. The answer depends only on the token and on
 // the theme, so it is computed once per pair and thrown away when the theme
 // changes, which is the one event that can move it.
-const LEGIBLE = new Map();
-addEventListener('themechange', () => LEGIBLE.clear());
+// `LIFTED` and not `LEGIBLE`: that is the fit-to-read zoom floor further
+// down, and two top-level `const`s of one name throw before anything draws.
+const LIFTED = new Map();
+addEventListener('themechange', () => LIFTED.clear());
 
 const legible = hue => {
   // Not `remembered`: that name belongs to the browser-store helper in the
@@ -456,10 +458,10 @@ const legible = hue => {
   // survives_a_refusal` pins it to exactly one occurrence across every script
   // the page inlines. Two classic scripts share one lexical scope, so the name
   // being taken is the point rather than an inconvenience.
-  const cached = LEGIBLE.get(hue);
+  const cached = LIFTED.get(hue);
   if (cached) return cached;
   const answer = lift(hue);
-  LEGIBLE.set(hue, answer);
+  LIFTED.set(hue, answer);
   return answer;
 };
 
