@@ -35,6 +35,10 @@
 //                            under a green suite for exactly that reason.
 //          {health: [...]}   what `/api/health` answers, one body per ask in
 //                            order, the quiet day once the list runs out.
+//          {prStates: {...}} what `/api/pr-states` answers; nothing to offer
+//                            by default.
+//          {me: {...}}       what `/api/me` answers; a stranger on a GitHub
+//                            server, `{org: 'kilnlab'}`, by default.
 //          {storage: {...}}  localStorage starts holding these; "denied" makes
 //                            reading the property itself throw, the way a
 //                            private window and a blocked-cookies policy do —
@@ -46,6 +50,10 @@
 //          `__reloads()`     how many times the page asked for `location.reload()`,
 //                            which node cannot perform and a test has to be able
 //                            to read.
+//          `__hide()`, `__show()`  the tab going into the background and back.
+//          `__streams()`     {opened, open} count of the page's event streams,
+//                            and `__drop()` closes every open one from the
+//                            server's side, as Cloud Run does at five minutes.
 //          {socket: true}    a `WebSocket` the expression drives by hand,
 //                            through `__socket.opened()`, `__socket.hear(frame)`,
 //                            `__socket.refused(code, reason)` and
@@ -524,6 +532,27 @@ function makeDocument(inlined, markup) {
     createElement(tag) { return new Element(tag, document); },
     createTextNode(text) { return {textContent: text}; },
     createDocumentFragment() { return new Element('fragment', document); },
+    // **`const E = document.createRange()` is the third statement of the
+    // vendored datepicker.** It runs at the top of that bundle rather than
+    // inside a function, so without this the library throws before it defines
+    // anything and every page with a date field came back with one more error
+    // than it has — which is four tests in `tests/test_editor.py` asserting
+    // `not answer["errors"]`, red for a reason that is not theirs.
+    //
+    // Parsed with this file's own parser and not stubbed: the library builds its
+    // whole popup through `createContextualFragment`, and a fragment that always
+    // comes back empty is a shim that would report a working calendar as a card
+    // with nothing in it.
+    createRange() {
+      return {
+        createContextualFragment(html) {
+          const fragment = new Element('fragment', document);
+          fragment.children = parseFragment(html, document);
+          for (const child of fragment.children) child.parentNode = fragment;
+          return fragment;
+        },
+      };
+    },
     getElementById(id) {
       // Asked of the page every time, and never remembered. A script that writes
       // to `innerHTML` replaces the elements inside it, and a remembered answer
@@ -571,9 +600,17 @@ function makeDocument(inlined, markup) {
       checkSelector(selector);
       return root.querySelectorAll(selector);
     },
-    addEventListener() {},
+    // Visible, and only `__hide()` and `__show()` change that, because a hidden
+    // tab is one that lets its connections go
+    hidden: false,
+    visibilityState: 'visible',
+    _listeners: {},
+    addEventListener(type, handler) { (document._listeners[type] ||= []).push(handler); },
     removeEventListener() {},
-    dispatchEvent() { return true; },
+    dispatchEvent(event) {
+      for (const handler of document._listeners[event.type] || []) handler(event);
+      return true;
+    },
   };
   if (markup !== null) {
     root = new Element('body', document);
@@ -616,19 +653,21 @@ async function run(html, expression, options) {
   const calls = [];
   const replies = (options.replies || []).slice();
   const healths = (options.health || []).slice();
+  const me = options.me || {org: 'kilnlab'};
 
   function answer(url, init) {
     // The shell asks `/api/me` on every page load, to draw who is signed in.
     // That is not the write path any of these tests are about: recorded, it
     // shifts every assertion about `calls` by one, and answered from `replies`
     // it eats the refusal the test scripted for the save. Answered here, signed
-    // out, which is what a driven page with no session is.
+    // out, which is what a driven page with no session is — unless the test
+    // says who the page is, which is how the corner itself is asked about.
     if (String(url) === '/api/me') {
       return Promise.resolve({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({org: 'kilnlab'}),
-        text: () => Promise.resolve('{"org":"kilnlab"}'),
+        json: () => Promise.resolve(me),
+        text: () => Promise.resolve(JSON.stringify(me)),
       });
     }
     // And the shell's pile banner asks `/api/health` once at load, for the
@@ -640,6 +679,19 @@ async function run(html, expression, options) {
     // re-ask) can only be proved by a page that meets a loud pile without the
     // test touching `showPile` or `readPile` — replacing `fetch` whole runs
     // too late for the read the page makes at load.
+    // And `/api/pr-states`, which the table and the record page ask once at load
+    // on a plan that names repositories: the third read of its kind, answered
+    // here for the reason the two above are — scripted, it took the reply a test
+    // wrote for its save. Nothing disagrees with GitHub unless the test says so.
+    if (String(url) === '/api/pr-states') {
+      const body = options.prStates || {records: {}, pending: false};
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+      });
+    }
     if (String(url) === '/api/health') {
       const body = healths.shift() || {ok: true, head: '', version: '', unpushed: 0,
                                        oldest_unpushed_age: null, parked: 0, detail: null};
@@ -723,8 +775,9 @@ async function run(html, expression, options) {
   // its own would be a shim deciding the order — and the order is where two of
   // this feature's defects lived. `__socket.opened()` fires the open the page
   // waits for, `__socket.hear(frame)` delivers one, and `__socket.sent()` is
-  // every frame the page put on the wire, parsed.
-  const wire = {sent: [], live: null};
+  // every frame the page put on the wire, parsed. `__socket.made()` is how many
+  // sockets the page has constructed, which is how a reconnect is seen.
+  const wire = {sent: [], live: null, made: 0};
   class DriverSocket {
     constructor(url) {
       this.url = String(url);
@@ -733,6 +786,7 @@ async function run(html, expression, options) {
       this.readyState = DriverSocket.OPEN;
       this.onopen = this.onmessage = this.onerror = this.onclose = null;
       wire.live = this;
+      wire.made += 1;
     }
     send(data) { wire.sent.push(String(data)); }
     // A close ALWAYS carries an event, because a browser's does — `code` and
@@ -745,6 +799,13 @@ async function run(html, expression, options) {
       if (this.onclose) this.onclose({code: code || 1005, reason: reason || ''});
     }
   }
+  const streams = [];
+  function visibility(hidden) {
+    document.hidden = hidden;
+    document.visibilityState = hidden ? 'hidden' : 'visible';
+    document.dispatchEvent(new DriverEvent('visibilitychange'));
+  }
+
   DriverSocket.CONNECTING = 0;
   DriverSocket.OPEN = 1;
   DriverSocket.CLOSING = 2;
@@ -827,7 +888,23 @@ async function run(html, expression, options) {
     cancelAnimationFrame: () => {},
     Event: DriverEvent,
     CustomEvent: DriverEvent,
-    EventSource: class { constructor() { this.onmessage = null; } close() {} },
+    EventSource: class {
+      constructor() {
+        this.onmessage = this.onerror = null;
+        this.closed = false;
+        streams.push(this);
+      }
+      close() { this.closed = true; }
+    },
+    // How many event streams the page has opened and how many are still open
+    __streams: () => ({opened: streams.length, open: streams.filter(one => !one.closed).length}),
+    // Cloud Run closing every open stream at its request timeout. A browser
+    // reports that as an error and reconnects unless the page closes the stream.
+    __drop: () => {
+      for (const one of streams.filter(each => !each.closed)) if (one.onerror) one.onerror({});
+    },
+    __hide: () => visibility(true),
+    __show: () => visibility(false),
     fetch: answer,
     // `reload` counts rather than navigating: node has no page to fetch, and a
     // reload is a claim a test needs to make — "the read view under this editor
@@ -871,6 +948,23 @@ async function run(html, expression, options) {
     // the page degrades to exactly what it was. Asked for, it is `DriverSocket`
     // above and the test moves every frame itself.
     matchMedia: () => ({matches: false, addEventListener() {}, addListener() {}}),
+    // **The datepicker takes its two listener methods off `EventTarget.prototype`
+    // and calls them with `.call(element, …)`**, at the top of the bundle rather
+    // than inside a function, so without a class here the whole library throws
+    // on line 25 and every page with a date field came back with one more error
+    // than it has.
+    //
+    // Written here and NOT handed in from node's own realm, which does have an
+    // `EventTarget`: the methods would then be the real ones, `this` would be
+    // one of this file's `Element`s rather than a real EventTarget, and every
+    // call would throw `Illegal invocation` — the realm mistake this file's
+    // header is about, arriving by a door nobody had used yet. These two work
+    // on an `Element`, because `_listeners` is where `Element` keeps them and
+    // `dispatchEvent` is what reads it back.
+    EventTarget: class {
+      addEventListener(type, handler) { ((this._listeners ||= {})[type] ||= []).push(handler); }
+      removeEventListener() {}
+    },
     // The deck's rail marks which slide the reader has scrolled to, and it does
     // that by observing the sheets. A no-op recorder rather than nothing at all:
     // a bare identifier the sandbox has not got is a ReferenceError that stops
@@ -920,11 +1014,17 @@ async function run(html, expression, options) {
       // a refusal that is accepted and then closed carries its reason in the
       // close event, and there is no other way for one to reach a page.
       refused: (code, reason) => {
-        if (wire.live && wire.live.onclose) wire.live.onclose({code, reason});
+        if (!wire.live) return;
+        // CLOSED before the close event, as a browser has it: a page that asks
+        // the socket whether it is open from inside its own `onclose` — or any
+        // time after — must not be told yes.
+        wire.live.readyState = DriverSocket.CLOSED;
+        if (wire.live.onclose) wire.live.onclose({code, reason});
       },
       // Parsed, because every frame this application sends is JSON and a test
       // asserting on strings would be asserting on key order.
       sent: () => wire.sent.map(one => JSON.parse(one)),
+      made: () => wire.made,
     };
   }
 

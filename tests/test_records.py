@@ -41,7 +41,7 @@ PLAN = {
     "config/defaults.yaml": "schema_version: 1\nnominal_availability: 1.0\n",
     # The corpus holds at least one value for EVERY field the landing row can
     # be asked about — product and project through the holder walk, cycle,
-    # assignees, reviewers, owner, priority (the model's default), status,
+    # developers, reviewers, owner, priority (the model's default), status,
     # tags, prs — because the parity test below compares the box against the
     # server field by field, and a field no record holds is a field whose
     # parity check passes vacuously. That shape is what broke last time: a
@@ -63,7 +63,7 @@ PLAN = {
     ),
     TASK_PATH: (
         "---\nid: task-c00001\nkind: task\ntitle: Downgrade numpy\nstatus: ready\n"
-        "owner: bo\nassignees: [cara]\nreviewers: [dan]\n"
+        "owner: bo\ndevelopers: [cara]\nreviewers: [dan]\n"
         "prs: ['kilnlab/kiln4py#2211']\nparent: pitch-b20000\n"
         "person_weeks: 1\n---\n\nA task.\n"
     ),
@@ -150,12 +150,11 @@ def test_the_nav_says_records_at_the_root_and_table_at_table(tmp_path: Path):
     assert lit(table) == ["Table"]
     labels = [label for label, _, _ in nav_of(landing)]
     assert labels[:2] == ["Records", "Table"]
-    assert labels[-1] == "Help", (
-        "Help is the one nav item that is not a view of the plan, so it is last: "
-        "everything to its left answers what is in the plan, and it answers what "
-        "this tool is"
+    assert "Help" not in labels, (
+        "Help is in the footer of every page, beside Report issue: it was the one "
+        "nav item that was not a view of the plan"
     )
-    assert labels[-3:-1] == ["Issues", "Notes"], (
+    assert labels[-2:] == ["Issues", "Notes"], (
         "the inbox views are back in the nav: quick access to what would "
         "otherwise be a click on a filter"
     )
@@ -302,7 +301,8 @@ def test_a_predicate_in_the_url_filters_rows_and_an_unmatched_one_is_a_sentence(
     assert shown == untracked, "the box and the server disagree about ?predicate="
     assert none_shown == 0
     assert hidden is False
-    assert headline == "No record matches this search."
+    # A flag in the address is a filter and not a search: the box is empty.
+    assert headline == "No record matches these filters."
 
 
 # --------------------------------------------------------------------------- #
@@ -367,6 +367,159 @@ def test_an_empty_view_and_an_empty_plan_are_different_sentences(tmp_path: Path)
     assert 'id="records-empty" hidden' in landing
     nothing = re.search(r'<tr class="nothing".*?</tr>', landing, re.S).group(0)
     assert "This plan has no records yet." not in nothing
+
+
+def test_the_landing_offers_no_kind_the_plan_has_turned_off():
+    """Every "Create …" draws from the kinds the plan has, and so does the
+    sentence that invites the first record: "an issue somebody noticed" on a plan
+    without issues is a promise the create form's picker then breaks.
+
+    The inbox view's button is asked with its kind off although the router would
+    never draw that page — `/issues` cannot be on without issues — because the
+    button is not allowed to lean on that: it opens `/new?kind=issue`, which is
+    the switched-off page.
+    """
+    from pages import elements
+
+    from openproj.model import KIND_NAMES, OPTIONAL_KINDS, Config
+
+    def drawn(kinds: frozenset[str], only: str | None = None):
+        index = build_index([], Config(kinds=kinds), date(2026, 8, 17))
+        page = render_records(
+            index, ROUTES, base_commit="abc", edited={}, now=0, only=only, may_write=True
+        )
+        return elements(page)
+
+    def invitation(kinds: frozenset[str]) -> list[str]:
+        return [one.text for one in drawn(kinds) if one.tag == "p" and "starts as" in one.text]
+
+    def create(kinds: frozenset[str], only: str | None = None) -> list[str]:
+        return [
+            one.text
+            for one in drawn(kinds, only)
+            if one.tag == "a" and "button" in one.attrs.get("class", "").split()
+        ]
+
+    every = frozenset(KIND_NAMES)
+    planned = every - set(OPTIONAL_KINDS)
+    opening = "Everything here starts as a record: "
+    assert invitation(every) == [
+        opening + "work to plan, an issue somebody noticed, half a thought in a note."
+    ]
+    assert invitation(planned | {"note"}) == [opening + "work to plan, half a thought in a note."]
+    assert invitation(planned) == [opening + "work to plan."]
+    # Above the table and in the empty row. The landing's own opens the picker on
+    # a task, which is always on.
+    assert create(planned) == ["Create record", "Create record"]
+
+    assert create(every, only="issue") == ["Create issue", "Create issue"]
+    assert create(planned | {"note"}, only="issue") == []
+
+
+def test_the_landing_says_a_filter_from_the_address_is_on(tmp_path: Path):
+    """`/?owner=ann` is where People sends a name in a plan without a Table, and
+    where the switched-off `/issues?owner=ann` sends its reader. Records filters by
+    it — `matches` reads every field in `FILTERS` — but draws no menu for any of
+    them, and "Clear filters" counted only the menus a page draws: the rows
+    narrowed to ann's and nothing on screen said a filter was on or offered to
+    take it off. A filter you cannot see is a filter you cannot leave.
+
+    Driven, because the button is shown and the rows are hidden by the page's own
+    script: the address is where the state lives, so the address is what is set.
+    """
+    path = plan_repo(tmp_path)
+    commit_directly(path, PLAN, "seed", when=1_000_000)
+    with TestClient(create_app(path, auth="dev")) as client:
+        page = client.get("/").text
+
+    every = sorted(re.findall(r"^id: (\S+)$", "\n".join(PLAN.values()), re.M))
+    owned = sorted(
+        re.search(r"^id: (\S+)$", text, re.M).group(1)
+        for text in PLAN.values()
+        if re.search(r"^owner: ann$", text, re.M)
+    )
+    assert owned and len(owned) < len(every), "a filter that hides nothing asks nothing"
+
+    look = (
+        "(() => { const out = document.getElementById('unfilter');"
+        " const shown = () => [...document.querySelectorAll('#records tbody tr[data-id]')]"
+        "   .filter(tr => !tr.hidden).map(tr => tr.dataset.id).sort();"
+        " const before = [out.hidden, shown()];"
+        " out.onclick();"
+        " return [before, [out.hidden, shown(), params.toString()]]; })()"
+    )
+    answer = run_js(page, look, page=True, here="/?owner=ann")
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+    before, after = answer["value"]
+    assert before == [False, owned], "the rows narrowed and no way out was offered"
+    assert after == [True, every, ""], "Clear left the address's filter set"
+
+    # And nothing set is nothing offered: a Clear that is always there is a
+    # control that does nothing most of the time.
+    quiet = run_js(page, "document.getElementById('unfilter').hidden", page=True, here="/")
+    assert quiet["value"] is True
+
+
+def test_the_landing_names_the_filters_from_the_address_and_what_hid_every_row(
+    tmp_path: Path,
+):
+    """A Clear button is the only thing the test above holds, and it says a
+    filter is on without saying which: on `/?owner=ann&status=ready` the line
+    beside the box went on reading "Everything written down in this plan." over
+    a list of one. And a bookmark whose filter now matches nothing — an owner who
+    left — said "Every record is hidden by what is in the box" over an empty box,
+    which is finding F1: an empty list pointing at the one control that did not
+    cause it.
+
+    The words are the menus' words, so a project is its title and a status its
+    label, and a filter typed in the box as well is named as both.
+    """
+    path = plan_repo(tmp_path)
+    commit_directly(path, PLAN, "seed", when=1_000_000)
+    with TestClient(create_app(path, auth="dev")) as client:
+        page = client.get("/").text
+
+    look = (
+        "(() => { const row = document.getElementById('records-empty');"
+        " const said = () => [document.getElementById('records-about').textContent,"
+        "   row.hidden ? '' : row.querySelector('.headline').textContent,"
+        "   row.hidden ? '' : row.querySelector('.hint').textContent];"
+        " const before = said();"
+        " document.getElementById('unfilter').onclick();"
+        " return [before, said()]; })()"
+    )
+    itself = ["Everything written down in this plan.", "", ""]
+
+    def asked(here: str) -> list[list[str]]:
+        answer = run_js(page, look, page=True, here=here)
+        assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+        before, after = answer["value"]
+        assert after == itself, f"{here}: Clear did not give the page its own sentence back"
+        return before
+
+    assert asked("/?owner=ann&status=ready") == [
+        "Filtered by Status: Ready and Owner: ann.",
+        "",
+        "",
+    ]
+    assert asked("/?project=proj-a10000")[0] == "Filtered by Project: Aroma engine."
+    assert asked("/?owner=bo&owner=nobody-left")[0] == "Filtered by Owner: bo or nobody-left."
+    assert asked("/?owner=nobody-left") == [
+        "Filtered by Owner: nobody-left.",
+        "No record matches these filters.",
+        "Every record is hidden by the filters named above. Clear filters shows them all.",
+    ]
+    assert asked("/?owner=nobody-left&q=numpy") == [
+        "Filtered by Owner: nobody-left.",
+        "No record matches this search.",
+        "Every record is hidden by what is in the box and the filters named above.",
+    ]
+    # The box alone is the sentence it always was.
+    assert asked("/?q=zzyzzx")[1:] == [
+        "No record matches this search.",
+        "Every record is hidden by what is in the box.",
+    ]
+    assert asked("/")[0] == itself[0]
 
 
 def test_an_unreadable_query_goes_to_the_error_region_not_to_a_row(tmp_path: Path):
@@ -540,7 +693,7 @@ def test_the_landing_box_and_the_server_find_the_same_records(tmp_path: Path):
     `plan`.
 
     The row now carries every field `QUERY_FIELDS` names — status, owner,
-    priority, cycle, assignees, reviewers, prs, project, product and real
+    priority, cycle, developers, reviewers, prs, project, product and real
     predicates beside the id/kind/title/tags it always had — so the needles
     ask about all of them, each with at least one holder in the corpus (a
     field nobody holds is a parity check that passes vacuously). Before this,
@@ -583,13 +736,13 @@ def test_the_landing_box_and_the_server_find_the_same_records(tmp_path: Path):
         # One needle per field the row could not answer before the
         # widening, each finding something. `status:ready` lands on the
         # pitch, the task AND the issue — the field crosses the
-        # plan/inbox line. `assignee:` and `reviewer:` are the aliases,
+        # plan/inbox line. `developer:` and `reviewer:` are the aliases,
         # so the alias map is in the claim too.
         "status:ready",
         "owner:ann",
         "priority:medium",
         "cycle:1",
-        "assignee:cara",
+        "developer:cara",
         "reviewer:dan",
         "prs:2211",
         "project:proj-a10000",
@@ -625,7 +778,7 @@ def test_the_landing_box_and_the_server_find_the_same_records(tmp_path: Path):
         "owner:ann",
         "priority:medium",
         "cycle:1",
-        "assignee:cara",
+        "developer:cara",
         "reviewer:dan",
         "prs:2211",
         "project:proj-a10000",
@@ -779,8 +932,10 @@ def test_the_page_furniture_stands_outside_the_scroll_box(tmp_path: Path):
     commit_directly(path, PLAN, "seed", when=1_000_000)
     with TestClient(create_app(path, auth="dev")) as client:
         page = client.get("/").text
-    box = page.index('<div class="table-scroll"')
-    for furniture in ('<p class="hint">', 'class="editbar"', 'id="q"', "</nav>"):
+    box = page.index('<div class="table-scroll carded"')
+    # The description by its id: it carries one since it names the address's
+    # filters, and the empty-state hint inside the box is a `<p class="hint">` too.
+    for furniture in ('id="records-about"', 'class="editbar"', 'id="q"', "</nav>"):
         assert page.index(furniture) < box, furniture
     # And the box is measured by the shell into `--room`, like the table's.
-    assert '<div class="table-scroll" data-fills>' in page
+    assert '<div class="table-scroll carded" data-fills>' in page

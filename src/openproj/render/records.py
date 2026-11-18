@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from markupsafe import Markup
 
-from ..index import Index, _product_of, _project_of, predicates_of
-from ..model import RUNG, unread_fields
-from .controls import _FILTER_JS, _facets_html
-from .env import _compiled
-from .shell import _NAV, STATIC, Links, _page
-from .styles import _SCROLL_STYLE
-from .tokens import _ago
+from ..index import Index, holder_fields, predicates_of
+from ..model import OPTIONAL_KINDS, RUNG, unread_fields
+from .controls import _FILTER_JS, _PLAN_FACETS, _facets_html
+from .env import PHONE, _compiled
+from .shell import _NAV, STATIC, Links, _page, _titles
+from .styles import _CARD_STYLE, _SCROLL_STYLE
+from .tokens import LABELS, _ago, _human
 
 _RECORDS = """
 {#- Announced, not drawn: the lit nav item already says which view this is. -#}
@@ -34,7 +34,7 @@ _RECORDS = """
 {%- if creatable %}
 <p class="editbar"><a class="button" href="{{ create.href }}">{{ create.label }}</a></p>
 {%- endif %}
-<div class="table-scroll" data-fills><table id="records" class="unfitted"><thead><tr>
+<div class="table-scroll carded" data-fills><table id="records" class="unfitted"><thead><tr>
   {%- for column in columns %}
   <th data-col="{{ column }}">{{ label(column) }}</th>
   {%- endfor %}
@@ -86,12 +86,30 @@ const recordsEmpty = document.getElementById('records-empty');
 // empty, and a second spelling here is what would let the two drift.
 const SAID = {{ said|tojson }};
 
+// The filters the address set, each as "Owner: ann" in the words the table's
+// menus use — this page draws no menu for any of them, so without this the rows
+// narrowed and nothing but a Clear button said a filter was on, let alone which.
+// Said where the page describes itself, in place of that sentence while any is
+// set, and the description comes back when they are cleared.
+const RECORDS_ABOUT = document.getElementById('records-about');
+const RECORDS_ITSELF = RECORDS_ABOUT ? RECORDS_ABOUT.textContent : '';
+function filteredBy() {
+  return Object.entries(SAID.fields)
+    .map(([field, name]) => [name, params.getAll(field).filter(Boolean)])
+    .filter(([, values]) => values.length)
+    .map(([name, values]) =>
+      `${name}: ${values.map(value => SAID.words[value] || value).join(' or ')}`);
+}
+
 // Four states, four sentences, and they must not look like each other: a view
 // with no records at all, a payload that did not load, a query that cannot be
 // read (whose parse error `sayQueryError` already puts beside the box — the
 // row only points at it), and a search that matched nothing. The empty view is
 // asked FIRST: with nothing to filter, a sentence about the search box would
-// be true and useless.
+// be true and useless. And a search that matched nothing names what did the
+// hiding, because a filter from the address is not in the box: "hidden by
+// what is in the box" over an empty box points at the one control that is not
+// the cause.
 function recordsApply() {
   let shown = 0;
   for (const item of recordItems) {
@@ -100,6 +118,10 @@ function recordsApply() {
     item.hidden = !kept;
     shown += kept ? 1 : 0;
   }
+  const by = filteredBy();
+  const typed = !!(params.get('q') || '').trim();
+  if (RECORDS_ABOUT)
+    RECORDS_ABOUT.textContent = by.length ? `Filtered by ${by.join(' and ')}.` : RECORDS_ITSELF;
   let headline = '', hint = '', spoken = '';
   if (!recordItems.length) {
     headline = SAID.empty_headline;
@@ -112,8 +134,8 @@ function recordsApply() {
     headline = 'That search cannot be read.';
     hint = 'What is wrong with it is beside the search box.';
   } else if (!shown) {
-    headline = SAID.none_headline;
-    hint = SAID.none_hint;
+    headline = by.length && !typed ? SAID.none_filtered_headline : SAID.none_headline;
+    hint = !by.length ? SAID.none_hint : typed ? SAID.none_both_hint : SAID.none_filtered_hint;
     spoken = headline;
   }
   recordsEmpty.querySelector('.headline').textContent = headline;
@@ -132,11 +154,63 @@ function recordsApply() {
 }
 addEventListener('openproj:filter', recordsApply);
 recordsApply();
+
+// Sorting, and the table page's column heads to do it with — jcanton,
+// 2026-10-13: these lists "same as the table in table/ style: with draggable
+// column separators and the same bold for the sorted column and the little
+// triangles for sorting". The button and its triangle are built here rather
+// than rendered, because without this script there is nothing for them to do.
+// By the text a reader can see, numbers as numbers, and "edited" by the stamp
+// under its "3 days ago" — sorted as words, a week ago would come before
+// yesterday.
+const RECORD_TABLE = document.getElementById('records');
+function recordsSort(th, descending) {
+  const at = [...th.parentNode.cells].indexOf(th);
+  const edited = th.dataset.col === 'edited' ? (RECORDS.edited || {}) : null;
+  const said = tr => {
+    if (edited) return String(edited[tr.dataset.id] || 0);
+    const td = tr.cells[at];
+    return td ? td.textContent.trim() : '';
+  };
+  const rows = [...RECORD_TABLE.tBodies[0].querySelectorAll('tr[data-id]')];
+  rows.sort((a, b) => {
+    const one = said(a), two = said(b);
+    const x = parseFloat(one), y = parseFloat(two);
+    const by = Number.isFinite(x) && Number.isFinite(y)
+      ? x - y : one.localeCompare(two, undefined, {numeric: true});
+    return descending ? -by : by;
+  });
+  // Before the empty row, which stays last: it is the table's own sentence.
+  for (const tr of rows) RECORD_TABLE.tBodies[0].insertBefore(tr, recordsEmpty);
+  sortHeads(RECORD_TABLE, th, descending);
+}
+for (const th of RECORD_TABLE && RECORD_TABLE.tHead ? RECORD_TABLE.tHead.rows[0].cells : []) {
+  const label = th.textContent.trim();
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sorter';
+  button.append(...th.childNodes);
+  const dir = document.createElement('span');
+  dir.className = 'dir';
+  dir.setAttribute('aria-hidden', 'true');
+  button.append(dir);
+  th.append(button);
+  th.dataset.sort = th.dataset.col;
+  th.setAttribute('aria-sort', 'none');
+  button.onclick = () => {
+    const descending = th.getAttribute('aria-sort') === 'ascending';
+    recordsSort(th, descending);
+    announce(`Sorted by ${label}, ${descending ? 'descending' : 'ascending'}`);
+  };
+}
+// One remembered layout per list: /issues and /notes draw other columns.
+gripColumns(RECORD_TABLE, 'openproj:shares' + location.pathname);
 </script>
 """
 
 _RECORDS_STYLE = (
     _SCROLL_STYLE
+    + _CARD_STYLE
     + """
 /* One row per record: chip, title, who, tags, time. The chips come from the
    shell (`.chip.kind-…`), so a kind added to the ladder arrives here already
@@ -172,6 +246,20 @@ _RECORDS_STYLE = (
                                  white-space: nowrap;
                                  font-variant-numeric: tabular-nums; }
 """
+    # The card under the title, jcanton's choice: what kind of thing it is, who is
+    # behind it and how long ago it moved. Tags stay on the laptop's table — a
+    # comma list is the one cell that would wrap a card onto a third line, and
+    # the search box already finds a record by its tags. (1,1,3) beats the card
+    # mechanism's (0,1,4) on the id, so these three come back and nothing else.
+    + "@media "
+    + PHONE
+    + """ {
+  #records > tbody > tr > td[data-col="kind"],
+  #records > tbody > tr > td[data-col="who"],
+  #records > tbody > tr > td[data-col="edited"] { display: block; }
+  #records > tbody > tr > td[data-col="who"] { color: var(--muted); }
+}
+"""
 )
 
 
@@ -206,19 +294,31 @@ def _record_row(index: Index, record_id: str) -> dict:
         "tags": record.tags,
         "status": read("status"),
         "owner": read("owner"),
-        "assignees": read("assignees"),
+        "developers": read("developers"),
         "reviewers": read("reviewers"),
         "priority": read("priority"),
         "cycle": read("cycle"),
         "prs": read("prs"),
-        "project": _project_of(record, index.records),
-        "product": _product_of(record, index.records),
+        # See `_row` in `rows.py`: the three ancestors the bar filters by, and
+        # what each is called, so that `project:warm_bubble` means the same
+        # thing here as it does there.
+        **holder_fields(record, index.records),
         "predicates": predicates_of(index, record_id),
         "search": index.search_blob[record_id],
         # See `_row` in `rows.py`: the narrow haystack `bare` reads for a
         # subsequence, which is the id and the title and nothing else.
         "name": index.name_blob[record_id],
     }
+
+
+# What each optional kind is, in the landing's empty-plan invitation — the clause
+# a plan without that kind leaves out. Held to `OPTIONAL_KINDS`, so a third inbox
+# rung cannot arrive switchable with nothing to say here.
+_STARTS_AS = {
+    "issue": "an issue somebody noticed",
+    "note": "half a thought in a note",
+}
+assert tuple(_STARTS_AS) == OPTIONAL_KINDS, "every optional kind has its clause, in ladder order"
 
 
 def render_records(
@@ -268,7 +368,12 @@ def render_records(
     # A door that opens onto a refusal is worse than no door, and the static
     # export needs neither — it has no server to post to, which is why
     # `editable` exists at all and why the two names both stay.
-    creatable = editable and may_write
+    #
+    # And a kind the plan has, for the same reason: the button opens
+    # `/new?kind=…`, which answers the switched-off page for a kind that is off.
+    # `/issues` cannot be on without issues (`VIEW_NEEDS`), so this is the
+    # button standing on its own feet rather than on the router's.
+    creatable = editable and may_write and (only is None or only in index.kinds)
     # The Links field, the nav slot and the export filename in one word,
     # off the ladder rather than a second map: `RUNG["issue"].directory`
     # is "issues".
@@ -307,11 +412,16 @@ def render_records(
         # pre-fill theirs.
         "href": links.new if only is None else f"{links.new}?kind={only}",
     }
+    # The landing's invitation names the kinds a first record can be, and only
+    # the ones this plan has: "an issue somebody noticed" on a plan without
+    # issues is a promise the create form's picker then breaks.
+    starts_as = ", ".join(
+        ("work to plan", *(said for kind, said in _STARTS_AS.items() if kind in index.kinds))
+    )
     empty_headline, empty_hint = {
         "records": (
             "This plan has no records yet.",
-            "Everything here starts as a record: work to plan, an issue "
-            "somebody noticed, half a thought in a note.",
+            f"Everything here starts as a record: {starts_as}.",
         ),
         "issues": (
             "No issues are open.",
@@ -324,11 +434,35 @@ def render_records(
             "no owner, no size, no cycle.",
         ),
     }[key]
+    # What the address can filter this page by, in the words the table's menus
+    # would use. This page draws no menu for any of them (`fields=()` below) and
+    # `matches` reads them all, so `/?owner=ann` — where People sends a name in a
+    # plan with no Table, and where a switched-off `/table?owner=ann` sends its
+    # reader — narrowed the rows with nothing saying by what, and a filter that
+    # matched nothing said the rows were hidden "by what is in the box" over an
+    # empty box. Only the values whose word is not themselves: a login is its
+    # own word, a project's id is not.
+    titles = _titles(index)
+    spelled = {
+        value: titles.get(value) or _human(value)
+        for field in _PLAN_FACETS
+        for value in index.facets.get(field, [])
+    }
+    words = {value: spelling for value, spelling in spelled.items() if spelling != value}
     said = {
         "empty_headline": empty_headline,
         "empty_hint": empty_hint,
         "none_headline": f"No {word} matches this search.",
         "none_hint": f"Every {word} is hidden by what is in the box.",
+        "none_filtered_headline": f"No {word} matches these filters.",
+        "none_filtered_hint": (
+            f"Every {word} is hidden by the filters named above. Clear filters shows them all."
+        ),
+        "none_both_hint": (
+            f"Every {word} is hidden by what is in the box and the filters named above."
+        ),
+        "fields": {field: LABELS.get(field, field) for field in _PLAN_FACETS},
+        "words": words,
     }
     # Shortened on 2026-09-16, jcanton's own wording. They sit on the search
     # box's line now rather than on a row of their own, and a line shared with a
@@ -351,15 +485,21 @@ def render_records(
         create=create,
         said=said,
         columns=("kind", "title", "who", "tags") + (("edited",) if timed else ()),
-        payload={"rows": asks},
+        # `edited` beside the rows the box asks, for the sort: "3 days ago" sorted
+        # as words puts a week ago before yesterday. In the payload and not on
+        # the cell, whose markup the export tests read as written.
+        payload={"rows": asks, "edited": {row["id"]: row["epoch"] for row in rows}},
         # No dropdowns: facets are plan vocabulary and this page is the whole
         # record population. The bar still renders #q, #query-error and
         # #unfilter, which is all `_FILTER_JS`'s unguarded listeners need.
         facets=_facets_html(
             index.facets,
             fields=(),
-            aside=Markup('<p class="hint">{}</p>').format(describe),
+            aside=Markup('<p class="hint" id="records-about">{}</p>').format(describe),
         ),
         filters=_FILTER_JS,
     )
-    return _page(f"openproj — {key}", body, _RECORDS_STYLE, links, key, index.unreadable)
+    return _page(
+        f"openproj — {key}", body, _RECORDS_STYLE, links, key,
+        index.unreadable, index.unusable,
+    )

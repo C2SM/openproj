@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 from markupsafe import escape
-from pages import elements, headings, lit, render_source, selects
+from pages import elements, headings, lit, render_source, selects, tags
 
 from openproj.index import Index, build_index
-from openproj.model import KIND_NAMES, Config, load_repo
+from openproj.model import KIND_NAMES, VIEW_NEEDS, VIEWS, Config, load_repo
 from openproj.render import (
     PRIORITIES,
     PRIORITY_GLYPH,
@@ -25,10 +25,15 @@ from openproj.render import (
     STATIC,
     STATUS_GLYPH,
     STATUSES,
+    links_for,
+    opened,
     preview_html,
     render_detail,
     render_static,
+    render_switched_off,
 )
+from openproj.render.shell import Links
+from openproj.vendor import ACE_FILES
 
 PAGES = (
     "index.html",
@@ -92,6 +97,25 @@ def contrast(a: str, b: str) -> float:
     return (high + 0.05) / (low + 0.05)
 
 
+def over(fg: str, bg: str, alpha: float) -> str:
+    """`fg` painted on `bg` at `alpha`, as a browser composites `fill-opacity`.
+
+    A token on its own says nothing about a translucent fill: `.cycle-cooldown`
+    is `--line` at half alpha over whichever band it lies in, so the colour a
+    reader actually meets is this mix and comparing the two tokens compares two
+    colours that are never next to each other on the page.
+    """
+    top, ground = (_rgb(fg), _rgb(bg))
+    return "#" + "".join(
+        f"{round(top[i] * alpha + ground[i] * (1 - alpha)):02x}" for i in range(3)
+    )
+
+
+def _rgb(colour: str) -> list[int]:
+    value = colour.lstrip("#")
+    return [int(value[i : i + 2], 16) for i in (0, 2, 4)]
+
+
 def tokens(page: str) -> dict[str, dict[str, str]]:
     """Every colour token, per theme, read out of a page that actually rendered.
 
@@ -152,6 +176,75 @@ def test_the_export_carries_drawings_as_well_as_assets(seed_index, tmp_path: Pat
     render_static(seed_index, out, repo=repo)
     assert (out / "assets" / "0123456789abcdef.png").is_file()
     assert (out / "drawings" / "draw-a1b2c3.png").is_file()
+
+
+# The views a plan lists with each one left out on its own, and whatever cannot be
+# listed without it (`VIEW_NEEDS`) left out with it — Cycles takes the deck.
+_EACH_VIEW_OFF_ALONE = [
+    tuple(one for one in VIEWS if one != view and VIEW_NEEDS.get(one) != view) for view in VIEWS
+]
+
+
+@pytest.mark.parametrize(
+    "views",
+    [("cycles", "graph", "timeline"), *_EACH_VIEW_OFF_ALONE],
+    ids=["icon4py", *(f"no-{view}" for view in VIEWS)],
+)
+def test_the_export_writes_every_view_and_links_the_listed_ones(
+    seed_index: Index, tmp_path: Path, views: tuple[str, ...]
+):
+    """A plan exports every view it has, listed or not, the landing, the record
+    page and Help — and no page links to a view the plan does not list, except
+    that view's own page to itself. The first row is icon4py's; the rest are each
+    view left out alone.
+
+    The export is the server written to disk: an unlisted view answers at its
+    address there, so here it is a file, drawn with its own links put back
+    (`render.opened`) and named by nothing else. The links are read out of the
+    parsed pages rather than trusted: a page drawn with the wrong `Links` fails
+    here on its first nav item.
+
+    Into a directory an export with every view already wrote, which is how the
+    README runs it; and then with a kind turned off, whose list does not exist and
+    whose file is gone rather than left there drawing the plan as it was.
+    """
+    everything = render_static(seed_index, tmp_path)
+    assert len(everything) == 10, everything
+    written = render_static(seed_index.model_copy(update={"views": views}), tmp_path)
+    assert written == everything, "an unlisted view is still written"
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(written)
+
+    listed = {
+        "index.html",
+        "detail.html",
+        "help.html",
+        *(f"{view}.html" for view in views if view != "deck"),
+    }
+    linked: set[str] = set()
+    for page in written:
+        for one in elements(read(tmp_path, page)):
+            for name in ("href", "action"):
+                target = one.attrs.get(name, "")
+                path = target.partition("#")[0].partition("?")[0]
+                if "://" in target or not path.endswith(".html"):
+                    continue
+                assert path in written, f"{page} links to {target}, which was not written"
+                assert path in listed or path == page, (
+                    f"{page} links to {target}, which this plan does not list"
+                )
+                linked.add(path)
+    # Not vacuous: every view that is listed was found as a link somewhere, so the
+    # parse above read the nav it was meant to be reading.
+    assert listed <= linked, linked
+
+    without = seed_index.model_copy(
+        update={"views": views, "kinds": seed_index.kinds - {"issue"}}
+    )
+    rewritten = render_static(without, tmp_path)
+    assert "issues.html" not in rewritten and not (tmp_path / "issues.html").exists(), (
+        "the Issues list of a plan without issues was written, or left behind"
+    )
+    assert set(rewritten) == set(everything) - {"issues.html"}, rewritten
 
 
 def fetches_nothing(body: str, where: str) -> None:
@@ -227,7 +320,9 @@ def test_every_library_is_inlined_exactly_once_and_no_marker_survives(
     inlined = sorted(
         path.name for path in static.iterdir() if path.suffix == ".js" and path.name not in FETCHED
     )
-    assert len(inlined) == 4, inlined
+    # Eight since the three fence languages joined Ace: a count, so a ninth file is
+    # a decision somebody takes here rather than one that lands in a page unread.
+    assert len(inlined) == 8, inlined
 
     # **"Exactly once, into the page that uses it" — which is not the same claim
     # as "exactly once, into the graph".** It was, when every vendored script was
@@ -237,13 +332,23 @@ def test_every_library_is_inlined_exactly_once_and_no_marker_survives(
     # named beside the files, and a file nobody claims fails the last line rather
     # than passing quietly.
     editing = editable_page(seed_index, editor="ace")[1]
+    # **`datepicker.min.js` is the first vendored script that belongs to more
+    # than one page.** Every page with a date field inlines it — the record page
+    # and the create form, the table, both cycle pages and the timeline — so
+    # "the page that uses it" names the editing surface here, and the graph
+    # stays the counter-example it already was: a graph has no date field
+    # anywhere on it, and neither has `/help` or `/people`. Which pages carry it
+    # and which must not is asked properly in `tests/test_calendar.py`; what
+    # this line is for is the older claim beside it, that the bytes are inlined
+    # ONCE into the page that has them.
+    ON_AN_EDITING_PAGE = (*ACE_FILES, "datepicker.min.js")
     for name in inlined:
         # 200 and not 120: two of these are webpack bundles whose first 120
         # characters are the same UMD preamble, so the shorter signature found
         # each of them twice and called one of them a defect. Same length as the
         # sibling check in test_injection.py, which is where that was learnt.
         signature = (static / name).read_text(encoding="utf-8")[:200]
-        wanted = editing if name in ("ace.js", "keybinding-vim.js") else graph
+        wanted = editing if name in ON_AN_EDITING_PAGE else graph
         other = graph if wanted is editing else editing
         assert wanted.count(signature) == 1, name
         assert other.count(signature) == 0, f"{name} is in a page that does not use it"
@@ -630,7 +735,15 @@ def test_the_corner_of_the_graph_holds_the_legend_and_nothing_else(rendered: Pat
     legends = next(
         i for i, el in enumerate(parsed) if el.tag == "div" and el.attrs.get("class") == "legends"
     )
-    assert legends == keys + 1, (
+    # Inside the key's fold since 2026-10-08, which a phone shuts: the fold is the
+    # first thing in the corner, its handle the first thing in it, and then the
+    # legend. Off a phone the handle is not drawn, so the legend is still the first
+    # thing a reader sees there.
+    fold, handle = parsed[keys + 1], parsed[keys + 2]
+    assert (fold.tag, fold.attrs.get("class"), handle.tag) == ("details", "keyfold", "summary"), (
+        f"the corner does not open on the key's fold: {fold.tag}.{fold.attrs.get('class')}"
+    )
+    assert legends == keys + 3, (
         f"the legend is not the first thing in the corner: keys at {keys}, legends at {legends}"
     )
     # The count is in the control bar, which is above the canvas rather than in
@@ -722,8 +835,11 @@ def test_a_group_name_is_readable_inside_its_own_box(rendered: Path):
     assert "'text-margin-x'" in parent, "pulled inside the box rather than left of it"
     assert "'text-background-color': token('--surface')" in parent, "on its own ground"
     assert "'font-size': GROUP_SIZE" in parent
+    # A node's size is a constant since the phone's zoom floor became a multiple
+    # of it, so the number is read where it is defined.
+    assert "'font-size': NODE_LABEL" in node
     assert int(re.search(r"const GROUP_SIZE = (\d+)", graph).group(1)) > int(
-        re.search(r"'font-size': (\d+)", node).group(1)
+        re.search(r"const NODE_LABEL = (\d+)", graph).group(1)
     ), "the group is the heading of what is inside it"
 
 
@@ -1045,6 +1161,190 @@ def test_a_cycle_gets_a_band_of_its_own_above_the_months(rendered: Path):
     assert re.search(r'<text class="today-label"[^>]*>today</text>', body)
 
 
+@pytest.fixture
+def cycles_that_touch(seed_root: Path) -> Index:
+    """The corpus under a `config/cycles.yaml` that skips numbers and whose cycles
+    genuinely run back to back.
+
+    Neither corpus in this repository can ask the question the tint is named for.
+    Their windows are held apart by a weekend and by a month —
+    `seed/config/cycles.yaml` says the month is the conference window and is
+    deliberate — so no two bands on either chart ever meet in x, which is the
+    whole arrangement the feature is named after. A corpus that does not hold the
+    one case that matters proves nothing.
+
+    It is the touching that is missing and only that. An earlier version of this
+    docstring also said both corpora number their cycles consecutively, so that
+    a cycle's number and its rank could not come apart in them; that is true of
+    `seed/` and false of the frozen fixture corpus, which runs 28, 34, 35, 36,
+    37, 38 — five of its six bands changed tint when the rank landed. It is
+    written down because it was wrong in the direction that tells the next
+    reader not to look.
+
+    34, 36, 38, 40 is what one cancelled cycle and one renumbering look like, and
+    each window here opens the day after the one before it closes. `plans` goes
+    with the dates because a `Cycle` record is keyed by number and the records for
+    35 and 37 are about cycles this config no longer has.
+    """
+    records, config, _ = load_repo(seed_root)
+    touching = {
+        34: (date(2026, 2, 2), date(2026, 3, 27)),
+        36: (date(2026, 3, 28), date(2026, 5, 22)),
+        38: (date(2026, 5, 23), date(2026, 7, 17)),
+        40: (date(2026, 7, 18), date(2026, 9, 11)),
+    }
+    updated = config.model_copy(update={"cycles": touching, "plans": {}})
+    return build_index(records, updated, date(2026, 8, 17))
+
+
+def test_two_cycles_running_up_against_each_other_read_as_two(cycles_that_touch: Index):
+    """They were one fill with a dashed rule between them, so a reader looking for
+    where one ends found a line and the same colour either side of it.
+
+    **The property, and not the palette.** This asserted that the set of tints
+    drawn was exactly `{"", "alt"}`, which is satisfied by any plan holding one
+    odd-numbered cycle anywhere on the chart — including a plan drawing four
+    touching bands in a single fill, as long as the odd one is somewhere else.
+    The claim a reader can check is that no two bands which MEET share a tint,
+    and that is what is asked here.
+
+    Stated as narrowly as it is true: over the bands this page draws, in x order,
+    and only between two that actually touch. "Every cycle in the plan
+    alternates" would be a claim about cycles clipped out of the window, which
+    this page does not draw and a reader cannot see.
+    """
+    from openproj.render import render_timeline
+
+    page = render_timeline(cycles_that_touch)
+    bands = sorted(
+        (
+            float(one.attrs["x"]),
+            float(one.attrs["width"]),
+            " ".join(sorted(set(one.attrs["class"].split()) - {"cycle-band"})),
+        )
+        for one in elements(page)
+        if one.tag == "rect" and "cycle-band" in one.attrs.get("class", "").split()
+    )
+
+    assert len(bands) > 1, "one cycle on the chart proves nothing about two"
+    assert len(bands) == len(cycles_that_touch.cycles), "a band was clipped out of this window"
+    for (left, width, tint), (right, _, next_tint) in zip(bands, bands[1:], strict=False):
+        # The fixture's guard, first. Two bands with a gap between them are told
+        # apart by the gap, and asserting alternation across one would be the
+        # loose property that flakes and gets deleted by whoever meets it.
+        assert round(left + width, 1) == right, f"the bands at {left} and {right} do not meet"
+        assert tint != next_tint, f"two cycles meeting at x={right} wear one fill"
+
+    assert ".cycle-band { fill: var(--band); }" in page
+    assert ".cycle-band.alt { fill: var(--band-alt); }" in page
+
+
+def test_a_cycle_numbered_out_of_order_still_alternates_with_the_one_beside_it(
+    seed_root: Path,
+) -> None:
+    """The rank fixed the tint for a plan that SKIPS a number and left it broken
+    for a plan whose numbers do not run in the same order as its dates.
+
+    That is one `starts_on` away rather than hypothetical: a `Cycle` record
+    overrides its own window through `with_plans`, so moving 36 after 38 is a
+    single hand-edit, and ranking by number then puts two touching cycles next to
+    each other in the list and beside each other in tint. The rank is over the day
+    a cycle opens for exactly this reason, and the assertion is the same property
+    the fixture above asks — no two bands that meet may share a fill.
+    """
+    from openproj.render import render_timeline
+
+    records, config, _ = load_repo(seed_root)
+    # 34, then 38, then 36: contiguous in time, out of order by number.
+    out_of_order = {
+        34: (date(2026, 2, 2), date(2026, 3, 27)),
+        38: (date(2026, 3, 28), date(2026, 5, 22)),
+        36: (date(2026, 5, 23), date(2026, 7, 17)),
+    }
+    index = build_index(
+        records,
+        config.model_copy(update={"cycles": out_of_order, "plans": {}}),
+        date(2026, 8, 17),
+    )
+
+    bands = sorted(
+        (
+            float(one.attrs["x"]),
+            float(one.attrs["width"]),
+            " ".join(sorted(set(one.attrs["class"].split()) - {"cycle-band"})),
+        )
+        for one in elements(render_timeline(index))
+        if one.tag == "rect" and "cycle-band" in one.attrs.get("class", "").split()
+    )
+
+    assert len(bands) == 3
+    for (left, width, tint), (right, _, next_tint) in zip(bands, bands[1:], strict=False):
+        assert round(left + width, 1) == right, f"the bands at {left} and {right} do not meet"
+        assert tint != next_tint, f"two cycles meeting at x={right} wear one fill"
+
+    # Second, and only as the explanation: the list is in date order, so the rank
+    # the tint is taken from means "which cycle comes next" for this plan too.
+    assert [window.number for window in index.cycle_windows()] == [34, 38, 36]
+
+
+def test_the_second_band_tint_is_defined_in_every_theme(rendered: Path):
+    """A colour defined only in `[data-theme="dark"]` is wrong for every reader who
+    has never touched the toggle, which is most of them."""
+    themes = tokens(read(rendered, "timeline.html"))
+
+    for block in ("light", "dark", "dark-by-system"):
+        assert "--band-alt" in themes[block], block
+        assert "--band-edge" in themes[block], block
+    assert themes["dark"]["--band-alt"] == themes["dark-by-system"]["--band-alt"]
+    assert themes["dark"]["--band-edge"] == themes["dark-by-system"]["--band-edge"]
+
+
+def test_the_cooldown_survives_the_tint_the_second_band_is_drawn_in(rendered: Path):
+    """`.cycle-cooldown` is `--line` at half alpha, and that alpha was chosen
+    against ONE flat band. It is now layered over two.
+
+    The question is not which way round the two tints are but which SIDE of
+    `--band` the second one is on, and the answer is forced: `--line` lies between
+    the page and `--band` in every theme here, so an alternate tint on the page's
+    side walks into the cool-down and takes it with it. Measured at the value this
+    branch first used — #d3e2e8 light, #223037 dark — the cool-down over an odd
+    cycle was dL* 0.56 and 0.80, under the just-noticeable difference: half the
+    cycles on the chart had no cool-down at all, and nothing said so.
+
+    Asserted as a comparison and not as a floor, because the floor is not mine to
+    move: what the cool-down manages over `--band` is what the alpha and `--line`
+    between them allow, and `--line` is the legend's boundary key and the grid's
+    hairline as well. So the claim is that the second tint costs the cool-down
+    nothing — and that is exactly the claim that fails if `--band-alt` is put back
+    on the page's side of `--band`.
+
+    **`second >= main` does not say that both are legible, and `main` is the one
+    that is not.** Over `--band` in the dark theme — the tint a cycle at EVEN rank
+    wears, so half the bands on the chart — the cool-down measures contrast 1.046,
+    dE 1.90 and dL* 1.36, which is under the just-noticeable difference. Over
+    `--band-alt` in the same theme it is 1.126, dE 4.02, dL* 3.46. The number that
+    is not mine to move is the one this test passes over, and it is written down
+    so nobody reads the assertion as evidence the cool-down can be seen. Moving it
+    means moving `--line` or the alpha, and `--line` is the grid and the legend.
+    """
+    themes = tokens(read(rendered, "timeline.html"))
+
+    for block in ("light", "dark", "dark-by-system"):
+        page, line = themes[block]["--bg"], themes[block]["--line"]
+        band, alt = themes[block]["--band"], themes[block]["--band-alt"]
+
+        assert contrast(alt, page) > contrast(band, page), (
+            f"{block}: --band-alt is nearer the page than --band, which is the side "
+            f"--line is on, so an odd cycle's cool-down collapses into its band"
+        )
+        main = contrast(over(line, band, 0.5), band)
+        second = contrast(over(line, alt, 0.5), alt)
+        assert second >= main, (
+            f"{block}: the cool-down is {second:.3f} over --band-alt against {main:.3f} "
+            f"over --band, so the second tint cost it visibility"
+        )
+
+
 def test_a_bar_carries_what_it_is_holding(rendered: Path, seed_index: Index):
     """A bar said its dates nowhere. The only hoverable thing on it was a native
     tooltip with one sentence about why it starts when it does."""
@@ -1146,7 +1446,7 @@ def test_the_detail_page_opens_as_an_index_not_a_wall_of_text(rendered: Path, se
 
 def test_the_detail_page_renders_the_shaping_doc_as_markdown(rendered: Path):
     body = read(rendered, "detail.html")
-    assert "<h2>" in body, "markdown headings should render as headings"
+    assert "h2" in tags(body), "markdown headings should render as headings"
     # Line-initial only: `## Appetite` inside a code span is correctly rendered
     # markdown, not leaked source.
     assert not re.search(r"^## ", body.split("<script")[0], re.M), "raw markdown leaked"
@@ -1224,6 +1524,22 @@ def test_the_suggestion_list_offers_names_and_not_sentences(seed_index: Index):
     assert all("," not in person["value"] for person in suggestions["people"])
 
 
+def test_owner_offers_everybody_the_plan_knows_and_not_only_who_records_name(
+    seed_index: Index,
+):
+    """A new plan's records name almost nobody, so a list built from them alone
+    offered nothing in Owner exactly when a typo was likeliest. The roster and
+    the `people/` files are names the plan already knows."""
+    from openproj.render import _suggestions
+
+    index = seed_index.model_copy(
+        update={"known_people": ["rosterling"], "icons": {"iconbearer": "fox"}}
+    )
+    offered = {person["value"] for person in _suggestions(index)["people"]}
+
+    assert {"rosterling", "iconbearer"} <= offered
+
+
 def test_a_cycle_number_is_offered_the_way_every_other_reference_is(seed_index: Index):
     """It was the one reference on the form typed from memory, and it is a bare
     number: nothing about `34` says whether it is the cycle running now. Every
@@ -1261,7 +1577,7 @@ def test_the_people_page_lists_everyone_the_plan_names(rendered: Path, seed_inde
     named = {
         login
         for record in seed_index.plan.values()
-        for field in ("owner", "assignees", "reviewers")
+        for field in ("owner", "developers", "reviewers")
         for login in (lambda v: v if isinstance(v, list) else [v] if v else [])(
             getattr(record, field, None)
         )
@@ -1277,7 +1593,7 @@ def test_a_person_row_says_which_hat_they_are_wearing(rendered: Path):
     of the page is telling somebody which of theirs is which."""
     body = read(rendered, "people.html")
 
-    for role in ("owner", "assignee", "reviewer"):
+    for role in ("owner", "developer", "reviewer"):
         assert f'class="role">{role}<' in body, role
 
 
@@ -1325,8 +1641,9 @@ def test_the_people_page_is_one_table_with_one_header(rendered: Path):
     table = re.search(r"<table id=\"roles\"[^>]*>.*?</table>", body, re.S).group(0)
 
     assert len(people) > 5, "the corpus names enough people for this to matter"
-    assert body.count("<table") == 1, "one table, not one per person"
-    assert body.count("<thead>") == 1
+    drawn = [one.tag for one in elements(body)]
+    assert drawn.count("table") == 1, "one table, not one per person"
+    assert drawn.count("thead") == 1
     # Every person is a tbody inside that one table rather than a section beside it.
     assert table.count('<tbody class="person"') == len(people)
     assert len(re.findall(r'<tr class="group', table)) == len(people)
@@ -1382,7 +1699,7 @@ def test_one_persons_rows_do_not_run_into_the_next(rendered: Path):
 
 
 def test_a_person_is_weighed_in_weeks_and_not_in_things(demo_rendered: tuple[Path, Index]):
-    """F23. "1 as owner, 2 as assignee, 12 as reviewer" adds a half-hour review to
+    """F23. "1 as owner, 2 as developer, 12 as reviewer" adds a half-hour review to
     a six-week build and calls the sum a workload.
 
     The weeks come from `index.load`, which is the function the cycle page bets
@@ -1483,11 +1800,19 @@ def test_the_pages_that_add_weeks_up_say_how_many_they_could_not_count():
             title="Bet and sized",
             status="ready",
             owner="ann",
+            developers=["ann"],
             cycle=37,
             person_weeks=3.0,
         ),
         *[
-            Pitch(id=f"pitch-00000{n}", kind="pitch", title="Shaping", owner="ann", cycle=37)
+            Pitch(
+                id=f"pitch-00000{n}",
+                kind="pitch",
+                title="Shaping",
+                owner="ann",
+                developers=["ann"],
+                cycle=37,
+            )
             for n in (2, 3)
         ],
     ]
@@ -1843,8 +2168,17 @@ def test_the_date_boxes_hold_the_window_on_screen(seed_index: Index):
     from openproj.render import render_timeline
 
     whole = render_timeline(seed_index)
-    origin = re.search(r'name="from" value="([\d-]+)"', whole).group(1)
-    last = re.search(r'name="to" value="([\d-]+)"', whole).group(1)
+    # Parsed, not matched. This read `name="from" value="([\d-]+)"` off the text
+    # and went to `None.group(1)` the day the box gained `data-cycles`, which is
+    # an attribute between the two it was pattern-matching and changes nothing
+    # about the claim. A regex over markup asserts the order somebody wrote the
+    # attributes in; the claim is that the control holds the date being drawn.
+    boxes = {
+        one.attrs["name"]: one.attrs.get("value")
+        for one in elements(whole)
+        if one.tag == "input" and one.attrs.get("type") == "date"
+    }
+    origin, last = boxes["from"], boxes["to"]
 
     assert origin and last, "the boxes hold the window the chart is drawing"
     assert "Showing the whole plan" not in " ".join(whole.split()), (
@@ -1853,7 +2187,11 @@ def test_the_date_boxes_hold_the_window_on_screen(seed_index: Index):
     assert "Drag sideways or scroll" in " ".join(whole.split())
 
     windowed = render_timeline(seed_index, window=(date(2026, 9, 1), date(2026, 9, 30)))
-    assert 'name="from" value="2026-09-01"' in windowed
+    assert {
+        one.attrs["name"]: one.attrs.get("value")
+        for one in elements(windowed)
+        if one.tag == "input" and one.attrs.get("type") == "date"
+    }["from"] == "2026-09-01"
     assert "a window of the plan" in " ".join(windowed.split())
     # Apply was a button and Reset a bare link, which reads as one control and one
     # afterthought.
@@ -2105,38 +2443,28 @@ def test_an_unknown_status_still_reaches_the_index(seed_index: Index):
     assert [g["status"] for g in groups] == ["done", "wip"]
 
 
-def test_a_pr_reference_completes_in_two_halves(demo_rendered: tuple[Path, Index]):
-    """`kilnlab/kiln4py#` and whole references, from what the plan already cites.
+def test_a_pr_reference_completes_from_the_plans_repositories_alone(seed_index: Index):
+    """The repositories `config/defaults.yaml` names, each as the `owner/repo#`
+    half nobody remembers, and nothing the corpus cites.
 
-    Nobody remembers whether it is kiln4py or kiln4pygen, or which org owns it,
-    and that half of the reference is the same on almost every row — so it is
-    offered on its own, with the number left to type.
+    It used to offer every reference some record cited, and a repository for
+    each. jcanton, 2026-11-11: a pull request one record cites belongs to that
+    record far more often than to the next, and whatever somebody had put in
+    `prs:` came back as a suggestion — on icon4py's plan, a knowledge base page.
     """
     from openproj.render import _suggestions
 
-    _, index = demo_rendered
-    offered = _suggestions(index)["prs"]
-    values = [item["value"] for item in offered]
-    cited = {ref for e in index.plan.values() for ref in e.prs}
+    cited = {ref for record in seed_index.records.values() for ref in record.prs}
+    assert cited, "this test cannot show a citation left out: the corpus cites none"
 
-    assert "kilnlab/kiln4py#" in values
-    assert cited <= set(values)
-    assert values.index("kilnlab/kiln4py#") < min(values.index(c) for c in cited)
+    bare = _suggestions(seed_index)
+    named = _suggestions(
+        seed_index.model_copy(update={"repositories": ["kilnlab/kiln4py", "griddle/griddle"]})
+    )
 
-
-def test_pull_requests_are_offered_newest_first(demo_rendered: tuple[Path, Index]):
-    """Sorted as text, #999 sits above #1400 — so the oldest work is what the
-    list shows first and the newest is what falls off the end of it."""
-    from openproj.render import _suggestions
-
-    _, index = demo_rendered
-    numbers = [
-        int(item["value"].split("#")[1])
-        for item in _suggestions(index)["prs"]
-        if item["value"].split("#")[1]
-    ]
-
-    assert numbers == sorted(numbers, reverse=True)
+    assert (bare["prs"], bare["repos"]) == ([], [])
+    assert named["repos"] == ["kilnlab/kiln4py", "griddle/griddle"]
+    assert [item["value"] for item in named["prs"]] == ["kilnlab/kiln4py#", "griddle/griddle#"]
 
 
 def test_choosing_a_repository_does_not_end_the_entry(seed_index: Index):
@@ -2861,12 +3189,19 @@ def test_the_cycle_band_is_one_token_and_it_can_be_seen(rendered: Path):
     assert ".cycle-band { fill: var(--band); }" in body
     assert ".legend .swatch.band { background: var(--band); }" in body
     assert "--surface-2" not in re.search(r"\.cycle-band \{[^}]*\}", body).group(0)
+    # Both tints, since the ladder gained a second one: an odd-numbered cycle's
+    # band is `--band-alt` and it carries a cycle number exactly the way this one
+    # does. Asking only about `--band` would have let the alternate tint be drawn
+    # anywhere at all, and the first value tried for it was 1.33 against the page
+    # — under the floor this test exists to hold.
     for name in ("light", "dark"):
-        page, band = themes[name]["--bg"], themes[name]["--band"]
-        assert contrast(band, page) >= 1.45, (name, contrast(band, page))
-        # It carries the cycle number, and that number is 10px text.
-        accent = themes[name]["--accent"]
-        assert contrast(band, accent) >= 4.5, (name, contrast(band, accent))
+        page = themes[name]["--bg"]
+        for tint in ("--band", "--band-alt"):
+            band = themes[name][tint]
+            assert contrast(band, page) >= 1.45, (name, tint, contrast(band, page))
+            # It carries the cycle number, and that number is 10px text.
+            accent = themes[name]["--accent"]
+            assert contrast(band, accent) >= 4.5, (name, tint, contrast(band, accent))
 
 
 def test_the_legend_draws_a_cycle_boundary_the_way_the_plot_does(rendered: Path):
@@ -3031,7 +3366,7 @@ def test_the_graph_carries_one_hint_and_no_mode_paragraph(rendered: Path):
     no such button."""
     graph = read(rendered, "graph.html")
 
-    assert "Double-click a node to open it" in graph
+    assert "Click a node for its card, double-click to open it" in graph
     assert "howto" not in graph, "there is no second hint to hide"
     assert 'id="connect"' not in graph, "and no edit mode to explain"
 
@@ -3173,6 +3508,25 @@ def test_the_preview_shows_the_same_two_syntaxes_the_page_will(seed_index: Index
     assert ("s", "Dropped") in [(e.tag, e.text) for e in drawn]
 
 
+
+def test_a_url_pasted_bare_is_a_link_and_a_filename_is_not():
+    """jcanton, 2026-11-11: a pitch reading "ICON has a https://easy.gems…" drew
+    the address as text to be copied into a browser by hand. The second half is
+    the reason `fuzzy_link` is off: linkify-it's default reads `model.py` as a
+    domain in Paraguay, which in a plan about Python code is half the filenames."""
+    drawn = elements(
+        preview_html(
+            "See https://example.org/bubble.html, model.py, www.example.org, a@b.org,"
+            " `https://example.org/code` and acme/repo#12."
+        )
+    )
+
+    assert [(e.attrs["href"], e.text) for e in drawn if e.tag == "a"] == [
+        ("https://example.org/bubble.html", "https://example.org/bubble.html"),
+        ("https://github.com/acme/repo/pull/12", "acme/repo#12"),
+    ]
+
+
 _MATHS = """A step of $\\Delta t$ and a wave.
 
 $$\\frac{\\partial u}{\\partial t} = \\nu \\nabla^2 u$$
@@ -3264,7 +3618,7 @@ def test_the_contents_of_text_cannot_carry_markup(seed_index: Index):
     """
     served = preview_html(_MATHS)
 
-    assert "<script" not in served, "a script tag reached the page through an equation"
+    assert "script" not in tags(served), "a script tag reached the page through an equation"
     assert "alert(1)" in served, (
         "the text was dropped rather than made safe, which hides the injection instead of "
         "defusing it — and takes the reader's own `\\text{}` with it"
@@ -3344,10 +3698,16 @@ def test_a_rendered_block_carries_the_source_line_it_came_from(seed_index: Index
     # for the browser's half to disagree with.
     assert ("ul", "3", "5") in at, "the list runs from line 3 to the blank line that ends it"
     assert ("p", "6", "6") in at, "and the paragraph under it is line 6"
-    # Only the blocks a reader scrolls past. Every paragraph inside every list
-    # item stamped too would be bytes on every page for a resolution nothing
-    # wants, and the one thing a scroll position interpolates between is these.
-    assert not [e for e in elements(page) if e.tag == "li" and "data-startline" in e.attrs]
+    # Every block that begins a line of its own, at any depth — the second point
+    # is a point of its own, because a list is not one interval to a reader
+    # scrolling through it. The first point begins on its list's line and at its
+    # list's pixel, so it is not stamped a second time, and nor is the paragraph
+    # inside either point.
+    assert ("li", "4", "5") in at, "the second point begins line 4"
+    stamped = [e for e in elements(page) if "data-startline" in e.attrs]
+    items = {e.attrs["data-startline"] for e in stamped if e.tag == "li"}
+    assert items == {"4"}, f"only the point that begins a line of its own: {items}"
+    assert not [e for e in stamped if e.tag == "p" and e.attrs["data-startline"] in ("3", "4")]
 
 
 def test_an_editable_page_reaches_the_network_no_more_than_a_read_only_one(seed_index: Index):
@@ -3687,6 +4047,67 @@ def test_a_cycle_card_carries_the_meter_the_cycle_page_draws(
     )
 
 
+def test_the_roster_is_as_wide_as_its_columns(
+    server_pages: dict[str, str], tmp_path: Path
+):
+    """A rule under a roster row ends where the row does.
+
+    The roster was stretched to the page's width twice on 2026-10-13, and each
+    time the slack went somewhere it was seen. To the load bar first, which ran
+    the width of the page. Then to an empty strip after the last column, which
+    left the figures together on the left and every row's rule running on to the
+    window under nothing — jcanton: "the columns are now good size, but the row
+    separation lines remained page-width". Measured on that version at 1400: a
+    1360px table whose last column was 837px wide.
+
+    So, at a desktop width: the table is narrower than the box it sits in, its
+    last column is no wider than what it holds, the bar is the shell's 140px,
+    and no cell that holds only words breaks onto a second line.
+    """
+    from browser import chrome, measured_in
+
+    got = measured_in(
+        chrome(),
+        server_pages["cycle"],
+        tmp_path / "roster.html",
+        1400,
+        """
+        const t = document.querySelector('table.load');
+        const box = t.getBoundingClientRect();
+        const lines = cell => {
+          const range = document.createRange();
+          range.selectNodeContents(cell);
+          return new Set([...range.getClientRects()].filter(r => r.height > 0)
+            .map(r => Math.round(r.top))).size;
+        };
+        const last = [...t.querySelectorAll('tr > :last-child')];
+        const words = [...t.querySelectorAll('th, td')]
+          .filter(cell => !cell.querySelector('input, button, span.bar'));
+        return {
+          table: Math.round(box.width),
+          room: Math.round(t.parentElement.getBoundingClientRect().width),
+          // The column's widest cell, which is what sets its width: a "—" under
+          // a SCHEDULED UNTIL heading leaves room by right.
+          lastSlack: Math.min(...last.map(cell => {
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            const used = range.getBoundingClientRect().width;
+            return Math.round(cell.clientWidth - used);
+          })),
+          bar: Math.round(t.querySelector('span.bar').getBoundingClientRect().width),
+          wrapped: words.filter(cell => lines(cell) > 1).map(cell => cell.textContent.trim()),
+        };
+        """,
+    )
+
+    assert got["table"] < got["room"], f"the roster is stretched to its box again: {got}"
+    # Padding is .6rem a side, 19px; the stretched roster measured 728. The bound
+    # sits well between, so a font's hinting is not a failure.
+    assert got["lastSlack"] < 40, f"the last column holds slack, not a value: {got}"
+    assert got["bar"] == 140, f"the load bar is not the shell's 140px: {got}"
+    assert got["wrapped"] == [], f"a roster cell broke onto two lines: {got}"
+
+
 def test_a_cycle_bet_into_by_somebody_off_the_roster_is_not_counted_short(
     demo_rendered: tuple[Path, Index],
 ):
@@ -3704,7 +4125,7 @@ def test_a_cycle_bet_into_by_somebody_off_the_roster_is_not_counted_short(
     assert totals["bet"] == pytest.approx(sum(index.load(37).values()))
 
 
-def test_load_is_charged_where_the_assignees_are(demo_rendered: tuple[Path, Index]):
+def test_load_is_charged_where_the_developers_are(demo_rendered: tuple[Path, Index]):
     """D-C2: a pitch whose children carry the names charges nothing itself. Its
     appetite is a rollup, and charging both counts the same work twice."""
     _, index = demo_rendered
@@ -3729,11 +4150,11 @@ def test_a_size_is_split_evenly_between_the_people_on_it(demo_rendered: tuple[Pa
     shared = next(
         e
         for e in index.plan.values()
-        if index.counts_in(e, 37) and len(e.assignees) > 1 and not index.children.get(e.id)
+        if index.counts_in(e, 37) and len(e.developers) > 1 and not index.children.get(e.id)
     )
     size = size_weeks(shared)
     held = index.load(37)
-    people = list(dict.fromkeys(([shared.owner] if shared.owner else []) + shared.assignees))
+    people = list(dict.fromkeys(([shared.owner] if shared.owner else []) + shared.developers))
 
     assert len(people) > 1
     for who in people:
@@ -3773,8 +4194,7 @@ def test_every_page_names_itself_and_holds_exactly_one_main(rendered: Path):
     """
     for page in PAGES:
         body = read(rendered, page)
-        assert body.count('<main id="main">') == 1, page
-        assert body.count("</main>") == 1, page
+        assert len([one for one in elements(body) if one.tag == "main"]) == 1, page
 
     for page, name in PAGE_NAMES.items():
         # These five draw no stored markdown, so every heading on them is the
@@ -4013,6 +4433,259 @@ def test_a_nav_item_that_is_not_a_nav_item_is_refused():
         _page("t", "", current="cycle")
 
 
+def test_help_is_in_the_footer_of_every_page_and_marks_itself_there(seed_index: Index):
+    """Help left the nav for the footer — jcanton, 2026-09-24: "we move help to the
+    footer, before `report issue` and it stays always on there". A link that is on
+    every page is a link one entry point can forget, so this is every entry point,
+    read off the namespace, in both modes, with the footer parsed rather than
+    searched: exactly one Help, pointing where that mode's links say Help is, and
+    immediately before Report issue.
+
+    The you-are-here mark moved with it. The nav used to light Help on the Help
+    page, and with no Help in the nav nothing there can, so the footer's link
+    carries `aria-current="page"` on that page — and on no other, because a mark
+    on every page is a mark on none.
+    """
+    from pages import footer_of, nav_of
+
+    for links in (STATIC, ROUTES):
+        mode = "served" if links.served else "exported"
+        drawn = every_page(seed_index, links)
+        assert "render_help" in drawn and len(drawn) >= 10, sorted(drawn)
+        for name, page in drawn.items():
+            where = f"{name} ({mode})"
+            footer = footer_of(page)
+            labels = [label for label, _, _ in footer]
+            helps = [(href, marked) for label, href, marked in footer if label == "Help"]
+            assert len(helps) == 1, f"{where}: the footer reads {labels}"
+            href, marked = helps[0]
+            assert href == links.help, f"{where}: Help points at {href!r}, not {links.help!r}"
+            after = labels[labels.index("Help") + 1 :]
+            assert after[:1] == ["Report issue"], f"{where}: the footer reads {labels}"
+            wrong = "marks a page that is not Help" if marked else "does not mark the Help page"
+            assert marked == (name == "render_help"), f"{where}: the footer's Help link {wrong}"
+            assert "Help" not in [label for label, _, _ in nav_of(page)], f"{where}: in the nav"
+
+
+def test_the_live_page_is_live_whatever_its_links_say():
+    """The event stream, the pile and the health poll were switched on by
+    whether `links.table` began with a slash. A plan that switches its Table off
+    blanks that link, and every page of it would have stopped hearing about other
+    people's saves — a page that looks current and is not, with nothing on it to
+    say so. `served` is the mode; a link is only where one page points.
+
+    `#pile` and `#moved` are the two elements only a live page draws, asked of
+    the parsed page rather than of its text, which carries the stylesheet's rules
+    for both ids whether or not the elements are there.
+    """
+    from openproj.render import _page
+
+    def live(page: str) -> set[str]:
+        ids = {one.attrs.get("id") for one in elements(page)}
+        return ids & {"pile", "moved"}
+
+    assert live(_page("t", "", links=ROUTES.model_copy(update={"table": ""}))) == {"pile", "moved"}
+    assert live(_page("t", "", links=STATIC.model_copy(update={"table": "/table"}))) == set()
+
+
+def test_a_cycle_card_links_to_its_page_wherever_a_server_serves_one(seed_index: Index):
+    """The third place that read the mode off a link: a card's heading on the
+    cycles page was a link when `links.cycle` began with a slash. There is a page
+    per cycle exactly when a server is behind the page, so `served` decides, and
+    the prefix only says where that page is.
+    """
+    from openproj.render import render_cycles
+
+    def headings_linked(links) -> list[str]:
+        return [
+            one.attrs["href"]
+            for one in elements(render_cycles(seed_index, links))
+            if one.tag == "a" and one.text.startswith("Cycle ")
+        ]
+
+    served = headings_linked(ROUTES.model_copy(update={"cycle": "cycle-"}))
+    assert served and all(href.startswith("cycle-") for href in served), served
+    assert headings_linked(STATIC.model_copy(update={"cycle": "/cycle/"})) == []
+
+
+def test_an_unlisted_view_is_not_in_the_nav_and_the_nav_keeps_the_plans_order(
+    seed_index: Index,
+):
+    """`views` is the nav, in the order the plan wrote it — jcanton chose the list
+    over a fixed order ("do B") — after Records, which is always first.
+
+    And a view that is not listed is a blank field, the convention `deck` already had in
+    the export, so every template that asks the field before it draws a link asks
+    the same question the nav does. Cycles owns two fields: a cycle number that
+    stayed a link would lead to a per-cycle page, which is Cycles too.
+
+    A plan that writes nothing is today's links exactly, in both modes — or the
+    upgrade that introduced the key would have moved every existing plan's nav.
+    """
+    from pages import nav_of
+
+    from openproj.model import VIEWS
+    from openproj.render import render_records
+
+    links = links_for(("timeline", "cycles"), ROUTES)
+    drawn = nav_of(render_records(seed_index, links))
+    assert [(label, href) for label, href, _ in drawn] == [
+        ("Records", "/"),
+        ("Timeline", "/timeline"),
+        ("Cycles", "/cycles"),
+    ]
+    assert (links.table, links.graph, links.people, links.deck) == ("", "", "", "")
+    assert (links.cycles, links.cycle) == ("/cycles", "/cycle/")
+    assert links_for(("cycles", "graph"), ROUTES).nav == ("records", "cycles", "graph")
+
+    nothing = links_for((), ROUTES)
+    assert nothing.nav == ("records",)
+    assert (nothing.cycles, nothing.cycle) == ("", "")
+    # What is never a view stays: Records, the record pages, Help, and the create
+    # form, which is gated by kind and not by a link.
+    assert (nothing.records, nothing.record, nothing.help, nothing.new) == (
+        "/",
+        "/detail/",
+        "/help",
+        "/new",
+    )
+
+    assert links_for(VIEWS, ROUTES) == ROUTES
+    assert links_for(VIEWS, STATIC) == STATIC
+
+    # And drawn on its own page, an unlisted view gets its own fields back and
+    # nobody else's — the nav is still the plan's, which is jcanton's "nothing
+    # extra" — so `/cycles` reached by address still leads to each cycle.
+    on_table = opened(links, ROUTES, "table")
+    assert (on_table.table, on_table.graph, on_table.nav) == ("/table", "", links.nav)
+    on_cycles = opened(nothing, ROUTES, "cycles")
+    assert (on_cycles.cycles, on_cycles.cycle, on_cycles.deck) == ("/cycles", "/cycle/", "")
+    assert opened(links, ROUTES, "cycles") == links, "a listed view is unchanged"
+
+
+def test_the_switched_off_page_names_the_setting_and_the_way_out(seed_index: Index):
+    """What `/issues` answers in a plan without issues: the ordinary shell and this
+    plan's nav, one sentence naming the setting and the file, and one way out.
+
+    Only a list of a kind that is off answers this page at all: every other view
+    the plan does not list still answers at its address (`model.reachable`).
+
+    The way out carries the address's filters to Records, which honours the same
+    ones, and that query is text somebody typed into an address bar — so the
+    hostile ones are here and asked of the parsed page. A percent-encoded one has
+    nothing in it to escape and proves little on its own; the literal quote, the
+    angle brackets and the single quote are the ones that would break out of the
+    attribute if the one escaping boundary were bypassed.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from pages import nav_of
+
+    from openproj.model import KIND_NAMES, OPTIONAL_KINDS, RUNG, kind_refusal
+    from openproj.render.shell import _CAN_BE_OFF, _NAV
+
+    links = links_for(("cycles",), ROUTES)
+    without = seed_index.model_copy(update={"kinds": seed_index.kinds - {"issue"}})
+    way = "Show the same filters on Records"
+
+    def said(page: str) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        found = elements(page)
+        return (
+            [one.text for one in found if one.tag == "code"],
+            [one.text for one in found if one.tag == "p"],
+            [(one.text, one.attrs.get("href", "")) for one in found if one.tag == "a"],
+        )
+
+    page = render_switched_off(without, links, view="issues", query="owner=ann")
+    codes, paragraphs, anchors = said(page)
+    assert codes == ["kinds", "config/defaults.yaml"]
+    assert (
+        "The Issues list is turned off for this plan, because issues are. kinds in "
+        "config/defaults.yaml decides which kinds of record it has." in paragraphs
+    ), paragraphs
+    assert [href for text, href in anchors if text == way] == ["/?kind=issue&owner=ann"]
+    assert [text for _, text in headings(page)] == ["Issues"]
+    assert [label for label, _, _ in nav_of(page)] == ["Records", "Cycles"]
+    # Nothing lit (D8): a page that marked Issues would stamp itself as the tab's
+    # origin, and the next record's back link would come straight back here.
+    assert lit(page) == []
+
+    scripts = sum(one.tag == "script" for one in elements(page))
+    for hostile in (
+        "q=%22%3E%3Cscript%3E",
+        'q="><script>alert(1)</script>',
+        "q=' onmouseover='alert(1)",
+    ):
+        found = elements(render_switched_off(without, links, view="issues", query=hostile))
+        assert sum(one.tag == "script" for one in found) == scripts, hostile
+        out = [one.attrs for one in found if one.tag == "a" and one.text == way]
+        assert [set(attrs) for attrs in out] == [{"href"}], hostile
+        # Re-encoded on the way through, so the href is not the address's own
+        # spelling — and it asks Records exactly what the address asked, behind
+        # the list's own kind.
+        where = urlparse(out[0]["href"])
+        assert (where.path, parse_qs(where.query)) == (
+            "/",
+            {"kind": ["issue"], **parse_qs(hostile)},
+        ), hostile
+
+    # Only what Records filters on goes with it. A sort is not a filter, and a link
+    # saying "the same filters" that landed on every record with Clear hidden said
+    # something untrue. An inbox's kind is in its route, and goes with its filters
+    # so the rows are the same.
+    for view, query, expected in (
+        ("issues", "sort=title&desc=1", ("Go to Records", "/")),
+        (
+            "issues",
+            "owner=ann&sort=title&predicate=late",
+            (way, "/?kind=issue&owner=ann&predicate=late"),
+        ),
+        ("notes", "kind=issue&q=draft", (way, "/?kind=note&q=draft")),
+        ("issues", "", ("Go to Records", "/")),
+    ):
+        _, _, anchors = said(render_switched_off(without, links, view=view, query=query))
+        outs = {"Go to Records", way}
+        assert [(text, href) for text, href in anchors if text in outs] == [expected], query
+
+    # A kind that is off says `kind_refusal`'s sentence — the one the CLI and the
+    # 422 say — with the setting and the file marked up.
+    planned = Config(kinds=frozenset(KIND_NAMES) - set(OPTIONAL_KINDS))
+    # Its way out is Records bare: `/new` hands no query on, because `kind=issue`
+    # is what was to be created and not a filter (`web.py` says so where it calls
+    # this), so nothing here is asked with one either.
+    for kind in OPTIONAL_KINDS:
+        page = render_switched_off(seed_index, links, off_kind=kind)
+        codes, paragraphs, anchors = said(page)
+        assert codes == ["kinds", "config/defaults.yaml"]
+        assert kind_refusal(kind, planned) in paragraphs, paragraphs
+        assert [(text, href) for text, href in anchors if text in (way, "Go to Records")] == [
+            ("Go to Records", "/")
+        ]
+        assert [text for _, text in headings(page)] == [f"New {kind}"]
+
+    # Every list that can be off names `kinds`, and the file that wrote it (D12): a
+    # reader sent to `views` would write `views: [issues]`, take every other view
+    # out of the nav, and still have no Issues. Help's `_scope` says the same.
+    # Derived, so a third inbox cannot be the one whose address answers a KeyError.
+    assert set(_CAN_BE_OFF) == {"issues", "notes"}, _CAN_BE_OFF
+    for view in _CAN_BE_OFF:
+        need = VIEW_NEEDS[view]
+        moved = seed_index.model_copy(
+            update={
+                "kinds": seed_index.kinds - {need},
+                "switches_from": {"kinds": "config/local.yaml"},
+            }
+        )
+        codes, paragraphs, _ = said(render_switched_off(moved, links, view=view))
+        assert codes == ["kinds", "config/local.yaml"], view
+        sentence = [p for p in paragraphs if "turned off" in p]
+        assert sentence == [
+            f"The {dict(_NAV)[view]} list is turned off for this plan, because "
+            f"{RUNG[need].directory} are. kinds in config/local.yaml decides which kinds "
+            "of record it has."
+        ], view
+
+
 # --------------------------------------------------------------------------- #
 # Where "back" goes
 # --------------------------------------------------------------------------- #
@@ -4179,8 +4852,164 @@ def test_every_record_in_the_export_carries_the_link_back(rendered: Path):
         ".map(a => a.getAttribute('href') + ' ' + a.textContent)"
     )
     got = run_js(read(rendered, "detail.html"), every, page=True, session=left)["value"]
-    assert len(got) == read(rendered, "detail.html").count("<article")
+    articles = [one for one in elements(read(rendered, "detail.html")) if one.tag == "article"]
+    assert len(got) == len(articles)
     assert set(got) == {f"{here} ← Table"}
+
+
+def test_a_back_link_to_a_view_that_is_not_listed_goes_to_records(seed_index: Index):
+    """A tab sat on `/table?owner=ann` while somebody committed `views` without the
+    Table, or somebody typed `/table` into a plan that never listed it. The page
+    is still there, and the back link still does not lead to it: an unlisted view
+    is one no page links to, and the back link is a link — so a stamp is honoured
+    only while the page it names is one this plan lists.
+
+    The nav's hrefs are not the whole answer, which is why the cases are these:
+    `/cycle/37` and `/deck/37` are stamped and are no nav href, so each is judged
+    by its prefix and goes with its switch; Records is never off; and the export's
+    stamp is an absolute path on disk, judged by the file at the end of it — a
+    whole file name, so `mytable.html` is not `table.html`.
+    """
+    from test_injection import run_js
+
+    from openproj.model import VIEWS
+
+    one = next(iter(seed_index.plan))
+    everything, cycles = links_for(VIEWS, ROUTES), links_for(("cycles",), ROUTES)
+    home = ["/", "← all records"]
+    for links, href, label, back in (
+        (everything, "/table?owner=ann", "Table", ["/table?owner=ann", "← Table"]),
+        (cycles, "/table?owner=ann", "Table", home),
+        (cycles, "/cycle/37", "Cycles", ["/cycle/37", "← Cycles"]),
+        (links_for((), ROUTES), "/cycle/37", "Cycles", home),
+        (links_for((), ROUTES), "/cycles", "Cycles", home),
+        (links_for(("cycles", "deck"), ROUTES), "/deck/37", "deck 37", ["/deck/37", "← deck 37"]),
+        (cycles, "/deck/37", "deck 37", home),
+        (links_for((), ROUTES), "/?owner=ann", "all records", ["/?owner=ann", "← all records"]),
+    ):
+        page = render_detail(seed_index, links, only=one, base_commit="deadbee")
+        got = run_js(page, BACK, page=True, session=stamp(href, label))
+        assert got["value"] == back, (links.nav, href)
+
+    exported = "/home/ann/plan/table.html"
+    for links, href, label, back in (
+        (links_for(VIEWS, STATIC), exported, "Table", [exported, "← Table"]),
+        (links_for(("cycles",), STATIC), exported, "Table", ["index.html", "← all records"]),
+        (
+            links_for(VIEWS, STATIC),
+            "/home/ann/plan/mytable.html",
+            "Table",
+            ["index.html", "← all records"],
+        ),
+        # An export on a web server is reached at its directory as well, and that
+        # landing is `index.html` to the server that answered it. Judged as the
+        # bare path it was no file of the export, and the filter it had been
+        # opened with was dropped from the back link; before views could be
+        # switched off, any path at all was followed.
+        (
+            links_for(("cycles",), STATIC),
+            "/plan/?owner=ann",
+            "all records",
+            ["/plan/?owner=ann", "← all records"],
+        ),
+    ):
+        page = render_detail(seed_index, links, only=one)
+        got = run_js(page, BACK, page=True, session=stamp(href, label))
+        assert got["value"] == back, (links.nav, href)
+
+    # And the page a switched-off address answers with leaves no stamp of its own,
+    # so the stale one it replaced is not renewed by visiting it.
+    left = run_js(render_switched_off(seed_index, cycles), page=True, here="/issues?owner=ann")
+    assert ORIGIN not in left["tabbed"], left["tabbed"]
+
+
+def test_a_record_page_offers_no_slide_view_when_the_deck_is_not_listed(seed_index: Index):
+    """The slide button opens `?view=slide`, which answers in every plan; in one
+    that does not list the deck it is a page nothing links to (jcanton,
+    2026-10-20: "URL only"), so a record page in that plan draws no button.
+
+    Asked of the renderer with each set of links, and not only through the served
+    sweep: `_slidebar` has two callers, and the guard is inside it so the record
+    page and the slide editor cannot disagree about it.
+    """
+    from openproj.model import VIEWS
+    from openproj.render import render_slide_editor
+
+    pitch = next(one for one, record in seed_index.plan.items() if record.kind == "pitch")
+
+    def slide_buttons(page: str) -> list[str]:
+        return [
+            one.attrs.get("href", "")
+            for one in elements(page)
+            if one.tag == "a" and "slide-view" in one.attrs.get("class", "").split()
+        ]
+
+    without = links_for(tuple(one for one in VIEWS if one != "deck"), ROUTES)
+    assert without.deck == "" and without.cycles, "the deck alone is unlisted"
+    for links, wanted in ((without, []), (ROUTES, [f"/detail/{pitch}?view=slide"])):
+        record = render_detail(
+            seed_index, links, only=pitch, base_commit="deadbee", may_write=True
+        )
+        assert slide_buttons(record) == wanted, links.deck
+    # The slide editor is the deck's own page, and `web.py` draws it with the deck's
+    # links put back whether the plan lists the deck or not — so its control is
+    # there either way, pressed, saying which view this is. With the links blank
+    # it would go, from the same guard, which is why `web.py` does not pass them.
+    wanted = [f"/detail/{pitch}?view=slide"]
+    for links in (opened(without, ROUTES, "deck"), ROUTES):
+        slide = render_slide_editor(seed_index, pitch, links, base_commit="deadbee", may_write=True)
+        assert slide_buttons(slide) == wanted, links.deck
+    blank = render_slide_editor(seed_index, pitch, without, base_commit="deadbee", may_write=True)
+    assert slide_buttons(blank) == []
+
+
+def test_people_links_land_on_records_when_there_is_no_table(seed_index: Index):
+    """A name on the People page, and each count beside it, is a filter link:
+    `?owner=ann` on the Table. In a plan without a Table that was `?owner=ann`
+    relative to People itself — a link to the page it is on, which reads no such
+    filter and changes nothing.
+
+    Records reads every filter these links carry, so without a Table they land
+    there, and the title says which page it is rather than "in the table". In
+    both modes, because the export writes People and Records too.
+    """
+    from openproj.model import VIEWS
+    from openproj.render import render_people
+
+    roles = ("owner=", "developers=", "reviewers=")
+    no_table = tuple(one for one in VIEWS if one != "table")
+    for links, lands, where in (
+        (ROUTES, "/table?", ", in the table"),
+        (links_for(no_table, ROUTES), "/?", ", on Records"),
+        (links_for(no_table, STATIC), "index.html?", ", on Records"),
+    ):
+        anchors = [
+            one
+            for one in elements(render_people(seed_index, links))
+            if one.tag == "a" and one.attrs.get("href", "").partition("?")[2].startswith(roles)
+        ]
+        names = [one for one in anchors if one.attrs.get("class") == "who"]
+        assert names and len(anchors) > len(names), "no name and no count links, so nothing asked"
+        hrefs = [one.attrs["href"] for one in anchors]
+        assert [href for href in hrefs if not href.startswith(lands)] == []
+        titles = [one.attrs["title"] for one in names]
+        assert [title for title in titles if not title.endswith(where)] == []
+
+
+def test_a_cycle_page_offers_all_cycles_only_while_there_are_some(seed_index: Index):
+    """The per-cycle pages go with Cycles, so the router never draws this one with
+    `links.cycles` blank — and if anything ever did, "← all cycles" with an empty
+    href would be a link back to the page it is on. Asked the way the deck link
+    under it already is."""
+    from openproj.render import render_cycle
+
+    def back(links: Links) -> list[str]:
+        page = render_cycle(seed_index, 37, links, base_commit="deadbee")
+        found = elements(page)
+        return [one.attrs["href"] for one in found if one.tag == "a" and one.text == "← all cycles"]
+
+    assert back(ROUTES) == ["/cycles"]
+    assert back(links_for((), ROUTES)) == []
 
 
 def test_every_page_carries_a_skip_link_and_a_live_region(rendered: Path):
@@ -4354,7 +5183,7 @@ def test_only_an_asset_this_tool_stored_is_ever_drawn_as_an_image():
         # instead varies in one case, and honestly — markdown-it refuses to link
         # `javascript:` at all and leaves the line as text, which is a better
         # answer than the link this would otherwise have made of it.
-        assert "<img" not in drawn, source
+        assert "img" not in tags(drawn), source
         assert "(external image)" in drawn or source in str(drawn), source
 
 
@@ -4382,7 +5211,7 @@ def test_a_drawing_is_drawn_and_a_lookalike_is_not():
         "drawings/sub/draw-a1b2c3.png",  # our prefix, somebody else's tree
     ):
         drawn = _body_html(_record(f"![x]({source})"))
-        assert "<img" not in drawn, source
+        assert "img" not in tags(drawn), source
 
 
 def test_the_deck_still_inlines_a_picture_after_the_prefix_moved():
@@ -4644,7 +5473,7 @@ def test_the_box_each_view_fills_stops_where_the_window_does(
             )
 
 
-def every_page(index: Index) -> dict[str, str]:
+def every_page(index: Index, links: Links | None = None) -> dict[str, str]:
     """Every page the renderer can draw, keyed by the entry point that drew it.
 
     Read off `render.py`'s namespace rather than listed here, which is
@@ -4653,6 +5482,10 @@ def every_page(index: Index) -> dict[str, str]:
     page missing from a hand-written list is exactly the page that will forget.
     Six of them already had — the nav mark went missing on two routes the same
     way.
+
+    `links` draws every one of them in that mode; left out, each entry point
+    draws in its own default, which is the export's for some and the server's
+    for the pages the export never writes.
     """
     import inspect
 
@@ -4670,6 +5503,8 @@ def every_page(index: Index) -> dict[str, str]:
             arguments |= {"number": 37}
         if "record_id" in wanted:
             arguments |= {"record_id": next(iter(index.records))}
+        if links is not None:
+            arguments |= {"links": links}
         pages[name] = entry(**arguments)
     return pages
 
@@ -4783,6 +5618,200 @@ def test_every_page_keeps_its_nav_and_its_footer_where_the_reader_left_them(
         assert got["window"] - got["footBottom"] <= 4, (
             f"{where}: {got['window'] - got['footBottom']}px of page under the footer"
         )
+
+
+# Something outside the filling box that overflows the document by 40px, and a
+# burst of resizes, which is what a phone's toolbar fires while it slides away.
+_STRAY = """
+const root = document.documentElement;
+const room = () => root.style.getPropertyValue('--room');
+const before = room();
+const stray = document.createElement('div');
+stray.style.cssText = `position: absolute; left: 0; width: 1px; height: 1px;
+  top: ${innerHeight + 40}px`;
+document.body.append(stray);
+for (let at = 0; at < 5; at++) setTimeout(() => dispatchEvent(new Event('resize')), at * 8);
+await new Promise(done => setTimeout(done, 800));
+return {before, after: room(), over: root.scrollHeight - root.clientHeight};
+"""
+
+
+def test_an_overflow_the_box_did_not_cause_is_not_taken_out_of_the_box(
+    phone_pages: dict[str, str], tmp_path: Path
+):
+    """jcanton, 2026-09-25, with phone screenshots of the graph and a record page:
+    an empty band above the footer, "very visible on mobile but also on PC,
+    especially in the record edit view", that "sometimes becomes enlarged".
+
+    `settleRoom` takes whatever the document still overflows by off the box, and
+    asks again. An overflow that is not the box's comes back unchanged however
+    small the box gets. So it was paid three times over, once a pass, and a burst
+    of resizes ran several settles at once into the same slack: 41px of stray
+    overflow was a 123px band, and five resizes made it 205. On a phone the
+    likely stray is `100dvh` outgrowing the root's `clientHeight` once the
+    toolbar slides away. A stray absolute element stands in for it here, since no
+    harness has a toolbar.
+
+    The room has to come out exactly where it started. `over` is the control: a
+    stray that overflowed nothing would pass this for the wrong reason.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    found = measured_on_a_phone(chrome(), phone_pages, tmp_path / "stray", _STRAY)
+    for page, got in found.items():
+        assert got["over"] > 0, f"{page}: the stray overflowed nothing, so this proves nothing"
+        assert got["after"] == got["before"], (
+            f"{page}: an overflow outside the box took the room from {got['before']} to "
+            f"{got['after']}, which is drawn as empty page above the footer"
+        )
+
+
+# The footer's row, and where each item on it ended up.
+_FOLDED = """
+const build = document.getElementById('build');
+const more = document.getElementById('buildmore');
+const shelf = more.querySelector('.buildshelf');
+const shown = [...build.children].filter(el => el.getClientRects().length)
+  .map(el => el.getBoundingClientRect());
+const ids = ['version', 'buildhelp', 'report', 'theme'];
+const where = Object.fromEntries(ids.map(id => {
+  const el = document.getElementById(id);
+  // `nav` as well, because above the phone breakpoint the corner is in the nav.
+  return [id, shelf.contains(el) ? 'shelf' : el.closest('#build, nav') ? 'row' : 'gone'];
+}));
+more.open = true;
+const box = shelf.getBoundingClientRect();
+const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 3);
+return {
+  viewport: innerWidth,
+  oneLine: shown.every(a => shown.every(b => a.top < b.bottom && b.top < a.bottom)),
+  over: build.scrollWidth - build.clientWidth,
+  hidden: more.hidden,
+  where,
+  shelved: [...shelf.children].map(el => el.id).filter(id => ids.includes(id)),
+  shelfInside: box.height > 0 && box.top >= 0 && box.left >= 0 && box.right <= innerWidth,
+  shelfPainted: !!hit && shelf.contains(hit),
+};
+"""
+
+
+def test_the_footer_is_one_line_and_folds_what_does_not_fit(
+    phone_pages: dict[str, str], tmp_path: Path
+):
+    """jcanton, 2026-09-25: "the footer itself on mobile takes up too much space:
+    I'd rather it be only one line with a meatball/hamburger/arrow menu where the
+    items that do not fit get hidden". It was three lines on a phone, with the
+    corner parked in it.
+
+    Asked of the drawn row: every item on one line, nothing wider than the footer,
+    and every item either on the row or in the menu, none lost. The theme toggle
+    is the last to go, so on a phone it is still on the row. The menu, once open,
+    has to be on screen and be what the browser finds there, since a menu clipped
+    by the footer's box lays out with a rectangle all the same. At 900px everything
+    fits, and there is no button at all.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    browser = chrome()
+    narrow = measured_on_a_phone(browser, phone_pages, tmp_path / "folded", _FOLDED)
+    wide = measured_on_a_phone(browser, phone_pages, tmp_path / "unfolded", _FOLDED, width=900)
+    for page, got in narrow.items():
+        at = f"{page} at {got['viewport']}px"
+        assert got["oneLine"], f"{at}: the footer is more than one line"
+        assert got["over"] <= 0, f"{at}: the footer's row is {got['over']}px wider than it"
+        assert not got["hidden"] and got["shelved"], f"{at}: nothing was folded away"
+        assert "gone" not in got["where"].values(), f"{at}: an item left the footer: {got}"
+        assert got["where"]["theme"] == "row", f"{at}: the theme toggle folded before the rest"
+        order = [name for name in ("version", "buildhelp", "report") if name in got["shelved"]]
+        assert got["shelved"] == order, f"{at}: the menu reads {got['shelved']}, out of order"
+        assert got["shelfInside"] and got["shelfPainted"], f"{at}: the open menu is not seen"
+    for page, got in wide.items():
+        at = f"{page} at {got['viewport']}px"
+        assert got["hidden"] and not got["shelved"], f"{at}: folds a row that fits: {got}"
+        assert set(got["where"].values()) == {"row"}, f"{at}: {got['where']}"
+
+
+# Whether each thing a reader has to find is inside the window and is what the
+# browser finds at its own centre. The second is the one that says painted: a box
+# that is clipped by the scroller it is in, covered by another, `visibility:
+# hidden` or pushed off its column all lay out with a rectangle, and none of them
+# is what `elementFromPoint` returns there. The first client rect and not the
+# bounding box, so an inline `<code>` that wrapped is asked where its text is
+# rather than at a point between its two lines.
+_PAINTED = """
+const root = document.documentElement;
+const vw = root.clientWidth, vh = root.clientHeight;
+const seen = el => {
+  if (!el) return null;
+  const box = el.getClientRects()[0] || el.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+  return {
+    text: el.textContent.trim(),
+    inside: box.width > 0 && box.height > 0 && box.left >= -1 && box.top >= -1
+      && box.right <= vw + 1 && box.bottom <= vh + 1,
+    painted: !!hit && (hit === el || el.contains(hit)),
+    // Only a block has a width of its own to overflow; an inline box is its text.
+    cut: getComputedStyle(el).display === 'inline' ? 0 : el.scrollWidth - el.clientWidth,
+  };
+};
+const off = document.querySelector('.switched-off');
+const way = off && off.querySelector('p:last-of-type a');
+return {
+  viewport: vw,
+  sideways: root.scrollWidth - vw,
+  nav: [...document.querySelectorAll('nav > a')].map(seen),
+  heading: seen(off && off.querySelector('h1')),
+  said: seen(off && off.querySelector('p')),
+  codes: off ? [...off.querySelectorAll('p code')].map(seen) : [],
+  out: way ? {...seen(way), href: way.getAttribute('href')} : null,
+};
+"""
+
+
+def test_a_short_nav_and_the_switched_off_page_are_drawn_where_a_reader_finds_them(
+    seed_index: Index, tmp_path: Path
+):
+    """Spec test 9's two claims about pixels, which the sweep above cannot make.
+    `every_page` draws every entry point with every view on, so no browser had
+    drawn a nav shorter than the whole one; and it measures the switched-off page
+    as a box that fills the window, never its heading, its sentence or its way
+    out, and never on a phone.
+
+    icon4py's own nav, in a plan without issues, and the page a reader of that
+    plan meets at a bookmarked `/issues?owner=ann`: Records and three views in the
+    nav, a heading, the sentence naming `kinds` and its file, and the link that
+    carries the filter on. Each is asked whether it is inside the window and whether it is
+    what the browser finds at its own centre, on a laptop and through
+    `measured_on_a_phone`, where the corner's controls have moved to the footer
+    and the nav is the row that is left.
+    """
+    from browser import chrome, measured_in, measured_on_a_phone
+
+    links = links_for(("cycles", "graph", "timeline"), ROUTES)
+    without = seed_index.model_copy(update={"kinds": seed_index.kinds - {"issue"}})
+    page = render_switched_off(without, links, view="issues", query="owner=ann")
+    browser = chrome()
+    laptop = measured_in(browser, page, tmp_path / "off.html", 1280, _PAINTED)
+    phone = measured_on_a_phone(browser, {"off": page}, tmp_path / "phone", _PAINTED)["off"]
+
+    for width, got in ((1280, laptop), (390, phone)):
+        assert got["viewport"] == width, f"laid out at {got['viewport']}px, not {width}"
+        where = f"at {width}px"
+        assert got["sideways"] <= 0, f"{where}: the page scrolls {got['sideways']}px sideways"
+        assert [one["text"] for one in got["nav"]] == ["Records", "Cycles", "Graph", "Timeline"]
+        assert got["heading"]["text"] == "Issues"
+        assert [one["text"] for one in got["codes"]] == ["kinds", "config/defaults.yaml"]
+        assert (got["out"]["href"], got["out"]["text"]) == (
+            "/?kind=issue&owner=ann",
+            "Show the same filters on Records",
+        )
+        for one in (*got["nav"], got["heading"], got["said"], *got["codes"], got["out"]):
+            assert one["inside"], f"{where}: {one['text']!r} is not inside the window"
+            assert one["painted"], (
+                f"{where}: {one['text']!r} is not what the browser finds at its own "
+                "centre, so it is covered, clipped or hidden"
+            )
+            assert one["cut"] <= 0, f"{where}: {one['text']!r} overflows its box by {one['cut']}px"
 
 
 def test_no_page_serves_a_stylesheet_with_a_comment_that_closes_nothing(seed_index: Index):
@@ -5806,7 +6835,7 @@ def test_the_number_the_page_prints_in_tasks_is_the_number_check_warns_on():
                 kind="pitch",
                 title="Q",
                 person_weeks=8.0,
-                assignees=["jackdawrie", "merganserly"],
+                developers=["jackdawrie", "merganserly"],
             ),
             *(
                 Task(id=f"task-00000{at}", kind="task", title="T", parent="pitch-000001", **task)
@@ -5814,7 +6843,7 @@ def test_the_number_the_page_prints_in_tasks_is_the_number_check_warns_on():
             ),
         ]
 
-    held = {"person_weeks": 4.0, "assignees": ["jackdawrie"]}
+    held = {"person_weeks": 4.0, "developers": ["jackdawrie"]}
     # The first two plans are the same three records twice, and the only
     # difference is whose name is on the half-week task: one person holding both
     # has to do them in turn, two people do them at once. That is the whole
@@ -5822,11 +6851,11 @@ def test_the_number_the_page_prints_in_tasks_is_the_number_check_warns_on():
     # the agreement is pinned over.
     plans = {
         "two people, side by side": (
-            family(held, {"person_weeks": 0.5, "assignees": ["merganserly"]}),
+            family(held, {"person_weeks": 0.5, "developers": ["merganserly"]}),
             True,
         ),
         "one person, in turn": (
-            family(held, {"person_weeks": 0.5, "assignees": ["jackdawrie"]}),
+            family(held, {"person_weeks": 0.5, "developers": ["jackdawrie"]}),
             False,
         ),
         # The unsized-but-dated done child. It has no `person_weeks` at all, so
@@ -5840,7 +6869,7 @@ def test_the_number_the_page_prints_in_tasks_is_the_number_check_warns_on():
             family(
                 {
                     "status": "done",
-                    "assignees": ["jackdawrie"],
+                    "developers": ["jackdawrie"],
                     "start_date": date(2026, 8, 17),
                     "end_date": date(2026, 9, 25),
                 }
@@ -5923,7 +6952,7 @@ def test_the_box_the_bet_buys_names_the_number_it_was_divided_by():
                 title="Q",
                 cycle=37,
                 person_weeks=3.0,
-                assignees=["jackdawrie", "merganserly"],
+                developers=["jackdawrie", "merganserly"],
             ),
             *(
                 Task(
@@ -5932,7 +6961,7 @@ def test_the_box_the_bet_buys_names_the_number_it_was_divided_by():
                     title="T",
                     parent="pitch-000001",
                     person_weeks=3.0,
-                    assignees=[who],
+                    developers=[who],
                 )
                 for n, who in enumerate(("jackdawrie", "merganserly"), start=1)
             ),
@@ -6123,9 +7152,9 @@ def test_a_persons_icon_is_drawn_in_the_page_and_not_fetched(seed_root: Path):
 
     row = page.split(f'data-login="{who}"')[1].split("</tbody>")[0]
     assert '<svg class="icon"' in row, row[:400]
-    assert "<path" in row
-    assert "<img" not in row
-    assert "src=" not in row
+    assert "path" in tags(row)
+    assert "img" not in tags(row)
+    assert not [one for one in elements(row) if "src" in one.attrs]
 
 
 def test_a_plan_where_nobody_has_picked_one_draws_the_page_as_it_was(seed_root: Path):
@@ -6171,7 +7200,7 @@ def test_no_icon_is_a_character_the_reader_has_to_own_a_font_for():
     for name, art in render._ICON_ART.items():
         assert name.isascii() and name.islower(), name
         assert art.isascii(), f"{name} is drawn with a character and not with a path"
-        assert "<path" in art or "<circle" in art, name
+        assert tags(art) & {"path", "circle"}, name
 
 
 def test_no_two_icons_are_the_same_mark(seed_root: Path):
@@ -6360,7 +7389,7 @@ def test_a_record_that_is_not_there_is_an_empty_page_and_not_a_KeyError(seed_ind
     page = render_detail(seed_index, ROUTES, only="task-ffffff")
 
     assert "task-ffffff" not in page
-    assert "<article" not in page
+    assert "article" not in tags(page)
 
 
 @pytest.fixture
@@ -6397,7 +7426,27 @@ def phone_pages(seed_index: Index) -> dict[str, str]:
         "record": render_detail(
             seed_index, ROUTES, only=next(iter(seed_index.plan)), base_commit="deadbee"
         ),
+        "record with code": render_detail(
+            seed_index, ROUTES, only=_longest_inline_code(seed_index), base_commit="deadbee"
+        ),
     }
+
+
+def _longest_inline_code(index: Index) -> str:
+    """The record whose prose carries the longest unbreakable code span — read
+    off the corpus rather than named, so the page asked about is the worst one
+    there is and not whichever was the worst on the day this was written.
+
+    An identifier in backticks has no space in it to wrap at, and it is the one
+    thing a pitch here is reliably full of. A body that only fences its code is
+    not asked about by this: `pre` scrolls inside its own box by design.
+    """
+
+    def longest(record) -> int:
+        spans = re.findall(r"`([^`\n]+)`", record.body or "")
+        return max((len(word) for span in spans for word in span.split()), default=0)
+
+    return max(index.plan.values(), key=longest).id
 
 
 # What a 390px viewport gets, per page. One script, because one Chrome answering
@@ -6434,18 +7483,41 @@ const wide = el => Math.round(el.getBoundingClientRect().width);
 const search = document.getElementById('q');
 const column = document.querySelector('main');
 const keys = document.querySelector('.keys');
+// The graph's key is folded on a phone. Opened here, because the claim is about
+// where its keys land when somebody opens it — asked of a shut fold, every key
+// has no box and the answer is an empty list that proves nothing.
+for (const fold of document.querySelectorAll('.keys .keyfold')) fold.open = true;
 const off = keys ? [...keys.querySelectorAll('li')].filter(li => {
   const box = li.getBoundingClientRect();
   return box.width > 0 && (box.left < -1 || box.right > vw + 1);
 }).map(li => li.textContent.trim() + ' ' + Math.round(li.getBoundingClientRect().left)) : [];
+// A box that scrolls sideways when it was not built to. The document is not
+// the only thing that can: the record page reads inside `.panes`, which is
+// `overflow: auto` so that it can scroll DOWN, and one unbreakable identifier
+// made it scroll 62px across as well while the document stayed exactly 390 wide.
+// The boxes that are meant to — the roles table's, the timeline's, the cycle's
+// two tables, a fence — are named by what they are and left out. Not a carded
+// box: on a phone the records list and the plan's table are cards that wrap, and
+// one of those scrolling sideways is the 1299px table in a 350px box coming back.
+const wobbles = [];
+for (const el of document.querySelectorAll('body *')) {
+  if (el.matches('[data-sideways], .sideways, .table-scroll:not(.carded), .scroll, pre')) continue;
+  if (/(auto|scroll)/.test(getComputedStyle(el).overflowX)
+      && el.scrollWidth > el.clientWidth + 1) {
+    wobbles.push(name(el) + ' ' + el.clientWidth + ' wide holding ' + el.scrollWidth);
+  }
+}
 return {
   viewport: vw,
   scrollWidth: root.scrollWidth,
+  wobbles,
   over: [...new Set(over)].slice(0, 8),
   small: [...new Set(small)],
   labels: timeline ? wide(timeline.querySelector('.labels')) : null,
   chart: timeline ? wide(timeline.querySelector('.scroll')) : null,
   keysOffPage: off,
+  keysShown: keys ? [...keys.querySelectorAll('li')]
+    .filter(li => li.getBoundingClientRect().width > 0).length : 0,
   search: search ? wide(search) : null,
   column: column ? Math.round(column.clientWidth) : null,
 };
@@ -6496,12 +7568,185 @@ def test_no_read_surface_scrolls_sideways_on_a_phone(on_a_phone: dict[str, dict]
     that legitimately scroll — the table's columns and the timeline's chart —
     scroll INSIDE a box, which is why this asks the document and not the
     elements: `over` exists to name a culprit, `scrollWidth` is the claim.
+
+    **And then the boxes, because the document was not the whole of it.** The
+    record page is read inside `.panes`, a box that scrolls so the page does not,
+    and on 2026-10-08 a 48-character test name in backticks made that box scroll
+    62px sideways while the document stayed exactly 390px wide and this test
+    passed. A box built to scroll down that also scrolls across is the same
+    defect one level in, so `wobbles` names every one that does and was not built
+    to. `record with code` is the corpus's worst case for it, found by reading
+    the bodies — see `_longest_inline_code`.
     """
     for page, got in on_a_phone.items():
         assert got["scrollWidth"] <= got["viewport"], (
             f"{page} is {got['scrollWidth']}px wide on a {got['viewport']}px phone, so the "
             f"whole page scrolls sideways. Past the edge: {got['over'] or 'nothing named'}"
         )
+        assert not got["wobbles"], (
+            f"{page} keeps a box that scrolls sideways on a phone when it was built to "
+            f"scroll down: {got['wobbles']}"
+        )
+
+
+# What a thumb cannot hit, per WCAG 2.5.8 (Target Size, Minimum): a target is
+# at least 24x24 CSS px, OR a 24px circle centred on it touches no other target.
+# A link inside a sentence is the criterion's own exception — its height is the
+# line's, and making it taller would be making the prose's leading taller.
+#
+# "In a sentence" is asked of the text around it rather than of its tag: a title
+# alone in a table cell is a link with nothing else in its block, and it is
+# exactly the target this exists for, while the same `<a>` in a paragraph of
+# prose is not.
+_TAPPABLE = """
+const name = el => el.tagName.toLowerCase()
+  + (el.id ? '#' + el.id : '')
+  + (typeof el.className === 'string' && el.className.trim()
+     ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '');
+const said = el => (el.getAttribute('aria-label') || el.textContent || el.value || '')
+  .trim().replace(/\\s+/g, ' ').slice(0, 30);
+const shown = el => {
+  if (el.closest('[inert], [aria-hidden="true"]')) return false;
+  const box = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  return box.width > 0 && box.height > 0 && style.visibility !== 'hidden';
+};
+const block = el => {
+  for (let up = el.parentElement; up; up = up.parentElement) {
+    if (!/^inline/.test(getComputedStyle(up).display)) return up;
+  }
+  return document.body;
+};
+const inSentence = el => {
+  if (el.tagName !== 'A') return false;
+  const around = block(el).textContent.replace(el.textContent, '');
+  return /[A-Za-z]{2,}/.test(around);
+};
+const targets = [...document.querySelectorAll(
+  'a[href], button, input:not([type=hidden]), select, textarea, summary, '
+  + '[role=button], [role=radio], [tabindex="0"]')].filter(shown);
+const boxes = targets.map(el => el.getBoundingClientRect());
+// Which box clips each target. Nothing on these pages scrolls the document —
+// every list scrolls in a box of its own — so a row scrolled under the footer
+// is laid out right beside the footer's links and is not beside them on the
+// screen: its own box clips it. Two targets crowd each other only inside one
+// clipping box, which keeps every row asked about wherever it is scrolled to.
+const clipOf = el => {
+  for (let up = el.parentElement; up; up = up.parentElement) {
+    const style = getComputedStyle(up);
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') return up;
+  }
+  return null;
+};
+const clips = targets.map(clipOf);
+const small = [];
+targets.forEach((el, i) => {
+  const box = boxes[i];
+  if ((box.width >= 24 && box.height >= 24) || inSentence(el)) return;
+  const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+  // The 24px circle, asked as the nearest point of every other target's box.
+  const crowded = boxes.some((other, j) => {
+    if (j === i || clips[j] !== clips[i]) return false;
+    if (targets[j].contains(el) || el.contains(targets[j])) return false;
+    const dx = Math.max(other.left - cx, 0, cx - other.right);
+    const dy = Math.max(other.top - cy, 0, cy - other.bottom);
+    return Math.hypot(dx, dy) < 12;
+  });
+  if (crowded) {
+    small.push(name(el) + ' "' + said(el) + '" ' + Math.round(box.width) + 'x'
+      + Math.round(box.height));
+  }
+});
+return {viewport: document.documentElement.clientWidth, small: [...new Set(small)]};
+"""
+
+# The pages whose targets belong to a branch that is still in review, and only
+# until it lands: each name here is a page this test does not ask yet. The set
+# is meant to be emptied, and a page added to it needs the reason beside it. It
+# was emptied on 2026-10-08, when the phone cards and the folded record and graph
+# landed; it stays as the place a page in review waits, with its reason.
+_TAPPABLE_LATER: dict[str, str] = {}
+
+
+def test_a_card_still_says_a_save_has_not_reached_github(views: dict[str, str], tmp_path: Path):
+    """The landing mark is drawn into the id cell, and a card folds the id cell
+    away. So a save made from the table on a phone said nothing about whether
+    it had reached GitHub, and a commit parked on a branch said nothing at all,
+    on the one view where a phone reader made it.
+
+    The mark is put into the cell the way `landingMark` writes it, and the
+    question is whether a phone paints it — the save that puts it there is
+    `test_table.py`'s, and is the same at every width.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    script = """
+    const row = document.querySelector('#rows tbody tr[data-id]');
+    const cell = row.querySelector('td[data-col="id"]');
+    const quiet = cell.querySelector('.eid').getClientRects().length;
+    cell.insertAdjacentHTML('beforeend',
+      ' <span class="stranded" role="img" aria-label="parked"></span>');
+    const mark = cell.querySelector('.stranded').getBoundingClientRect();
+    return {quiet, mark: [Math.round(mark.width), Math.round(mark.height)],
+            id: cell.querySelector('.eid').getClientRects().length,
+            cards: getComputedStyle(row).display};
+    """
+    got = measured_on_a_phone(chrome(), {"table": views["table"]}, tmp_path / "t", script)
+    got = got["table"]
+
+    assert got["cards"] == "flex", f"the table is not drawn as cards here: {got}"
+    assert got["quiet"] == 0, "a card with no mark draws its id cell"
+    assert got["mark"][0] > 0 and got["mark"][1] > 0, (
+        f"a card does not paint the landing mark it holds: {got['mark']}"
+    )
+    assert got["id"] == 0, "a card holding a landing mark draws the id beside it"
+
+
+def test_starting_a_cycle_on_a_phone_is_one_box_to_a_line(seed_index: Index, tmp_path: Path):
+    """The "Start a cycle" row put three labelled boxes and a button on one
+    wrapping line, so on a phone each box started wherever its label happened
+    to end: three boxes at three different x's, each 24px tall. One to a line,
+    the label above, all the boxes on one left edge, and a thumb's height."""
+    from browser import chrome, measured_on_a_phone
+
+    from openproj.render import render_cycles
+
+    page = render_cycles(seed_index, ROUTES, base_commit="deadbee")
+    script = """
+    const boxes = ['number', 'starts', 'reviews', 'start'].map(id => document.getElementById(id));
+    return boxes.map(el => {
+      const box = el.getBoundingClientRect();
+      return [Math.round(box.left), Math.round(box.top), Math.round(box.height)];
+    });
+    """
+    got = measured_on_a_phone(chrome(), {"cycles": page}, tmp_path / "c", script)["cycles"]
+
+    lefts, tops, heights = zip(*got, strict=True)
+    assert len(set(lefts)) == 1, f"the form's boxes start at {lefts} on a phone"
+    assert list(tops) == sorted(tops) and len(set(tops)) == 4, f"not one to a line: {tops}"
+    assert min(heights) >= 40, f"the boxes are {heights}px tall on a phone"
+
+
+def test_a_thumb_can_hit_everything_on_a_phone(phone_pages: dict[str, str], tmp_path: Path):
+    """Nothing a reader is meant to tap on a phone is too small to tap.
+
+    Measured at 390px on 2026-10-08: the nav's links were 20px tall, the
+    footer's Help 27x13 beside a 22x16 fold, the timeline's row labels 14px tall
+    on a 22px pitch, the cycle page's bet boxes 13x13 and its "take this person
+    out" button 22x13 — the last two found by a review that could only land a
+    tap on them by aiming at the exact centre.
+
+    WCAG 2.5.8's own test and not a flat 44px: a small target with room around
+    it is a target a thumb can hit, and a 44px floor would have meant redrawing
+    every chip on the plan for a rule nobody sets.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    asked = {page: html for page, html in phone_pages.items() if page not in _TAPPABLE_LATER}
+    assert set(_TAPPABLE_LATER) <= set(phone_pages), "a page waits here that no longer exists"
+    found = measured_on_a_phone(chrome(), asked, tmp_path / "taps", _TAPPABLE)
+    small = {page: got["small"] for page, got in found.items() if got["small"]}
+    assert not small, f"targets a thumb cannot hit on a phone: {small}"
 
 
 def test_nothing_a_phone_can_focus_is_small_enough_to_zoom_the_page(on_a_phone: dict[str, dict]):
@@ -6588,8 +7833,13 @@ def test_the_graphs_legend_is_on_the_page_a_phone_can_see(on_a_phone: dict[str, 
     The keys are what is asked about rather than the box: a legend is a list of
     names, and one that is drawn where a reader cannot see it says nothing at all
     while looking exactly like a legend from the corner of the eye.
+
+    The key is folded on a phone since 2026-10-08, so the script opens it before
+    asking — and the count is asserted too, because a shut fold answers this
+    with no keys at all and no keys are never off the page.
     """
     got = on_a_phone["graph"]
+    assert got["keysShown"], "the graph's key, opened on a phone, draws no keys"
     assert not got["keysOffPage"], (
         f"{len(got['keysOffPage'])} of the graph's legend keys are off the page on a "
         f"{got['viewport']}px phone, at: {got['keysOffPage']}"
@@ -6616,6 +7866,7 @@ return {
   folds: shut,
   handles: handles.length,
   said: said ? said.textContent.trim() : null,
+  scrolls: document.documentElement.scrollHeight - innerHeight,
 };
 """
 
@@ -6693,6 +7944,457 @@ def test_what_a_phone_folds_away_is_open_on_anything_wider(views: dict[str, str]
         )
 
 
+def test_a_phone_on_its_side_is_still_a_phone(views: dict[str, str], tmp_path: Path):
+    """844x390 is a phone turned over, and it is wider than 40rem.
+
+    While the folds asked the width alone, that phone got the laptop's layout in
+    a window 390px tall. Measured on the demo plan at v0.70.0: all twelve filters,
+    the timeline's window controls and its key were open, the table's rows, the
+    graph's canvas and the timeline's chart all sat on their 144px floor, and the
+    footer was pushed below the bottom of the screen — on the one layout whose
+    premise is that the nav and the footer never move.
+
+    All three are asked to FIT as well, because folding was not the whole of it:
+    the timeline still ran 46px past the window with every fold shut, until
+    Window and Key shared a row and the drag hint stepped aside, and the graph ran
+    17px past it until its commit bar gave up the gaps above it.
+
+    The other half is a laptop window dragged just as short. It has a mouse in it
+    and keeps the laptop's layout: `pointer: coarse` is the whole difference
+    between the two, and without that clause in `env.PHONE` the second loop here
+    is the bug pointing the other way.
+    """
+    from browser import chrome, measured_in, measured_on_a_phone
+
+    browser = chrome()
+    turned = measured_on_a_phone(
+        browser, views, tmp_path / "turned", _THE_FOLD, width=844, height=390
+    )
+    for view, got in turned.items():
+        assert got["viewport"] == 844, f"{view} laid out at {got['viewport']}px, not 844"
+        assert got["folds"] and all(one.endswith(":shut") for one in got["folds"]), (
+            f"{view} leaves {got['folds']} open on a phone turned to landscape"
+        )
+        assert got["handles"] == len(got["folds"]), (
+            f"{view} draws {got['handles']} handles for {len(got['folds'])} folds on its side"
+        )
+        assert got["scrolls"] <= 0, (
+            f"{view} runs {got['scrolls']}px past a 390px-tall phone, so its footer is "
+            f"off the screen"
+        )
+
+    for view, page in views.items():
+        short = measured_in(browser, page, tmp_path / f"{view}-short.html", 1280, _THE_FOLD, 390)
+        assert all(one.endswith(":open") for one in short["folds"]), (
+            f"{view} folds {short['folds']} away in a laptop window 390px tall, which has "
+            f"a mouse and the room to show them"
+        )
+        assert short["handles"] == 0, f"{view} draws fold handles in a short laptop window"
+
+
+# A record page on a phone: is the fold shut, what does its handle say, and how
+# far down the window does the document start. `innerText` for the handle, so the
+# words are the ones drawn — a `hidden` warning is in `textContent` and not on
+# the screen.
+_THE_RECORD = """
+const fold = document.querySelector('.factsfold');
+const handle = fold && fold.querySelector(':scope > summary');
+const doc = document.querySelector('.doc.read');
+return {
+  viewport: document.documentElement.clientWidth,
+  window: innerHeight,
+  open: fold ? fold.open : null,
+  handle: handle && handle.getClientRects().length
+    ? handle.innerText.replace(/\\s+/g, ' ').trim() : null,
+  docTop: doc ? Math.round(doc.getBoundingClientRect().top) : null,
+};
+"""
+
+
+@pytest.fixture
+def record_pages(seed_index: Index) -> dict[str, str]:
+    """A pitch as its writer and as a reader see it, and a task whose span runs
+    past its cycle — the one fact row that is a warning."""
+    return {
+        "pitch": render_detail(
+            seed_index, ROUTES, only="pitch-6f2d18", base_commit="deadbee", may_write=True
+        ),
+        "overrun": render_detail(
+            seed_index, ROUTES, only="task-53a9f0", base_commit="deadbee", may_write=True
+        ),
+        "reader": render_detail(seed_index, ROUTES, only="pitch-6f2d18"),
+    }
+
+
+def test_a_phone_reads_the_record_before_its_fields(
+    record_pages: dict[str, str], seed_index: Index, tmp_path: Path
+):
+    """The document is what a pitch page is opened to read, and on a phone it
+    started two screens down: 1172px into the reading box at 390x844, under all
+    seventeen fields. The hill above them said the status by where its ball sat
+    and in no word at all, on a screen with no pointer to hover it with.
+
+    So the fields fold, and the handle carries what a reader scans a record for
+    — the status, the priority and the owner, in words — and what is wrong among
+    the fields it hides. The overrun is that case: a closed box over the one row
+    saying a bet does not fit its cycle would be a box that looks fine (F1).
+
+    Off a phone the fold is open and draws no handle, so a laptop's column is the
+    one it always was.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    from openproj.render.tokens import _human
+
+    browser = chrome()
+    phone = measured_on_a_phone(browser, record_pages, tmp_path / "phone", _THE_RECORD)
+    for page, got in phone.items():
+        assert got["viewport"] == 390, f"{page} laid out at {got['viewport']}px"
+        assert got["open"] is False, f"{page} leaves its fields open on a phone"
+        assert got["docTop"] < got["window"], (
+            f"{page} starts its document {got['docTop']}px down a {got['window']}px phone"
+        )
+    pitch = seed_index.records["pitch-6f2d18"]
+    said = f"{_human(pitch.state(seed_index.records))} · {_human(pitch.priority)} · {pitch.owner}"
+    for page in ("pitch", "reader"):
+        assert phone[page]["handle"].startswith(said), (
+            f"{page}'s folded fields say {phone[page]['handle']!r}, not {said!r}"
+        )
+    assert "overruns cycle" in phone["overrun"]["handle"], (
+        f"the fields fold over an overrun and say only {phone['overrun']['handle']!r}"
+    )
+
+    wide = measured_on_a_phone(browser, record_pages, tmp_path / "wide", _THE_RECORD, width=900)
+    for page, got in wide.items():
+        assert got["open"] is True, f"{page} folds its fields away at 900px"
+        assert got["handle"] is None, f"{page} draws a fold handle at 900px"
+
+
+def test_folded_fields_say_what_the_form_will_save(
+    record_pages: dict[str, str], tmp_path: Path
+):
+    """Writing on a phone, the fields stay folded and the editor sits under them
+    — so the handle is the only place a change to them shows. It says the record
+    as it will be saved, not as it was loaded, and it says when a field this
+    status demands has been left empty: the server would refuse that save, and a
+    refusal is the worst moment to find out what the folded box was hiding.
+
+    Write on a phone opens over the whole window (jcanton, 2026-10-08), which
+    has no fields in it at all; "Smaller" is the way back to the page they are
+    folded in, and it is that page this asks about.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    script = """
+document.getElementById('view-edit').click();
+await new Promise(done => setTimeout(done, 300));
+if (document.querySelector('article.record').classList.contains('whole-page')) {
+  document.getElementById('editor-size').click();
+  await new Promise(done => setTimeout(done, 100));
+}
+const priority = document.querySelector('[data-type][name=priority]');
+priority.value = 'low';
+priority.dispatchEvent(new Event('change', {bubbles: true}));
+const developers = document.querySelector('[data-type][name=developers]');
+developers.value = '';
+developers.dispatchEvent(new Event('input', {bubbles: true}));
+await new Promise(done => setTimeout(done, 100));
+""" + _THE_RECORD
+    got = measured_on_a_phone(
+        chrome(), {"pitch": record_pages["pitch"]}, tmp_path / "edit", script
+    )["pitch"]
+    assert got["open"] is False, "starting to write opened the fields on a phone"
+    assert " · Low · " in got["handle"], f"the handle still says {got['handle']!r}"
+    assert "1 required field empty" in got["handle"], (
+        f"an emptied required field is not on the folded handle: {got['handle']!r}"
+    )
+
+
+def test_a_thumb_can_hit_the_record_pages_controls(
+    record_pages: dict[str, str], tmp_path: Path
+):
+    """The view segments and Slide were 33x25 on a phone, with Delete six pixels
+    to the right of them: a row where a finger meant for Write could land on
+    Delete. Each one is a thumb's height now and Delete stands a clear gap away —
+    the confirmation it opens is the second guard, and this is the first. The way
+    back to the list was a 15px line of text, and is at least the 24px WCAG 2.5.8
+    asks of a target that stands alone.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    script = """
+const box = el => { const r = el.getBoundingClientRect();
+  return {w: Math.round(r.width), h: Math.round(r.height),
+          left: Math.round(r.left), right: Math.round(r.right)}; };
+const row = [...document.querySelectorAll(
+  '.editbar .slide-view, .editbar .views .seg, .editbar button.delete')]
+  .filter(el => el.getClientRects().length);
+return {
+  row: row.map(el => ({name: el.getAttribute('aria-label') || el.textContent.trim(),
+                       ...box(el)})),
+  back: box(document.querySelector('.back a.origin')),
+};
+"""
+    got = measured_on_a_phone(
+        chrome(), {"pitch": record_pages["pitch"]}, tmp_path / "thumb", script
+    )["pitch"]
+    # Slide is asked if it is drawn, and not demanded. The editing branch
+    # answered it for a phone: no slide editor and no side by side (jcanton,
+    # 2026-10-08), so the row a thumb meets is the three below.
+    names = [one["name"] for one in got["row"]]
+    assert names == ["Write", "Preview", "Delete"], names
+    for one in got["row"]:
+        assert one["h"] >= 40 and one["w"] >= 40, (
+            f"{one['name']} is {one['w']}x{one['h']} on a phone, under a thumb's 40px"
+        )
+    *views, delete = got["row"]
+    assert delete["left"] - views[-1]["right"] >= 16, (
+        f"Delete starts {delete['left'] - views[-1]['right']}px after the view it sits beside"
+    )
+    assert got["back"]["h"] >= 24, f"the way back is a {got['back']['h']}px target"
+
+
+# The graph once ELK has answered and the shell has measured the room: the
+# viewport is read until two looks 150ms apart agree, because both of those
+# re-frame the drawing and neither raises a flag when it is done.
+_THE_GRAPH = """
+let last = null;
+for (let i = 0; i < 40; i++) {
+  const now = JSON.stringify([cy.zoom(), cy.pan()]);
+  if (now === last) break;
+  last = now;
+  await new Promise(done => setTimeout(done, 150));
+}
+const drawn = cy.elements(':visible').renderedBoundingBox();
+const key = document.querySelector('.keys .keyfold');
+const handle = key && key.querySelector(':scope > summary');
+const shown = el => el.getClientRects().length > 0;
+let pressable = false;
+if (handle && shown(handle)) {
+  const r = handle.getBoundingClientRect();
+  pressable = handle.contains(document.elementFromPoint(r.left + r.width / 2,
+                                                       r.top + r.height / 2));
+}
+return {
+  viewport: document.documentElement.clientWidth,
+  label: cy.zoom() * 10,
+  whole: drawn.x1 >= -1 && drawn.y1 >= -1
+    && drawn.x2 <= cy.width() + 1 && drawn.y2 <= cy.height() + 1,
+  left: Math.round(drawn.x1),
+  shut: key ? !key.open : null,
+  pressable,
+  hint: [...document.querySelectorAll('#panhint > span')].filter(shown).map(el => el.textContent),
+  buttons: [...document.querySelectorAll('#commitbar button')].filter(shown)
+    .map(el => Math.round(el.getBoundingClientRect().height)),
+};
+"""
+
+
+def test_a_phone_reads_the_graph_at_a_size_it_can_be_read_at(
+    views: dict[str, str], tmp_path: Path
+):
+    """Fitted whole, the plan came out 300x150 on a 350x500 canvas with every
+    label about 3px tall — the shape of the plan and nothing anybody could read
+    or tap. jcanton chose fit to height, met at the left edge, panned sideways;
+    fit to height alone was then measured at 6.8px labels on the demo plan, so
+    the zoom has a floor where a node's 10px label reads at 11px.
+
+    And the key folds: open, its two rows took the top of the canvas as five
+    wrapped lines of veil over the drawing. Folded, the handle has to be the
+    thing under a finger that presses it — it lives in a box that gives the
+    pointer away so it cannot swallow a tap on a node. Where the keys land once
+    it is opened is `test_the_graphs_legend_is_on_the_page_a_phone_can_see`'s.
+
+    A laptop's start is the whole plan, exactly as before. A finger is told to
+    double-tap and pinch, and a mouse to double-click and scroll.
+    """
+    from browser import chrome, measured_in, measured_on_a_phone
+
+    browser = chrome()
+    page = {"graph": views["graph"]}
+    phone = measured_on_a_phone(browser, page, tmp_path / "phone", _THE_GRAPH)["graph"]
+    assert phone["shut"] is True, "the graph's key is open on a phone"
+    assert phone["pressable"], "the folded key's handle is not what a tap on it reaches"
+    # Unconditional: a plan that fits whole at the floor is fitted, and a fit of it
+    # is at least that zoom — so a phone below 11px is always the defect.
+    assert phone["label"] >= 11 - 0.01, (
+        f"a phone starts the graph with {phone['label']:.1f}px labels"
+    )
+    assert phone["whole"] or 20 <= phone["left"] <= 34, (
+        f"a phone starts the graph with its left edge at {phone['left']}px, not at the canvas's"
+    )
+    assert all(text.startswith("Tap a node") for text in phone["hint"]) and phone["hint"], (
+        f"a finger is told {phone['hint']}"
+    )
+    assert phone["buttons"] and min(phone["buttons"]) >= 40, (
+        f"the commit bar's buttons are {phone['buttons']}px tall on a phone"
+    )
+
+    laptop = measured_in(
+        browser, views["graph"], tmp_path / "laptop.html", 1280, _THE_GRAPH, 900, patience=6000
+    )
+    assert laptop["whole"], "a laptop no longer starts with the whole plan in view"
+    assert laptop["shut"] is False, "a laptop's key is folded away"
+    assert laptop["hint"] and all(t.startswith("Click a node") for t in laptop["hint"]), (
+        f"a mouse is told {laptop['hint']}"
+    )
+
+
+@pytest.fixture
+def card_pages(seed_index: Index) -> dict[str, str]:
+    """The two lists a plan is read down, served and writable — the table's create
+    control and the records list's time column are both only drawn by a server."""
+    from openproj.render import render_records, render_table
+
+    stamped = {record_id: 1_790_000_000 for record_id in seed_index.records}
+    return {
+        "records": render_records(
+            seed_index, ROUTES, base_commit="deadbee", edited=stamped, now=1_790_000_600,
+            may_write=True,
+        ),
+        "table": render_table(seed_index, ROUTES, base_commit="deadbee", may_write=True),
+    }
+
+
+# What a card list is, asked of the boxes: which cells a card draws, whether the
+# title reads to its end, and whether the line under it starts where it does.
+_THE_CARDS = """
+const box = document.querySelector('.carded');
+const rows = [...box.querySelectorAll('tbody tr[data-id]')]
+  .filter(tr => tr.getClientRects().length);
+const title = tr => tr.querySelector('td[data-col="title"]');
+const link = tr => title(tr).querySelector('a');
+const others = tr => [...tr.children].filter(td => td !== title(tr) && td.getClientRects().length);
+const hint = document.querySelector('#controls .aside');
+const thumb = box.querySelector('.thumb-add');
+const add = document.getElementById('add-row');
+const drawn = el => !!el && el.getClientRects().length > 0;
+return {
+  viewport: document.documentElement.clientWidth,
+  sideways: box.scrollWidth - box.clientWidth,
+  display: rows.length ? getComputedStyle(rows[0]).display : null,
+  cells: [...new Set(rows.map(tr => [...tr.children]
+    .filter(td => td.getClientRects().length).map(td => td.dataset.col).join(' ')))],
+  clipped: rows.filter(tr => link(tr).scrollWidth > link(tr).clientWidth + 1)
+    .map(tr => tr.dataset.id),
+  wrapped: rows.filter(tr => link(tr).getBoundingClientRect().height
+    > 1.6 * parseFloat(getComputedStyle(link(tr)).lineHeight)).length,
+  misaligned: rows.filter(tr => others(tr).length
+    && Math.abs(Math.min(...others(tr).map(td => td.getBoundingClientRect().left))
+                - link(tr).getBoundingClientRect().left) > 1)
+    .map(tr => tr.dataset.id),
+  beside: rows.filter(tr => others(tr).some(td =>
+    td.getBoundingClientRect().top < title(tr).getBoundingClientRect().bottom - 1))
+    .map(tr => tr.dataset.id),
+  trouble: [...box.querySelectorAll('tr[data-trouble]')].map(tr =>
+    [tr.dataset.trouble, getComputedStyle(tr, '::after').content]),
+  hint: hint ? hint.innerText : '',
+  thumb: drawn(thumb)
+    ? [Math.round(thumb.getBoundingClientRect().height), thumb.getAttribute('href')] : null,
+  add: drawn(add),
+  small: [...box.querySelectorAll('a[href], button')].filter(drawn).filter(el => {
+    const r = el.getBoundingClientRect();
+    return r.width < 24 || r.height < 24;
+  }).map(el => el.textContent.trim().slice(0, 30)),
+};
+"""
+
+
+def test_a_phone_reads_the_plan_as_cards_and_not_as_columns(
+    card_pages: dict[str, str], tmp_path: Path
+):
+    """On a phone a row is a card: the title across the whole of it, wrapped to its
+    end, and one line under it — jcanton's choice of status, priority and owner on
+    the table, and kind, who and when on the records list.
+
+    Measured at 390px before this, on the demo plan: the records list was a 1299px
+    table in a 350px box, so the screen held a kind chip and the first twenty-odd
+    characters of each title, cut mid-word with no ellipsis; the table gave its
+    title about fifteen characters and cut its status to `IN PROGR`.
+
+    At 360 because that is where a title on this plan has to wrap — `wrapped` is
+    the proof the no-clipping claim is not vacuous — and on its side at 844x390,
+    which is a phone by `env.PHONE` and was a laptop by the width. `misaligned` is
+    the tree's indent: it moves from the title cell to the card, and the first
+    version left it on both, so a nested title started 28px to the right of the
+    line under it. `sideways` is the table's column fit, which writes a width onto
+    the table and has to stand down while the rows are cards.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    browser = chrome()
+    upright = measured_on_a_phone(browser, card_pages, tmp_path / "upright", _THE_CARDS, width=360)
+    turned = measured_on_a_phone(
+        browser, card_pages, tmp_path / "turned", _THE_CARDS, width=844, height=390
+    )
+    keeps = {"records": "kind title who edited", "table": "title priority status owner"}
+    for got in (upright, turned):
+        for page, one in got.items():
+            at = f"{page} at {one['viewport']}px"
+            assert one["display"] == "flex", f"{at} still draws its rows as {one['display']}"
+            assert one["cells"] == [keeps[page]], f"{at} draws {one['cells']} on a card"
+            assert one["sideways"] <= 0, f"{at} scrolls {one['sideways']}px sideways"
+            assert not one["clipped"], f"{at} cuts the titles of {one['clipped']} short"
+            assert not one["misaligned"], (
+                f"{at} starts the line under the title somewhere else on {one['misaligned']}"
+            )
+            assert not one["beside"], f"{at} puts a cell beside the title on {one['beside']}"
+            assert not one["small"], f"{at} has targets under 24px on a card: {one['small']}"
+    assert upright["records"]["wrapped"] and upright["table"]["wrapped"], (
+        "no title wrapped at 360px, so nothing here showed that a long one is read to its end"
+    )
+
+    # A column layout somebody dragged on a laptop is remembered, and the fit
+    # replays it onto whatever window it finds: onto headers a card list does not
+    # draw, so every width is 0 and the table is written `width: 0px`. The fit
+    # stands down while the rows are cards; this asks it to replay one anyway.
+    remembered = measured_on_a_phone(
+        browser,
+        {"table": card_pages["table"]},
+        tmp_path / "remembered",
+        "automatic = false; WIDTHS.title = 900; WIDTHS.status = 120; refit();" + _THE_CARDS,
+        width=360,
+    )["table"]
+    assert remembered["sideways"] <= 0 and not remembered["clipped"], (
+        f"a remembered column layout reaches a card list: {remembered['sideways']}px "
+        f"sideways, {len(remembered['clipped'])} titles cut short"
+    )
+
+    # The table's three phone-only answers. The warning is the sentence that was
+    # on a cell the card folds away: drawn under the card, from the row's own copy.
+    table = upright["table"]
+    assert table["trouble"], "the demo plan has a warning, and no row carries its sentence"
+    for said, drawn in table["trouble"]:
+        assert said and said in drawn, f"a card carries {said!r} and draws {drawn!r}"
+    assert "Double-click" not in table["hint"] and "grip" not in table["hint"], (
+        f"a phone is told {table['hint']!r}, which names gestures a thumb does not have"
+    )
+    assert "Tap a title" in table["hint"]
+    assert table["thumb"] == [table["thumb"][0], "/new"] and table["thumb"][0] >= 40, (
+        f"the phone's way to create a record is {table['thumb']}, not a 40px door to /new"
+    )
+    assert not table["add"], "the draft row's button is on a phone, which has no cells to type in"
+
+
+def test_a_laptop_still_reads_the_plan_as_columns(card_pages: dict[str, str], tmp_path: Path):
+    """The other half of the card list, and the one a phone test cannot see: none
+    of it reaches a laptop. The rows are table rows, the hint names the gestures a
+    mouse has, the draft row's own button is the create control, and no card's
+    warning sentence is drawn — it is on the cell it is about there."""
+    from browser import chrome, measured_in
+
+    browser = chrome()
+    for page, html in card_pages.items():
+        got = measured_in(browser, html, tmp_path / f"{page}.html", 1280, _THE_CARDS)
+        assert got["display"] == "table-row", f"{page} draws a laptop's rows as {got['display']}"
+        assert all(drawn == "none" for _, drawn in got["trouble"]), (
+            f"{page} draws a card's warning line on a laptop"
+        )
+        if page == "table":
+            assert "Double-click" in got["hint"] and "Tap a title" not in got["hint"]
+            assert got["add"] and got["thumb"] is None, "the laptop's create control is the row"
+
+
 def test_a_folded_filter_bar_says_how_many_fields_are_set(views: dict[str, str], tmp_path: Path):
     """A closed bar over a filtered view is a page lying about what it shows.
 
@@ -6761,7 +8463,7 @@ def test_what_the_table_freezes_leaves_something_to_scroll_into(
     the two that never move.
 
     Two things fixed it and both are arithmetic rather than a breakpoint. The
-    title's floor is the smaller of 250 and 45% of the room, so the column that
+    title's floor is the smaller of 240 and 45% of the room, so the column that
     holds a sentence stops demanding three quarters of a phone. And the id sheds
     when the frozen pair would leave under a third of the box to scroll into —
     which is a different question from the one the other four shed on, and is why
@@ -6770,6 +8472,12 @@ def test_what_the_table_freezes_leaves_something_to_scroll_into(
     Asked at 900 as well, and that is not decoration: the rule has to be one a
     laptop never meets. At 900 the pair is 372 of 860 and the id stays, which is
     exactly what the same table did before any of this.
+
+    **A phone has no frozen pair any more.** Since 2026-10-08 it draws this table
+    as cards (`_CARD_STYLE`): no header row, nothing sticky, the fit standing down,
+    and the title on a line of its own across the whole card. So what the phone
+    half asks now is that — nothing drawn as a column and nothing wider than the
+    box — and the card list's own test asks the rest.
     """
     from browser import chrome, measured_on_a_phone
 
@@ -6778,18 +8486,16 @@ def test_what_the_table_freezes_leaves_something_to_scroll_into(
     phone = measured_on_a_phone(browser, one, tmp_path / "frozen-390", _FROZEN)["table"]
     laptop = measured_on_a_phone(browser, one, tmp_path / "frozen-900", _FROZEN, width=900)["table"]
 
-    for got in (phone, laptop):
-        assert got["frozen"] <= got["box"] * 2 / 3, (
-            f"at {got['viewport']}px the table freezes {got['frozen']}px of a {got['box']}px "
-            f"box, so under a third of it is left to scroll into"
-        )
-        assert "title" in got["drawn"], (
-            f"at {got['viewport']}px the table sheds the column that names the row"
-        )
-
-    assert "id" not in phone["drawn"], (
-        "a phone still draws the id column, which with the title is wider than the box "
-        "the two are frozen inside"
+    assert not phone["drawn"] and phone["table"] <= phone["box"], (
+        f"a phone draws {phone['drawn']} as columns in a {phone['table']}px table, "
+        f"inside a {phone['box']}px box that holds cards"
+    )
+    assert laptop["frozen"] <= laptop["box"] * 2 / 3, (
+        f"at {laptop['viewport']}px the table freezes {laptop['frozen']}px of a "
+        f"{laptop['box']}px box, so under a third of it is left to scroll into"
+    )
+    assert "title" in laptop["drawn"], (
+        f"at {laptop['viewport']}px the table sheds the column that names the row"
     )
     assert "id" in laptop["drawn"], (
         f"a {laptop['viewport']}px window sheds the id column, which is the drag grip and "
@@ -6803,7 +8509,10 @@ _THE_CHROME = """
 const corner = document.querySelector('.corner');
 const nav = document.querySelector('nav');
 const line = cell => parseFloat(getComputedStyle(cell).lineHeight) || 16;
-const tables = [...document.querySelectorAll('table.unfitted')].map(table => {
+// Not the card list's: on a phone the records list is cards, whose titles wrap by
+// design — `test_a_phone_reads_the_plan_as_cards_and_not_as_columns` asks those.
+const tables = [...document.querySelectorAll('table.unfitted')]
+  .filter(table => !table.closest('.carded')).map(table => {
   const box = table.closest('.table-scroll, .sideways');
   const cells = [...table.querySelectorAll('tbody td')]
     .filter(cell => cell.getClientRects().length);
@@ -6885,6 +8594,9 @@ def test_a_table_with_no_fit_of_its_own_scrolls_rather_than_wraps(
     `#rows` is deliberately not in this set: its widths are set inline by the fit,
     and `white-space: nowrap` on its cells would undo the clamped columns it
     draws instead of wrapping.
+
+    Three now and not four: the records list left the set on 2026-10-08, when a
+    phone started drawing it as cards whose titles wrap on purpose.
     """
     from browser import chrome, measured_on_a_phone
 
@@ -6902,7 +8614,7 @@ def test_a_table_with_no_fit_of_its_own_scrolls_rather_than_wraps(
                 f"{where} is {table['over']}px wider than its box, so it fitted by "
                 f"wrapping something rather than by having room"
             )
-    assert seen >= 4, f"only {seen} unfitted tables were measured, and there are four"
+    assert seen >= 3, f"only {seen} unfitted tables were measured, and there are three"
 
 
 # **Which pointer the reader has, said at launch.** The wash is inside
@@ -7073,6 +8785,264 @@ def test_a_touch_screen_gets_no_wash_at_all(rendered: Path, tmp_path: Path):
     )
 
 
+def test_hovering_a_cycle_lights_the_chart_under_it(rendered: Path):
+    """Which bar belongs to which cycle was a question answered by sighting down
+    from a dashed rule at the top of a chart twenty rows tall.
+
+    `--row-hover` and not a fill plus an alpha written here: that token is the
+    app's one wash and two numbers standing for one strength are two numbers that
+    drift apart, so `opacity` is a switch between drawn and not drawn. And the
+    rule that draws it is inside `@media (hover: hover)` for the reason the shell
+    gives for the table's row wash — a touch device keeps the last-tapped
+    `:hover`, so a phone would be left with one cycle lit and no pointer to move
+    off it.
+    """
+    body = read(rendered, "timeline.html")
+
+    assert '<g class="cycle-band-group">' in body
+    assert '<rect class="cycle-hover"' in body
+    assert ".cycle-hover { fill: var(--row-hover); opacity: 0; pointer-events: auto; }" in body
+    # Whole, so the query and the rule cannot drift apart: a rule left outside it
+    # and a rule inside a query that never matches look identical to every other
+    # assertion, which is why `test_a_touch_screen_gets_no_cycle_wash_either`
+    # resolves the same claim in a browser that says it has no pointer.
+    assert (
+        "@media (hover: hover) {\n  .cycle-band-group:hover .cycle-hover { opacity: 1; }\n}"
+    ) in body
+    # The inventory the floor's comment claims. An opacity that snaps needs no
+    # reduced-motion exemption, and `test_the_app_moves_in_two_places` is what
+    # would notice a third animated rule — this keeps the two claims beside the
+    # rule that could break one.
+    assert "transition" not in re.search(r"\.cycle-hover \{[^}]*\}", body).group(0)
+
+
+def test_the_hover_wash_gates_nothing(rendered: Path):
+    """It is pointer-only, and allowed to be: what it says is already said another
+    way. The dashed rule is where a cycle closes and the label is which cycle it
+    is, and neither of them moved to make room for the wash."""
+    body = read(rendered, "timeline.html")
+
+    assert '<line class="cycle-rule"' in body
+    assert '<text class="cycle-label"' in body
+    assert ".cycle-rule { stroke: var(--line-strong); stroke-dasharray: 3 3; }" in body
+
+
+def _hovered_cycle(
+    browser: str,
+    page: str,
+    where: Path,
+    flags: tuple[str, ...] = _A_MOUSE,
+    at: str = "band",
+) -> dict:
+    """Lay the timeline out, put a real pointer somewhere in a cycle's column, and
+    report what the wash under it resolved to before and after.
+
+    A real pointer and not `dispatchEvent`, for the reason `_hovered` gives: a
+    synthetic event is `isTrusted: false`, sets no `:hover`, and would report a
+    resting wash about a rule that works. And the box is measured as well as the
+    opacity, because a resolved value is a promise about pixels that a stylesheet
+    cannot keep on its own — this repository's unpainted `box-shadow` resolved to
+    exactly the value every test asserted on exactly the element they asserted it
+    on, and Chrome drew nothing.
+
+    **`at` is the whole of why this takes a parameter, and it is a defect's
+    name.** `band` is the 18px strip at the top of the chart; `plot` is the same
+    column well down among the rows, on none of them; `bar` is a bar in that
+    column. Asked only at `band`, this helper reported a wash that worked while
+    the chart beside every bar did nothing at all — which is where a reader's
+    pointer actually is. The three points are found in one pass because they have
+    to be the same cycle's column: picked separately they could be two.
+    """
+    import shutil
+    import time
+
+    from browser import _devtools, _evaluated
+
+    assert at in ("band", "bar", "plot"), f"`at` must name a point; it was {at!r}"
+    where.write_text(page)
+    profile = where.parent / f"{where.stem}-profile"
+    shutil.rmtree(profile, ignore_errors=True)
+    # A window, for the reason `pressed_in` gives: without one Chrome takes its
+    # own default and the chart is a horizontally scrolled box, so the first
+    # cycle's band is half off the left edge and under the frozen label column.
+    with _devtools(browser, where.as_uri(), profile, ("--window-size=1400,900", *flags)) as (
+        call,
+        _said,
+    ):
+        time.sleep(2.0)
+        found = _evaluated(
+            call,
+            """(() => {
+          // A cycle that is actually on screen, and that has a bar in its column:
+          // the plot scrolls sideways and the label column is drawn over its left
+          // edge, so cycle 34's band is at a point the pointer cannot reach, and a
+          // cycle with nothing bet in it has no `bar` point to offer.
+          const labels = document.querySelector('.labels').getBoundingClientRect();
+          const reachable = (x, y) =>
+            x > labels.right + 4 && x < innerWidth - 4 && y > 0 && y < innerHeight;
+          for (const group of document.querySelectorAll('.cycle-band-group')) {
+            const band = group.querySelector('.cycle-band').getBoundingClientRect();
+            const y = Math.round(band.top + band.height / 2);
+            const bar = [...document.querySelectorAll('rect[data-id]')]
+              .map((rect) => [rect, rect.getBoundingClientRect()])
+              .find(([, b]) => b.width > 12 && b.height > 4
+                    && b.left >= band.left && b.right <= band.right
+                    && reachable(Math.round(b.left + b.width / 2),
+                                 Math.round(b.top + b.height / 2)));
+            if (!bar) continue;
+            const box = bar[1];
+            const x = Math.round(box.left + box.width / 2);
+            if (!reachable(x, y)) continue;
+            // Off every bar AND off every rule, in the same column: the row gap
+            // under the bar just found. A bar is painted over the wash and takes
+            // the pointer first, which is the property the `bar` point exists to
+            // hold — so `plot` has to be somewhere no bar is, or it would be
+            // asking that question a second time instead of this one.
+            //
+            // The month rules and the today line span the whole plot and are drawn
+            // after every cycle group, so they take the pointer over the wash the
+            // way a bar does. Measured: the first bar found had its centre within
+            // a pixel of a month rule, and the point picked under it reported the
+            // chart dead on a chart that works. A hairline is not what this asks
+            // about, so the scan steps sideways until the ground under the pointer
+            // is the chart's own — which is the `<svg>` with the wash transparent
+            // and the wash itself without, and therefore not a criterion that
+            // decides the answer.
+            let gapX = 0;
+            const gap = Math.round(box.bottom + 5);
+            for (let step = 0; step <= Math.floor(box.width / 2) && !gapX; step += 3) {
+              for (const candidate of [x - step, x + step]) {
+                if (!reachable(candidate, gap)) continue;
+                const under = document.elementFromPoint(candidate, gap);
+                if (!under || under.tagName === 'line' || under.hasAttribute('data-id')) continue;
+                gapX = candidate;
+                break;
+              }
+            }
+            if (!gapX) continue;
+            const wash = group.querySelector('.cycle-hover');
+            const seen = wash.getBoundingClientRect();
+            return {
+              before: getComputedStyle(wash).opacity,
+              height: seen.height, width: seen.width,
+              id: bar[0].dataset.id,
+              band: [x, y], bar: [x, Math.round(box.top + box.height / 2)], plot: [gapX, gap],
+            };
+          }
+          return null;
+        })()""",
+        )
+        assert found, "no cycle band with a bar under it was on screen to point at"
+        # Reported back as `at`, so a failure message says where the pointer went
+        # as well as what it found there.
+        x, y = found["at"] = found[at]
+        call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        # A second later, and the reason is the hover card: the bar's own hover
+        # opens one on a delay this page owns, so an answer taken immediately
+        # would report the card missing on a page where it arrives.
+        time.sleep(1.2)
+        return found | _evaluated(
+            call,
+            """(() => {
+          const group = [...document.querySelectorAll('.cycle-band-group')]
+            .find(g => g.matches(':hover'));
+          const bar = document.querySelector('rect[data-id]:hover');
+          const answer = {barHovered: bar ? bar.dataset.id : null};
+          if (!group) return Object.assign(answer, {hovered: false, during: '0', fill: 'none'});
+          const wash = group.querySelector('.cycle-hover');
+          return Object.assign(answer, {hovered: true, during: getComputedStyle(wash).opacity,
+                  fill: getComputedStyle(wash).fill});
+        })()""",
+        )
+
+
+def test_the_hover_wash_is_actually_painted(rendered: Path, tmp_path: Path):
+    """The pixel half of the question. Two things have to be true at once and a
+    stylesheet can only say one of them: that the opacity moves, and that there is
+    a box with real height for it to move in. An SVG `<rect>` whose `height`
+    attribute never reached it resolves `opacity: 1` on nothing at all."""
+    from browser import chrome
+
+    got = _hovered_cycle(chrome(), read(rendered, "timeline.html"), tmp_path / "cycles.html")
+
+    assert got["hovered"], "the pointer did not land on a cycle group"
+    assert float(got["before"]) == 0, f"the wash is drawn before anything is hovered: {got}"
+    assert float(got["during"]) == 1, f"the wash did not come up under the pointer: {got}"
+    # The band strip is 18px; the wash spans the whole plot, which on the seed
+    # corpus is twenty-odd rows. A wash the height of the band would be a
+    # highlight on the header and not on the columns under it.
+    assert got["height"] > 100, f"the wash has no height to be seen in: {got['height']}px"
+    assert got["width"] > 20, f"the wash is drawn on no width at all: {got['width']}px"
+    assert got["fill"] != "none", "the wash resolved to no fill, so nothing is painted"
+
+
+def test_the_wash_answers_the_pointer_where_the_bars_are(rendered: Path, tmp_path: Path):
+    """The band strip is 18px and the chart under it is twenty-odd rows, and the
+    pointer is in the rows.
+
+    `.cycle-hover` was `pointer-events: none`, so the only descendants that could
+    put `:hover` on the group were the band, the label and two hairline rules —
+    every one of them in that strip. Measured with a real pointer: at the band's
+    centre the wash resolved to 1, and at the SAME x a few pixels below a bar it
+    resolved to 0. So the reader went on sighting up to the strip to find out
+    which cycle a bar was in, which is the motion the wash exists to remove, and
+    every test written for it asked at the one point where it worked.
+    """
+    from browser import chrome
+
+    got = _hovered_cycle(
+        chrome(), read(rendered, "timeline.html"), tmp_path / "cycles-plot.html", at="plot"
+    )
+
+    assert got["hovered"], (
+        "no cycle lit with the pointer in its column among the rows, so the wash is "
+        "still a highlight on the 18px strip at the top of the chart"
+    )
+    assert float(got["during"]) == 1, f"the wash did not come up under the pointer: {got}"
+
+
+def test_a_bar_keeps_the_pointer_the_wash_now_takes(rendered: Path, tmp_path: Path):
+    """The price of giving the wash `pointer-events: auto`, asked rather than
+    argued.
+
+    The wash is the first child of its group and every bar is drawn after every
+    group, so a bar is painted over it and hit-testing gives the bar the pointer.
+    That is what keeps the bar's hover card and its right-click menu working, and
+    it is a fact about document ORDER — move the wash to the end of its group, or
+    give the bars a `z-index`, and the wash silently swallows every bar on the
+    chart while the chart still lights.
+
+    The consequence is also asserted, because it is the honest half: with the
+    pointer on a bar the wash does NOT light, since the bar is the thing being
+    pointed at. The column answers everywhere else in it.
+    """
+    from browser import chrome
+
+    got = _hovered_cycle(
+        chrome(), read(rendered, "timeline.html"), tmp_path / "cycles-bar.html", at="bar"
+    )
+
+    assert got["barHovered"] == got["id"], (
+        f"the wash took the pointer from the bar: {got['barHovered']} hovered, "
+        f"{got['id']} pointed at"
+    )
+    assert not got["hovered"], "the wash lit through a bar, so the bar is not on top after all"
+
+
+def test_a_touch_screen_gets_no_cycle_wash_either(rendered: Path, tmp_path: Path):
+    """The other side of `@media (hover: hover)`. A tap sets `:hover` and there is
+    no pointer to move off it, so a phone would be left with one cycle lit — which
+    is a highlight meaning the opposite of what this one means."""
+    from browser import chrome
+
+    got = _hovered_cycle(
+        chrome(), read(rendered, "timeline.html"), tmp_path / "cycles-touch.html", _A_TOUCHSCREEN
+    )
+
+    assert got["hovered"], "the press did not land, so this proves nothing"
+    assert float(got["during"]) == 0, "a cycle stayed lit on a screen with nothing to unhover it"
+
+
 def test_the_wash_does_not_take_away_the_ground_it_is_drawn_over(
     views: dict[str, str], tmp_path: Path
 ):
@@ -7162,6 +9132,539 @@ def test_the_wash_does_not_take_away_the_ground_it_is_drawn_over(
     assert "rgba(0, 0, 0, 0)" not in before[:2], f"the frozen pair is not opaque: {before[:2]}"
 
 
+def test_the_betting_table_holds_every_bet_whatever_its_status(
+    demo_rendered: tuple[Path, Index],
+):
+    """Every bet the plan holds is a row, and every task under one, whatever its
+    status: the search box is the only thing that hides a row now — jcanton,
+    2026-10-13, retiring the ready-or-in-progress shortlist: "now the default
+    logic is the search engine pre-filled with cycle:nr". Asked against
+    `is_bettable` over the whole plan rather than a list of ids, so a bet added
+    to the demo is in the census on the commit that adds it.
+    """
+    from openproj.model import is_bettable
+    from openproj.render import _cycle_view
+
+    _, index = demo_rendered
+    rows = _cycle_view(index, 37)["candidates"]
+    bets = {row["id"] for row in rows if not row["rung"]}
+
+    assert bets == {r.id for r in index.plan.values() if is_bettable(r, index.plan)}, (
+        "a bet the plan holds is not on the betting table"
+    )
+    statuses = {index.plan[row["id"]].status for row in rows}
+    assert statuses - {"ready", "in_progress"}, (
+        "the demo has no row outside ready and in progress, so this proves nothing"
+    )
+    assert all("offlist" not in row for row in rows)
+
+
+# What the betting table shows, as the ids of the rows a reader can see.
+_BETS_SHOWN = """
+  const shown = () => [...document.querySelectorAll('#bets tbody tr')]
+    .filter(row => row.getClientRects().length).map(row => row.dataset.id);
+"""
+
+
+def test_the_betting_box_speaks_the_query_language_and_opens_on_its_cycle(
+    demo_rendered: tuple[Path, Index], tmp_path: Path
+):
+    """jcanton, 2026-10-13, on the cycle page: "the search box doesn't know the query
+    language (e.g. `cycle:39` doesn't work)", "pre-fill the search box with
+    cycle:<cycle-nr>", "the table doesn't show the count x out of N as the other
+    pages", and "it is also not obvious that columns are sortable until you click
+    on one". And the same day, the cleanup: no description beside the box, no
+    shortlist and no Every status — "clearing the search engine clears that and
+    gives the same result" — and the count "to the right of the pages as in the
+    table and graph views".
+
+    **The rows a query keeps are the ones `query.evaluate` keeps**, over the data
+    each row ships — so this box and the server's parser are held together by
+    result, the claim `tests/test_search.py` makes about the other boxes. Under
+    the old substring search `cycle:37` plained to `cycle37` and found nothing.
+
+    The prefilled `cycle:37` keeps the tasks under every bet in 37, which carry
+    no cycle of their own; a malformed query says why beside the box and matches
+    nothing; the count is the other views' sentence; and every sortable head
+    says it sorts before anybody clicks it, the tick column's excepted.
+
+    In Chrome, because which rows are hidden and what a pseudo-element draws are
+    both answers only a browser has.
+    """
+    from browser import chrome, measured_in
+
+    from openproj.index import NO_VALUE
+    from openproj.query import evaluate, parse
+    from openproj.render import render_cycle
+
+    _, index = demo_rendered
+    rows = _cycle_view_rows(index)
+    developer = next(
+        login for row in rows for login in row["query"]["fields"]["developers"]
+    )
+    queries = ["", "cycle:37", "kind:task", "status:ready", "not cycle:37",
+               f"developer:{developer}", "cycle:37 kind:pitch"]
+
+    def kept(query: str) -> list[str]:
+        asked = parse(query)
+        return [
+            row["id"] for row in rows
+            if evaluate(asked, row["query"]["fields"], row["query"]["search"],
+                         row["query"]["name"], NO_VALUE)
+        ]
+
+    page = render_cycle(index, 37, ROUTES, base_commit="deadbee")
+    got = measured_in(
+        chrome(),
+        page,
+        tmp_path / "bet-language.html",
+        1400,
+        _BETS_SHOWN
+        + """
+      const count = () => document.querySelector('.betcount').textContent
+        .replace(/\\s+/g, ' ').trim();
+      const out = {box: BETFIND.value, opened: shown(), openedCount: count(), asked: {}};
+      const edge = el => el.getBoundingClientRect();
+      const line = edge(document.querySelector('.betsearch'));
+      out.layout = {
+        countRight: Math.round(line.right - edge(document.querySelector('.betcount')).right),
+        countAfterBox: edge(document.querySelector('.betcount')).left > edge(BETFIND).right,
+        every: !!document.getElementById('betevery'),
+        words: document.querySelector('.betsearch').textContent.replace(/\\s+/g, ' ').trim(),
+      };
+      for (const q of """ + json.dumps(queries) + """) {
+        BETFIND.value = q; BETFIND.dispatchEvent(new Event('input'));
+        out.asked[q] = {shown: shown(), count: count()};
+      }
+      BETFIND.value = 'kind:task and ('; BETFIND.dispatchEvent(new Event('input'));
+      out.broken = {shown: shown(), error: BETERROR.getClientRects().length
+        ? BETERROR.textContent : '', none: !!BETNONE.getClientRects().length};
+      const head = th => ({dir: th.querySelector('.dir') && th.querySelector('.dir').textContent,
+                           weight: getComputedStyle(th).fontWeight,
+                           grip: !!th.querySelector('.grip')});
+      out.heads = [...BETS.tHead.rows[0].cells].map(head);
+      BETS.querySelector('th[data-sort="5"] .sorter').click();
+      out.sorted = [...BETS.tHead.rows[0].cells].map(head);
+      BETS.querySelector('th[data-sort="5"] .sorter').click();
+      out.again = head(BETS.querySelector('th[data-sort="5"]'));
+      // A grip touched and let go where it was: nothing may move. In content-box
+      // the freeze grew every column by its padding.
+      const widths = () => [...BETS.tHead.rows[0].cells]
+        .map(th => Math.round(th.getBoundingClientRect().width));
+      const still = widths();
+      const grip = BETS.querySelector('th .grip').getBoundingClientRect();
+      BETS.querySelector('th .grip').dispatchEvent(new PointerEvent('pointerdown',
+        {clientX: grip.left, clientY: grip.top, bubbles: true}));
+      dispatchEvent(new PointerEvent('pointerup', {clientX: grip.left, clientY: grip.top}));
+      const now = widths();
+      out.jumped = still.every((w, i) => Math.abs(w - now[i]) <= 1) ? '' : `${still} → ${now}`;
+      return out;
+    """,
+        height=1200,
+        patience=2500,
+    )
+
+    in_scope = len(rows)
+    assert got["box"] == "cycle:37", "the box did not open on this page's cycle"
+    assert got["opened"] == kept("cycle:37"), "the page did not open filtered by its cycle"
+    assert got["openedCount"] == f"{len(kept('cycle:37'))} of {in_scope} shown"
+    assert any(
+        row["query"]["cycle_from"] and row["id"] in got["opened"] for row in rows
+    ), "no task under a bet in cycle 37 answered `cycle:37`, so the bets lost their tasks"
+    for query in queries:
+        assert got["asked"][query]["shown"] == kept(query), query
+        assert got["asked"][query]["count"] == f"{len(kept(query))} of {in_scope} shown", query
+    assert {len(got["asked"][q]["shown"]) for q in queries} != {0}, "every query found nothing"
+    assert got["broken"] == {
+        "shown": [], "error": "a bracket is opened and never closed", "none": True,
+    }
+    # The table page's heads — jcanton, the same day: "draggable column
+    # separators and the same bold for the sorted column and the little
+    # triangles for sorting instead of the arrows". A grip on every head; no
+    # triangle until a column is sorted, then ▴ and bold on that one alone, and
+    # ▾ on the second click. No grip on the last head, whose right edge is the
+    # page's: "the grabber thing to the very right should not even be drawn".
+    assert [head["grip"] for head in got["heads"]] == [True] * (len(got["heads"]) - 1) + [False]
+    assert got["heads"][0]["dir"] is None, "the tick column does not sort and must not say it does"
+    assert {head["dir"] for head in got["heads"][1:]} == {""}, got["heads"]
+    assert {head["weight"] for head in got["heads"]} == {"400"}, got["heads"]
+    sorted_head = got["sorted"][5]
+    assert sorted_head["dir"] == "▴" and sorted_head["weight"] == "700", sorted_head
+    others = got["sorted"][:5] + got["sorted"][6:]
+    assert {h["weight"] for h in others} == {"400"} and {h["dir"] for h in others} <= {"", None}
+    assert got["again"]["dir"] == "▾", got["again"]
+    assert not got["jumped"], f"touching a grip moved the columns: {got['jumped']}"
+
+    # Cleared, the box hides nothing: every status, which is what the retired
+    # Every status box was for.
+    assert got["asked"][""]["shown"] == [row["id"] for row in rows]
+    assert not got["layout"]["every"], "the Every status box is still drawn"
+    opened = f"{len(kept('cycle:37'))} of {in_scope} shown"
+    assert got["layout"]["words"] == f"Search the betting table {opened}", (
+        "the line holds more than the box and the count: " + got["layout"]["words"]
+    )
+    assert got["layout"]["countAfterBox"] and abs(got["layout"]["countRight"]) <= 1, (
+        f"the count is not at the far end of the line: {got['layout']}"
+    )
+
+
+def test_the_record_list_sorts_and_resizes_like_the_table(
+    demo_rendered: tuple[Path, Index], tmp_path: Path
+):
+    """jcanton, 2026-10-13: the records page "same as the table in table/ style:
+    with draggable column separators and the same bold for the sorted column and
+    the little triangles for sorting" — those three and nothing else of the table
+    page's. A click on a head orders the rows by it and says so the table page's
+    way; a second click turns it round; a grip on every head's edge but the
+    last, and a drag of one moves the line between two columns while the table
+    stays the page's width, with what no longer fits cut by an ellipsis.
+
+    In Chrome, because the order is the one a reader sees and the width is a
+    pixel.
+    """
+    from browser import chrome, measured_in
+
+    out, _ = demo_rendered
+    got = measured_in(
+        chrome(),
+        (out / "index.html").read_text(),
+        tmp_path / "records-sort.html",
+        1400,
+        """
+      const t = document.getElementById('records');
+      const kinds = () => [...t.tBodies[0].querySelectorAll('tr[data-id]')]
+        .map(tr => tr.cells[0].textContent.trim());
+      const th = t.querySelector('th[data-col="kind"]');
+      th.querySelector('button').click();
+      const up = {kinds: kinds(), dir: th.querySelector('.dir').textContent,
+                  weight: getComputedStyle(th).fontWeight, aria: th.getAttribute('aria-sort')};
+      th.querySelector('button').click();
+      const down = {kinds: kinds(), dir: th.querySelector('.dir').textContent};
+      const title = t.querySelector('th[data-col="title"]');
+      const grip = title.querySelector('.grip');
+      const was = title.getBoundingClientRect().width;
+      const table = Math.round(t.getBoundingClientRect().width);
+      const at = grip.getBoundingClientRect();
+      const x = at.left + at.width / 2, y = at.top + at.height / 2;
+      grip.dispatchEvent(new PointerEvent('pointerdown', {clientX: x, clientY: y, bubbles: true}));
+      dispatchEvent(new PointerEvent('pointermove', {clientX: x - 60, clientY: y}));
+      dispatchEvent(new PointerEvent('pointerup', {clientX: x - 60, clientY: y}));
+      const cell = t.tBodies[0].querySelector('tr[data-id] td[data-col="title"]');
+      return {up, down, grips: t.querySelectorAll('th .grip').length,
+              heads: t.tHead.rows[0].cells.length,
+              narrowed: Math.round(was - title.getBoundingClientRect().width),
+              tableMoved: Math.round(t.getBoundingClientRect().width) - table,
+              page: Math.round(t.parentElement.getBoundingClientRect().width) - table,
+              lastGrip: !!t.tHead.rows[0].lastElementChild.querySelector('.grip'),
+              cut: [getComputedStyle(cell).whiteSpace, getComputedStyle(cell).textOverflow],
+              last: t.tBodies[0].lastElementChild.id};
+    """,
+        height=900,
+        patience=2500,
+    )
+
+    assert got["up"]["kinds"] == sorted(got["up"]["kinds"]), got["up"]["kinds"]
+    assert len(set(got["up"]["kinds"])) > 1, "every row is one kind, so the sort proves nothing"
+    assert got["up"] | {"kinds": None} == {
+        "kinds": None, "dir": "▴", "weight": "700", "aria": "ascending",
+    }
+    assert got["down"] == {"kinds": got["up"]["kinds"][::-1], "dir": "▾"}
+    assert got["grips"] == got["heads"] - 1 and not got["lastGrip"], (
+        "the last column's right edge is the page's, and must not be offered as a grip"
+    )
+    assert abs(got["narrowed"] - 60) <= 1, f"a 60px drag moved the column {got['narrowed']}px"
+    # "the tables keep same width as page width": the drag moved a line between
+    # two columns and not the table's edge.
+    assert got["tableMoved"] == 0 and got["page"] == 0, got
+    # "eclipsing instead of new lines when reducing the widths of columns"
+    assert got["cut"] == ["nowrap", "ellipsis"], got["cut"]
+    assert got["last"] == "records-empty", "the empty sentence stopped being the last row"
+
+
+def _cycle_view_rows(index: Index) -> list[dict]:
+    from openproj.render import _cycle_view
+
+    return _cycle_view(index, 37)["candidates"]
+
+
+def test_bet_on_its_own_stages_the_move_and_the_tick_and_undo_takes_back_only_those(
+    demo_rendered: tuple[Path, Index], tmp_path: Path
+):
+    """jcanton, 2026-10-12: a task out of the pitch it was bet in, so it can be
+    bet into this cycle on its own.
+
+    Pressed, the row holds two staged fields and nothing is written — this page
+    has one save model, and a button that wrote at once beside a table that
+    waits for Save is the mixed model it was rebuilt to get rid of. Where the
+    task goes is the pitch's project, worked out here from the plan and not read
+    off the button. Undo takes back those two and leaves an appetite typed on
+    the same row alone. And the button's words are not the row's: searched for,
+    its label found every task on the table."""
+    from browser import chrome, measured_in
+
+    from openproj.render import render_cycle
+
+    _, index = demo_rendered
+    page = render_cycle(index, 37, ROUTES, base_commit="deadbee")
+    got = measured_in(
+        chrome(),
+        page,
+        tmp_path / "own.html",
+        1280,
+        """
+      const button = [...document.querySelectorAll('#bets button.ownbet')]
+        .find(one => one.getClientRects().length);
+      const row = button.closest('tr');
+      const id = row.dataset.id;
+      const staged = () => JSON.stringify(PENDING.get(id) || null);
+      const size = row.querySelector('input.live');
+      size.value = '7';
+      size.dispatchEvent(new Event('input'));
+      size.dispatchEvent(new Event('blur'));
+      button.click();
+      const pressed = {staged: staged(), word: button.textContent,
+                       pending: row.classList.contains('pending'), save: SAVE.textContent};
+      button.click();
+      const undone = {staged: staged(), word: button.textContent, save: SAVE.textContent};
+      BETFIND.value = 'bet on its own';
+      BETFIND.dispatchEvent(new Event('input'));
+      const found = [...document.querySelectorAll('#bets tbody tr')]
+        .filter(one => one.getClientRects().length).length;
+      return {id, pressed, undone, found};
+    """,
+    )
+
+    task = index.plan[got["id"]]
+    project = index.plan[index.plan[task.parent].parent]
+    assert project.kind == "project", "the demo's pitch is not in a project, so this asks nothing"
+    assert json.loads(got["pressed"]["staged"]) == {
+        "person_weeks": 7,
+        "parent": project.id,
+        "cycle": 37,
+    }, "out of the pitch and into its project, ticked into this cycle"
+    assert got["pressed"]["word"] == "Undo" and got["pressed"]["pending"]
+    assert got["pressed"]["save"] == "Save 3 changes"
+    assert json.loads(got["undone"]["staged"]) == {"person_weeks": 7}, (
+        "Undo took back more than the two fields the button staged"
+    )
+    assert got["undone"]["word"] == "Bet on its own"
+    assert got["undone"]["save"] == "Save 1 change"
+    assert got["found"] == 0, "the search reads the button's label as the row's words"
+
+
+def _betting_while_others_edit(demo_root: Path) -> tuple[str, str, list[dict], str]:
+    """The cycle page twice — as the room opened it, and as the server draws it
+    after somebody else renamed one bet — and the shortlist, in order, to pick
+    rows from. Rows are chosen off the plan rather than written down, so the demo
+    is free to change under these tests."""
+    from openproj.render import _cycle_view, render_cycle
+
+    records, config, _ = load_repo(demo_root)
+    today = date(2026, 8, 17)
+    index = build_index(records, config, today)
+    listed = _cycle_view(index, 37)["candidates"]
+    renamed = next(row for row in listed[2:] if not row["rung"])["id"]
+    elsewhere = [
+        r.model_copy(update={"title": "Renamed by somebody else"}) if r.id == renamed else r
+        for r in records
+    ]
+    fresh = render_cycle(build_index(elsewhere, config, today), 37, ROUTES, base_commit="beefcafe")
+    page = render_cycle(index, 37, ROUTES, base_commit="deadbee")
+    return page, fresh, listed, renamed
+
+
+# The page as the server would answer it, in a script — escaped so that neither
+# `</script>` nor the `</body>` `measured_in` hooks onto can end anything early.
+def _served_as(fresh: str) -> str:
+    return "const FRESH = " + json.dumps(fresh).replace("<", "\\u003c") + ";\n"
+
+
+def test_a_refresh_keeps_what_the_room_is_doing_and_wires_what_it_brings_in(
+    demo_root: Path, tmp_path: Path
+):
+    """jcanton, 2026-10-12: "there will be several occasions when people are
+    editing records during the betting table, so it should be possible for the
+    two to happen simultaneously".
+
+    The refresh used to wait for a table with nothing unsaved and no focus in it,
+    which a betting table in use never is — and when it did swap, nothing on the
+    rows it brought in did anything: a tick that staged nothing, a box with no
+    suggestions. So, with a row edited and unsaved, a box half-typed under the
+    cursor and the table sorted, somebody else renames a bet and the page
+    refreshes:
+
+    the rename arrives; the edited row is still the room's, value and base commit
+    both; the half-typed box keeps its focus and its text; the sort holds; and a
+    row the refresh brought in ticks, picks and suggests like one that was served.
+    """
+    from browser import chrome, measured_in
+
+    page, fresh, listed, renamed = _betting_while_others_edit(demo_root)
+    edited, typing = listed[0]["id"], listed[1]["id"]
+    tick = next(
+        row
+        for row in listed
+        if row["bettable"] and not row["carried"] and row["id"] not in (edited, typing, renamed)
+    )
+    got = measured_in(
+        chrome(),
+        page,
+        tmp_path / "simultaneous.html",
+        1280,
+        _served_as(fresh)
+        + f"""
+      const EDITED = {json.dumps(edited)}, TYPING = {json.dumps(typing)};
+      const RENAMED = {json.dumps(renamed)}, TICK = {json.dumps(tick["id"])};
+      window.fetch = async () => new Response(FRESH, {{status: 200}});
+      // Over an empty search: the page opens on `cycle:37`, and a box in a row
+      // the prefill hid cannot take the focus this test is about.
+      BETFIND.value = ''; betSearch(true);
+      BETS.querySelector('th[data-sort="5"] .sorter').click();
+      const size = betRow(EDITED).querySelector('input.live[data-field="person_weeks"]');
+      size.focus(); size.value = '8'; size.dispatchEvent(new Event('input')); size.blur();
+      const held = betRow(TYPING).querySelector('input.live[data-field="reviewers"]');
+      held.focus(); held.value = 'half'; held.dispatchEvent(new Event('input'));
+      const swapped = await betRefresh();
+      const order = () => betRows().map(row => row.dataset.id);
+      const kept = {{
+        swapped,
+        renamed: betRow(RENAMED).querySelector('.betname a').textContent.trim(),
+        renamedBase: betRow(RENAMED).dataset.base,
+        edited: PENDING.get(EDITED), editedBox: betRow(EDITED)
+          .querySelector('input.live[data-field="person_weeks"]').value,
+        editedBase: betRow(EDITED).dataset.base, editedPending:
+          betRow(EDITED).classList.contains('pending'),
+        focus: document.activeElement === held, typed: held.value,
+        sorted: BETS.classList.contains('sorted'),
+        aria: BETS.querySelector('th[data-sort="5"]').getAttribute('aria-sort'),
+        showing: window.SHOWING.includes(RENAMED),
+      }};
+      const before = order();
+      betSort(5, false);
+      kept.stillSorted = JSON.stringify(order()) === JSON.stringify(before);
+      held.blur();
+      const box = betRow(TICK).querySelector('input.bet');
+      box.click();
+      const pick = betRow(RENAMED).querySelector('select[data-field="priority"]');
+      pick.value = [...pick.options].find(o => o.value !== pick.value).value;
+      pick.dispatchEvent(new Event('change'));
+      const named = betRow(RENAMED).querySelector('input.live[data-field="developers"]');
+      return {{...kept, ticked: PENDING.get(TICK), picked: PENDING.get(RENAMED),
+               pickedTo: pick.value, suggests: named.getAttribute('role'),
+               typedStaged: PENDING.get(TYPING)}};
+    """,
+    )
+
+    assert got["swapped"] is True
+    assert got["renamed"] == "Renamed by somebody else", "somebody else's edit never arrived"
+    assert got["renamedBase"] == "beefcafe", "a row brought in is read at the commit it came from"
+    assert got["edited"] == {"person_weeks": 8} and got["editedBox"] == "8", (
+        "the refresh threw away an edit nobody had saved"
+    )
+    assert got["editedBase"] == "deadbee", (
+        "the unsaved row was given a commit its values were never read at, so a clash "
+        "with somebody else's edit to the same field would merge as no clash at all"
+    )
+    assert got["editedPending"], "the unsaved row lost its unsaved mark"
+    assert got["focus"] and got["typed"] == "half", "the box under the cursor moved or emptied"
+    assert got["sorted"] and got["aria"] == "ascending" and got["stillSorted"], (
+        "the refresh undid the room's sort"
+    )
+    assert got["showing"], "the shell's banner does not know the refreshed rows are here"
+    assert got["typedStaged"] == {"reviewers": ["half"]}, "the held box stopped staging"
+    assert got["ticked"] == {"cycle": None if tick["in_cycle"] else 37}, (
+        f"a tick on a row the refresh brought in staged {got['ticked']!r}"
+    )
+    assert got["picked"] == {"priority": got["pickedTo"]}, "a picker it brought in staged nothing"
+    assert got["suggests"] == "combobox", "a names box it brought in has no suggestions"
+
+
+def test_a_save_sends_each_row_against_its_own_commit_and_a_clash_costs_only_its_row(
+    demo_root: Path, tmp_path: Path
+):
+    """The server merges a save field by field against the commit it names, so
+    which commit each row names is the whole of whether two people editing at
+    once is safe.
+
+    Every row used to name the commit the LAST write returned, so from the second
+    row on the base and the stored file were the same and somebody else's edit to
+    the same field was overwritten without a word. Each row names the commit its
+    values were read at now. A clash is that row's news: it is told, taken back to
+    what is stored, and the rows after it still save — each is its own commit.
+    """
+    from browser import chrome, measured_in
+
+    page, fresh, listed, renamed = _betting_while_others_edit(demo_root)
+    # Saved first, so the old code would have handed the next row its commit.
+    first = listed[0]["id"]
+    clash = renamed if renamed != first else listed[3]["id"]
+    after = next(row["id"] for row in listed[1:] if row["id"] not in (first, clash))
+    got = measured_in(
+        chrome(),
+        page,
+        tmp_path / "clash.html",
+        1280,
+        _served_as(fresh)
+        + f"""
+      const FIRST = {json.dumps(first)}, CLASH = {json.dumps(clash)};
+      const AFTER = {json.dumps(after)};
+      const SENT = [];
+      // Read while the Save is still going, because the refresh after a clash
+      // re-reads every row nobody is editing — this one included.
+      let firstBase = null;
+      window.fetch = async (url, options = {{}}) => {{
+        if (!options.method) return new Response(FRESH, {{status: 200}});
+        const body = JSON.parse(options.body);
+        const id = decodeURIComponent(url.split('/').pop());
+        SENT.push({{id, base: body.base_commit}});
+        if (id === CLASH) {{
+          firstBase = betRow(FIRST).dataset.base;
+          return new Response(JSON.stringify({{outcome: 'conflict', commit: null,
+            conflict: 'pitches/clash.md — somebody changed this before you, in the same '
+                      + 'places:\\n  person_weeks: stored 3 · yours 8'}}), {{status: 409}});
+        }}
+        return new Response(JSON.stringify({{outcome: 'committed',
+          commit: 'c0ffee' + SENT.length}}), {{status: 200}});
+      }};
+      // A row edited before somebody else's change arrives, and one after.
+      const appetite = id => betRow(id).querySelector('input.live[data-field="person_weeks"]');
+      const type = (id, value) => {{
+        const box = appetite(id);
+        box.focus(); box.value = value; box.dispatchEvent(new Event('input')); box.blur();
+      }};
+      type(FIRST, '4');
+      type(CLASH, '8');
+      await betRefresh();
+      type(AFTER, '2');
+      const saved = await flush(false);
+      await new Promise(done => setTimeout(done, 300));
+      return {{saved, sent: SENT, pending: [...PENDING.keys()],
+               said: document.getElementById('state').textContent,
+               clashBox: appetite(CLASH).value, firstBase}};
+    """,
+        patience=4000,
+    )
+
+    assert got["sent"] == [
+        {"id": first, "base": "deadbee"},
+        {"id": clash, "base": "deadbee"},
+        {"id": after, "base": "beefcafe"},
+    ], "each row is saved against the commit it was read at, and a clash stops nothing"
+    assert got["saved"] is False, "a Save with a row that did not land reloaded the page"
+    assert got["pending"] == [], "the clashing row is still waiting to overwrite somebody"
+    # Named as the room saw it: the row was edited before the rename arrived, so
+    # it was held, title and all.
+    title = next(row["title"] for row in listed if row["id"] == clash)
+    assert got["said"].startswith(
+        f"{title} was not saved — somebody changed this before you"
+    ), got["said"]
+    assert "person_weeks: stored 3 · yours 8" in got["said"]
+    assert "clash.md" not in got["said"], "the sentence names a file where it has a title"
+    assert got["said"].endswith("2 other changes saved."), got["said"]
+    assert got["clashBox"] != "8", "the clashing row still shows the edit that did not save"
+    assert got["firstBase"] == "c0ffee1", "a row that saved is read at the commit it made"
+
+
 def test_the_betting_table_says_what_a_bet_is_being_made_against(
     server_pages: dict[str, str], seed_index: Index
 ):
@@ -7181,7 +9684,7 @@ def test_the_betting_table_says_what_a_bet_is_being_made_against(
     head = re.search(r'<table id="bets".*?</thead>', page, re.S)
     assert head, "the betting table has no header row"
     columns = [
-        name.strip() for name in re.findall(r'class="sorter">([^<]*)</button>', head.group(0))
+        name.strip() for name in re.findall(r'class="sorter">([^<]*)<', head.group(0))
     ]
     assert "priority" in columns, columns
     assert columns.index("status") < columns.index("priority") < columns.index("appetite"), (
@@ -7217,7 +9720,7 @@ def test_the_betting_tables_closed_sets_are_chosen_and_never_typed(server_pages:
         for rung in ladder:
             assert f'value="{rung}"' in chosen, f"{field} cannot choose {rung}"
             assert glyphs[rung] in chosen, f"{field}'s {rung} lost its mark"
-        assert "<input" not in chosen, f"{field} can still be typed into"
+        assert "input" not in tags(chosen), f"{field} can still be typed into"
 
 
 def test_a_carried_row_may_be_repriced_but_not_re_bet(server_pages: dict[str, str]):
@@ -7266,12 +9769,9 @@ def test_the_betting_table_puts_a_bets_tasks_under_it(
     is stamped on the bet, and stamping a task too would put a second cycle on
     one decision.
 
-    Finished and shelved tasks are left out, and for two different reasons that
-    land in the same place. A shelved task is not in the bet. A done one is, and
-    nobody in the room can change it — its appetite is history, and no amount of
-    re-sizing it makes the rest fit. What is left is what the meeting can move,
-    which includes the `shaping` work nobody has sized yet: those are the rows
-    this column is here for.
+    Every task under the bet, whatever its status: since 2026-10-13 the search
+    box is the only thing that hides a row on this table, and `status:` is how a
+    room leaves the finished ones out.
     """
     page = server_pages["cycle"]
     # This table's own body and no other. The cycle page draws three tables, and
@@ -7281,7 +9781,7 @@ def test_the_betting_table_puts_a_bets_tasks_under_it(
     body = re.search(r'<table id="bets".*?<tbody>(.*?)</tbody>', page, re.S)
     assert body, "the betting table has no body"
     body = body.group(1)
-    drawn = re.findall(r'<tr data-id="([^"]+)" data-rung="([^"]*)"', body)
+    drawn = re.findall(r'<tr data-id="([^"]+)" data-rung="([^"]*)" class="[^"]*"', body)
     assert drawn, "the betting table drew no rows at all"
 
     holder, under = "", {}
@@ -7293,13 +9793,8 @@ def test_the_betting_table_puts_a_bets_tasks_under_it(
     assert under, "no bet on this table drew anything underneath it"
 
     for bet, kids in under.items():
-        # Every child of that bet the room can still do something about, in id
-        # order, and nothing else.
-        expected = sorted(
-            one
-            for one in seed_index.children[bet]
-            if one in seed_index.plan and seed_index.plan[one].status not in ("shelved", "done")
-        )
+        # Every child of that bet the plan holds, in id order, and nothing else.
+        expected = sorted(one for one in seed_index.children[bet] if one in seed_index.plan)
         assert [one for one, _ in kids] == expected, bet
         # `└─` on the last one drawn and `├─` on the rest, which is the whole of
         # the drawing at the one depth a bet has.
@@ -7355,6 +9850,7 @@ def test_a_task_filed_under_a_project_gets_a_tick_of_its_own():
             title="A chore nobody shaped",
             parent="proj-a00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=4.0,
             cycle=37,
             status="ready",
@@ -7365,6 +9861,7 @@ def test_a_task_filed_under_a_project_gets_a_tick_of_its_own():
             title="A shaped bet",
             parent="proj-a00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=4.0,
             cycle=37,
             status="ready",
@@ -7375,6 +9872,7 @@ def test_a_task_filed_under_a_project_gets_a_tick_of_its_own():
             title="Part of the shaped bet",
             parent="pitch-b00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=2.0,
             status="ready",
         ),
@@ -7502,12 +10000,14 @@ def test_the_betting_tables_connectors_follow_what_is_on_screen(
 
 
 _BETTING_BOX = """
+// Cleared, so the search is asked over every row the table holds and
+// "an empty box hides nothing" means all of them.
 const shown = () => betRows().filter(row => !row.hidden).map(row => row.dataset.id);
 const ask = needle => { BETFIND.value = needle; betSearch(); return shown(); };
 const out = {all: betRows().length};
 
 // The row this is about: one input holding a list of two, which is what
-// `assignees` and `reviewers` are — `", ".join(...)` on the way out.
+// `developers` and `reviewers` are — `", ".join(...)` on the way out.
 const holder = betRows().find(row => [...row.querySelectorAll('input')]
   .some(box => box.dataset.type === 'list' && box.value.split(',').length > 1));
 out.holder = holder ? holder.dataset.id : null;
@@ -7576,7 +10076,7 @@ def test_the_two_boxes_cycles_py_rolls_by_hand_match_the_way_the_rest_does(
 
     **A needle may not cross from one value into the next.** `searchable` puts a
     space between values so `found`'s walk can stop there, and the betting table
-    reproduced the boundary per cell — but `assignees` and `reviewers` are ONE
+    reproduced the boundary per cell — but `developers` and `reviewers` are ONE
     input each holding a comma-joined list, so plaining the box whole welded two
     logins into one chunk and the leak came back inside a single cell. Measured
     on this corpus before the split: `redpollardchiffchaffy` found the two rows

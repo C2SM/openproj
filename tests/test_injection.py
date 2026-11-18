@@ -57,6 +57,7 @@ from test_store import commit_directly
 from openproj.index import build_index
 from openproj.model import load_repo
 from openproj.render import _json, render_static
+from openproj.vendor import ACE_FILES
 from openproj.web import create_app
 
 # The quote comes first so the payload escapes an attribute before it opens a
@@ -145,7 +146,7 @@ def corpus(text: str) -> dict[str, str]:
         f"status: '{quoted}'\n"
         f"priority: '{quoted}'\n"
         f"owner: '{quoted}'\n"
-        f"assignees: ['{quoted}']\n"
+        f"developers: ['{quoted}']\n"
         f"reviewers: ['{quoted}']\n"
         f"cycle: 41\n"
         f"start_date: 2026-08-17\n"
@@ -396,6 +397,16 @@ def test_no_served_page_lets_a_field_become_markup(hostile_served, benign_served
         assert_same_shape(html, benign_served[route], f"served {route}")
 
 
+def _is_page(route) -> bool:
+    """Whether a route draws a page: HTML, as against JSON, a redirect or a file."""
+    from fastapi.responses import HTMLResponse
+
+    drawn = getattr(route, "response_class", None)
+    # FastAPI wraps an undeclared response class in a DefaultPlaceholder.
+    drawn = getattr(drawn, "value", drawn)
+    return isinstance(drawn, type) and issubclass(drawn, HTMLResponse)
+
+
 def test_every_html_get_route_is_in_the_census(tmp_path: Path):
     """Risk 2 in the design, closed permanently: the census was a hand-written
     list, and a hand-written list fails OPEN — move the table to /table and the
@@ -406,7 +417,6 @@ def test_every_html_get_route_is_in_the_census(tmp_path: Path):
     Filtered on `response_class`: JSON routes, redirects and the asset stream
     are not pages, and a census of them would be a different test.
     """
-    from fastapi.responses import HTMLResponse
     from fastapi.routing import APIRoute
 
     path = tmp_path / "census.git"
@@ -414,19 +424,12 @@ def test_every_html_get_route_is_in_the_census(tmp_path: Path):
     commit_directly(path, corpus(BENIGN), "seed a plan for the route census")
     app = create_app(path, auth="dev", secret="a-signing-secret-for-tests")
     with TestClient(app):
-
-        def is_page(route) -> bool:
-            drawn = getattr(route, "response_class", None)
-            # FastAPI wraps an undeclared response class in a DefaultPlaceholder.
-            drawn = getattr(drawn, "value", drawn)
-            return isinstance(drawn, type) and issubclass(drawn, HTMLResponse)
-
         # A list, not a set: `APIRoute` defines `__eq__` and no `__hash__`, so
         # a set of routes is a TypeError before anything is checked at all.
         pages = [
             route
             for route in app.routes
-            if isinstance(route, APIRoute) and "GET" in route.methods and is_page(route)
+            if isinstance(route, APIRoute) and "GET" in route.methods and _is_page(route)
         ]
         assert pages, "no HTML GET routes at all, so nothing was checked"
 
@@ -445,9 +448,9 @@ def test_every_html_get_route_is_in_the_census(tmp_path: Path):
                 if not (isinstance(route, APIRoute) and "GET" in route.methods):
                     continue
                 if route.path_regex.match(where):
-                    # `is_page` again rather than membership in `pages` — the
+                    # `_is_page` again rather than membership in `pages` — the
                     # same filter, asked without route equality or hashing.
-                    if is_page(route):
+                    if _is_page(route):
                         covered.add(route.path)
                     break
 
@@ -459,6 +462,108 @@ def test_every_html_get_route_is_in_the_census(tmp_path: Path):
         )
         stale = CENSUS_BLIND - templates
         assert not stale, f"CENSUS_BLIND names routes that no longer exist: {sorted(stale)}"
+
+
+def test_every_page_route_is_gated_or_always_on(tmp_path: Path):
+    """The gate table, held against `app.routes` the way the census above is.
+
+    Every HTML GET route is in exactly one of three places: `SWITCHED`, the view
+    each gated route is, which a plan's `views` lists or leaves out of the nav and
+    `kinds` can turn off; `SWITCHED_BY_QUERY`, always on as a route
+    and gated by what its query asks for; or `ALWAYS_ON`, which no setting
+    reaches. A page route nobody decided about is a failure on the commit that
+    adds it, rather than a page that stays on in every plan because nobody
+    thought to switch it — and a row left behind by a route that went is one too.
+
+    And every view has a page to turn off. A ninth view in `VIEWS` whose route
+    nobody put in the table would be a setting that does nothing, and `views`
+    would accept it in silence.
+    """
+    from fastapi.routing import APIRoute
+
+    from openproj.model import VIEWS
+    from openproj.web import ALWAYS_ON, SWITCHED, SWITCHED_BY_QUERY
+
+    path = tmp_path / "gates.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    commit_directly(path, corpus(BENIGN), "seed a plan for the gate census")
+    app = create_app(path, auth="dev", secret="a-signing-secret-for-tests")
+    pages = {
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute) and "GET" in route.methods and _is_page(route)
+    }
+    assert pages, "no HTML GET routes at all, so nothing was checked"
+
+    gated, queried = set(SWITCHED), set(SWITCHED_BY_QUERY)
+    assert not gated & queried, gated & queried
+    assert not gated & ALWAYS_ON, gated & ALWAYS_ON
+    assert not queried & ALWAYS_ON, queried & ALWAYS_ON
+    decided = gated | queried | ALWAYS_ON
+    assert not pages - decided, (
+        "page routes no gate row and no always-on entry decides about — add each to "
+        f"SWITCHED, SWITCHED_BY_QUERY or ALWAYS_ON in web.py: {sorted(pages - decided)}"
+    )
+    assert not decided - pages, f"gate rows for routes that do not exist: {sorted(decided - pages)}"
+    assert set(SWITCHED.values()) == set(VIEWS), (
+        f"views with no page to switch off: {sorted(set(VIEWS) - set(SWITCHED.values()))}; "
+        f"switches that are not views: {sorted(set(SWITCHED.values()) - set(VIEWS))}"
+    )
+
+
+def test_a_switched_off_address_hands_on_its_query_as_text(tmp_path: Path):
+    """The switched-off page reflects its address's query into a link, so the query
+    is the payload — sent literally, as a client that is not a browser can, and not
+    percent-encoded the way httpx and every browser would first make it.
+
+    `TestClient` encodes whatever it is handed, so the query is put into the scope
+    underneath it, which is where uvicorn puts the bytes off the socket. The two
+    pages, one hostile and one benign, must draw the same elements, and the link
+    must ask Records what the query asked: it is parsed and encoded again on the
+    way through, so what it carries is the filter and not the spelling.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from pages import elements
+
+    # A plan without issues, because the Issues list is one of the two pages that
+    # can answer "turned off": every other view answers at its address listed or not.
+    plan = corpus(BENIGN)
+    plan["config/defaults.yaml"] += "kinds: [note]\n"
+    path = tmp_path / "reflected.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    commit_directly(path, plan, "seed a plan without issues")
+    app = create_app(path, auth="dev", secret="a-signing-secret-for-tests")
+    sent = {"query": b""}
+
+    async def literally(scope, receive, send):
+        if scope["type"] == "http":
+            scope = {**scope, "query_string": sent["query"]}
+        await app(scope, receive, send)
+
+    drawn = {}
+    with TestClient(literally) as client:
+        for name, text in (("hostile", PAYLOAD), ("benign", BENIGN)):
+            sent["query"] = f"q={text}".encode()
+            got = client.get("/issues")
+            assert got.status_code == 404, f"{name}: {got.status_code}"
+            drawn[name] = got.text
+
+    assert_clean(drawn["hostile"], "switched-off /issues")
+    assert_same_shape(drawn["hostile"], drawn["benign"], "switched-off /issues")
+    way = [
+        one.attrs.get("href")
+        for one in elements(drawn["hostile"])
+        if one.tag == "a" and one.text == "Show the same filters on Records"
+    ]
+    # The payload's bare `&` splits it, and what follows is a key Records does not
+    # read, so it is not handed on; the half that is `q` goes with every quote and
+    # angle bracket it had, behind the list's own kind.
+    asked = parse_qs(f"q={PAYLOAD}")
+    assert set(asked) == {"q", " </script><img src"}, asked
+    assert [(urlparse(href).path, parse_qs(urlparse(href).query)) for href in way] == [
+        ("/", {"kind": ["issue"], "q": asked["q"]})
+    ], way
 
 
 def test_no_template_marks_a_value_safe():
@@ -520,7 +625,7 @@ def test_the_fixture_really_is_hostile(hostile_static):
     # shared page, the issue and the note among them. A fold that quietly
     # dropped the two would pass every substring above off the three records
     # alone.
-    assert hostile_static["detail.html"].count("<article") == 5
+    assert census(hostile_static["detail.html"]).tags["article"] == 5
 
 
 # --------------------------------------------------------------------------- #
@@ -855,12 +960,19 @@ def test_no_title_can_inline_a_library_a_second_time(marker_static, marker_serve
     # mermaid in: `startswith` is a rule about spelling, and the reason a file is
     # not on the graph is a fact about the file.
     FETCHED = {"excalidraw.js", "mermaid.min.js"}
+    # `datepicker.min.js` is excluded for Ace's reason and not for theirs: it is
+    # inlined, but into the pages that have a date field, and the graph has none.
+    # The `#pop` form can build one on an editable graph page, and that box keeps
+    # the native picker — 36 KB on every load of a page whose date box appears
+    # only inside a menu was the trade, and it is written down in
+    # `design/cycle-calendar.md` rather than decided here.
+    ELSEWHERE = {"datepicker.min.js"}
     heads = {
         path.name: path.read_text(encoding="utf-8")[:200]
         for path in STATIC_DIR.iterdir()
         if path.suffix == ".js"
-        and path.name not in FETCHED
-        and not path.name.startswith(("ace", "keybinding-"))
+        and path.name not in FETCHED | ELSEWHERE
+        and path.name not in ACE_FILES
     }
     assert len(heads) == 2, "the graph vendors two libraries"
     for where, graph in (
@@ -911,6 +1023,120 @@ def test_no_page_is_assembled_by_substitution():
             if isinstance(called, ast.Attribute) and called.attr in ("replace", "sub", "subn"):
                 offenders.append(f"{source.name}:{node.lineno}: {ast.unparse(node)[:80]}")
     assert not offenders, "a page is being assembled by substitution again:\n" + "\n".join(
+        offenders
+    )
+
+
+def _docstrings(tree: ast.AST) -> set[int]:
+    """The `id` of every docstring constant in a module: prose about a route is
+    not a route, and a docstring never reaches a page."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                found.add(id(first.value))
+    return found
+
+
+def _the_routes_themselves(tree: ast.AST) -> set[int]:
+    """The `id` of every node inside `ROUTES = Links(...)`, which is the one place
+    a route is meant to be spelled."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "ROUTES" for target in node.targets
+        ):
+            found.update(id(inner) for inner in ast.walk(node.value))
+    return found
+
+
+def test_no_page_script_spells_a_page_route_by_hand():
+    """A path a page names goes through `links`, and never as a literal.
+
+    After a create the record page sent its reader to `'/detail/' + answer.id`,
+    and "start cycle" to `'/cycle/' + number` — correct only while the server
+    answered at exactly those paths, and invisible to anything that decides where
+    a link goes, such as a plan switching a view off. Both read `links` now, and
+    this is what keeps a third from arriving.
+
+    The routes are read off `ROUTES` rather than written down here, so a route
+    added there is looked for on the commit that adds it. `/` is left out because
+    every path begins with one, and `/api/` because an API is not a page: nothing
+    switches it off and every save is a literal fetch of one.
+
+    Read as syntax: the templates are Python string constants, so what is scanned
+    is each constant's value. **A route is a whole path segment, whatever follows
+    it.** The first version of this listed what might follow — the closing quote,
+    `?`, `+` or a space — and so passed every way these templates actually write a
+    link with a value in it: `href="/cycle/{{ c.number }}"`,
+    `Markup('<a href="/detail/{}">')`, `href="/table#top"`, and an f-string whose
+    constant piece ends at the route. A list of what may follow is never finished.
+    So a prefix route (`/detail/`, `/cycle/`, `/deck/`) counts with anything after
+    it, an id being the point of one, and any other route counts unless what
+    follows continues its name: `/tables` is not `/table`, and `/table?`,
+    `/table#` and `/table/` all are.
+
+    A match opens on a quote, `'` or `"`, which is the JS and HTML spelling of a
+    literal — or on a backtick, when the template literal it opens is
+    interpolated: `` `/cycle/${number}` ``, the form these scripts already use for
+    every `/api/` path with a value in it. The templates' comments name routes in
+    backticks by the dozen and never with a `${` inside; an uninterpolated
+    `` `/table` `` in code is the one spelling this cannot tell from a comment.
+    Jinja comments are blanked before the scan, for the reason docstrings are
+    exempt — the compiler drops both and neither reaches a page — and because
+    `_RECORDS` quotes jcanton writing `"/table, /graph, /timeline`.
+
+    A Python constant that IS a route or begins with one, `"/table"` or
+    `"/cycle/37"` handed to a template as a value, is caught as well: it reaches
+    the page the same way and would bypass `links` just the same.
+    """
+    from openproj.render import ROUTES
+
+    routes = sorted(
+        (
+            value
+            for value in ROUTES.model_dump().values()
+            if isinstance(value, str) and value not in ("", "/") and not value.startswith("/api/")
+        ),
+        key=len,
+        reverse=True,
+    )
+    assert "/cycle/" in routes and "/detail/" in routes, routes
+    spelled = (
+        "(?:"
+        + "|".join(
+            re.escape(route) + ("" if route.endswith("/") else r"(?![\w-])") for route in routes
+        )
+        + ")"
+    )
+    bare = re.compile(spelled)
+    quoted = re.compile(r"""['"]""" + spelled)
+    interpolated = re.compile("`" + spelled + r"[^`\n]*\$\{")
+    jinja_comment = re.compile(r"\{#.*?#\}", re.DOTALL)
+
+    offenders = []
+    for source in render_paths():
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        exempt = _docstrings(tree) | _the_routes_themselves(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in exempt:
+                continue
+            if bare.match(node.value):
+                offenders.append(f"{source.name}:{node.lineno}: {node.value!r}")
+            # Blanked newline for newline, so a line number after one still counts.
+            text = jinja_comment.sub(lambda c: "\n" * c.group(0).count("\n"), node.value)
+            for found in (*quoted.finditer(text), *interpolated.finditer(text)):
+                line = node.lineno + text.count("\n", 0, found.start())
+                shown = text[found.start() : found.end() + 24].partition("\n")[0]
+                offenders.append(f"{source.name}:{line}: {shown!r}")
+    assert not offenders, "a page spells a route by hand instead of reading `links`:\n" + "\n".join(
         offenders
     )
 

@@ -3,20 +3,47 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from urllib.parse import parse_qsl, urlencode
 
 from markupsafe import Markup
 from pydantic import BaseModel
 
 from .. import __version__
 from ..index import Index
-from ..model import Unreadable
+from ..model import RUNG, SWITCHES_FILE, VIEW_NEEDS, VIEWS, Unreadable, Unusable
 from ..themes import FAMILIES
 from ..vendor import _font_uri
+from .controls import _PLAN_FACETS
 from .env import _compiled
 from .hill import hill_geometry
 from .icons import _icon_uri
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
 from .tokens import HUMAN, KINDS, PRIORITY_GLYPH, STATUS_GLYPH, STATUSES, card_facts
+
+# The nav, as the field on `Links` each item points at and the word it wears. One
+# list, because the mark for "you are here" has to be decided once: six links
+# written out by hand were six places for a seventh page to be added and marked
+# nowhere.
+#
+# The words, and the order a plan that never wrote `views` gets — which is
+# `Links.nav`'s default, and why this sits above the class. Which items a page
+# draws, and in what order, is `Links.nav`: a plan's `views` decides it, through
+# `links_for` below, and `test_the_views_are_the_nav_in_the_nav_order` holds this
+# order to `VIEWS` so a plan that says nothing draws the nav it always drew.
+_NAV = (
+    ("records", "Records"),
+    ("table", "Table"),
+    ("graph", "Graph"),
+    ("timeline", "Timeline"),
+    ("cycles", "Cycles"),
+    ("people", "People"),
+    # The two inbox views of the landing list, back in the nav on jcanton's
+    # ruling: quick access to what would otherwise be a click on a filter. At
+    # the end, where they sat before the records flip retired their own pages.
+    ("issues", "Issues"),
+    ("notes", "Notes"),
+)
+_NAV_KEYS = frozenset(key for key, _ in _NAV)
 
 
 class Links(BaseModel):
@@ -50,8 +77,8 @@ class Links(BaseModel):
     # not an empty string like `new` and `deck` below: the documentation is about
     # the tool rather than about a plan, so it is the same page in both modes and
     # an exported plan that has outlived the service carries its own instructions
-    # with it. It is also the reason it can be a nav item at all — a nav link into
-    # a file nobody wrote is a dead link on every other page of the export.
+    # with it. It is also the reason every page's footer can link to it — a link
+    # into a file nobody wrote is a dead link on every other page of the export.
     help: str = "help.html"
     # Prefix in front of a repository-relative embed path. Empty in the static
     # export, where a rendered file sits beside the `assets/` and `drawings/`
@@ -70,6 +97,16 @@ class Links(BaseModel):
     # the whole plan with nowhere to put the number. Where it is empty the cycle
     # page draws no link to it, rather than a link to a file nobody wrote.
     deck: str = ""
+    # Whether a server is behind the page — the event stream, the health poll, per-cycle pages,
+    # diagrams fetched on demand. A fact about the mode, said once. Three places used to infer
+    # it from whether `table` or `cycle` began with a slash, so blanking a view's link would
+    # have switched live updates and diagrams off on every page, and nothing would have said so.
+    served: bool = False
+    # The nav's items, in order, by the field each one points at: Records, then every view
+    # this plan has that has a slot. `links_for` writes it beside the fields it blanks, so
+    # what the nav draws and where the pages link cannot disagree about which views exist —
+    # and the back link reads the same tuple to decide whether a stamped page still does.
+    nav: tuple[str, ...] = tuple(key for key, _ in _NAV)
 
 
 # What a page may do, said once. The server sends it as a header and every page
@@ -137,7 +174,57 @@ ROUTES = Links(
     repo="/",
     deck="/deck/",
     body="/api/body/",
+    served=True,
 )
+
+
+# The `Links` fields each view owns, which is the field of its own name — plus `cycle`
+# for Cycles, because the per-cycle pages are Cycles and a cycle number that stayed a
+# link would lead to one. Derived rather than written out, so a ninth view blanks its
+# own field on the commit that adds it, and the assertion below is what refuses a view
+# that has no field to blank.
+_FIELDS_OF: dict[str, tuple[str, ...]] = {
+    **{view: (view,) for view in VIEWS},
+    "cycles": ("cycles", "cycle"),
+}
+assert set(_FIELDS_OF) == set(VIEWS), "every view blanks something, and nothing else does"
+assert all(field in Links.model_fields for fields in _FIELDS_OF.values() for field in fields), (
+    "a view whose field is not on Links cannot be switched off"
+)
+assert _NAV_KEYS - {"records"} <= set(VIEWS), "a nav item that is not a view cannot go"
+
+
+def links_for(views: Sequence[str], base: Links) -> Links:
+    """`base` — `ROUTES` or `STATIC` — for a plan that lists exactly these views.
+
+    The field of every view that is not listed is blanked, which is the
+    convention `new` and `deck` already had in the export: a template asks the
+    field before it draws the link, so an unlisted page is one nothing links to.
+    Unlisted is not off — the page still answers at its address
+    (`model.reachable`), and `opened` below is how it is drawn there. `nav` is
+    Records and then the views that have a slot, in the order the plan gave them.
+
+    Once per index build, not per request: `views` is a fact about one commit.
+    """
+    off = {field: "" for view in VIEWS if view not in views for field in _FIELDS_OF[view]}
+    nav = ("records", *(view for view in views if view in VIEWS and view in _NAV_KEYS))
+    return base.model_copy(update={**off, "nav": nav})
+
+
+def opened(links: Links, base: Links, view: str) -> Links:
+    """`links` as drawn ON `view`'s own page: its own fields put back from `base`.
+
+    An unlisted view reached at its address has to work once it is there —
+    `/cycles` linking to each `/cycle/<n>`, the Timeline's controls submitting to
+    `/timeline` — and every one of those is the view's own field, which
+    `links_for` blanked so that the OTHER pages would not link to it. Only the
+    view's own: a deck reached by address whose Cycles are unlisted still draws no
+    way back to the cycle page, and the nav is untouched, so it shows what the plan
+    lists and nothing more (jcanton, 2026-10-20: "nothing extra").
+
+    A no-op for a listed view, whose fields were never blanked.
+    """
+    return links.model_copy(update={field: getattr(base, field) for field in _FIELDS_OF[view]})
 
 
 _SHELL = """<!doctype html>
@@ -406,6 +493,44 @@ if (storedScheme) document.documentElement.dataset.scheme = storedScheme;
      Amber rather than red for the same reason — being blocked is normal. */
   --waiting: #fdf0dd;
   --band: #c3d6de;
+  /* The second tint, worn by the cycle beside this one on the timeline and in
+     the calendar's grid. Two tints of ONE ink and not two hues: hue is the
+     channel a dichromat loses, which is why the status fills are a luminance
+     ladder rather than five colours, and fifteen cycles in fifteen colours is
+     that same mistake at fifteen times the size. The only question a reader
+     asks of two bands running up against each other is whether they are one
+     thing or two, and a second tint answers exactly that and nothing more.
+
+     **Further off the page's ground than `--band`, and it used to be nearer.**
+     The cool-down is `--line` at 50% over the band it sits in, and `--line` is
+     between the page and `--band` in every theme here — so an alternate tint on
+     the ground side walks towards the cool-down and takes it with it. Measured:
+     at #d3e2e8 the cool-down over an odd cycle was dE 2.12 and dL* 0.56, which
+     is below the just-noticeable difference, so half the cycles on the chart had
+     no cool-down at all. There is no room on that side either way: `--band` is
+     already 1.50 against a white page and the floor for "there is a band here"
+     is 1.45, so a lighter tint is not a band. This value is dE 3.53 from
+     `--band` and gives the cool-down dE 5.74 over it — more than it gets over
+     `--band` itself. What bounds it the other way is the cycle number, which is
+     10px `--accent` text on this tint: 4.64:1, and 4.5 is the floor.
+
+     **Three separations are wanted and only two are available, so say which two
+     were bought.** The band, its cool-down, the alternate band and ITS cool-down
+     are four tones strung along one lightness axis, and a search over every tint
+     of this ink that keeps the cycle number at 4.5:1 tops out at dL* 1.72 in the
+     light theme and 0.91 in the dark for the worst of the four gaps — under the
+     JND whichever tint is chosen. So the two that are bought are the ones the
+     tint exists for: a cycle against its neighbour, and a cool-down against the
+     band it is inside. The one left over is one cycle's cool-down against the
+     NEXT cycle's band, and that junction is the one place on the chart that
+     already has a mark on it — the dashed `.cycle-rule`, held at 3:1 against the
+     page, with the cycle number starting just after it. */
+  --band-alt: #b7ced8;
+  /* The edge on the day a cycle opens and the day it closes. A band one tint
+     away from its neighbour is not a boundary on a monochrome screen, and the
+     two dates that are facts rather than tints deserve a channel that survives
+     one. */
+  --band-edge: #7ea3b0;
   /* Where the pointer is, on a table wide enough to lose your place in.
      **Translucent, and that is the whole design.** Every other tint here is an
      opaque colour because it is the cell's ground and stands for something — a
@@ -486,6 +611,15 @@ if (storedScheme) document.documentElement.dataset.scheme = storedScheme;
     --pri-high: #e08a5a; --pri-very-high: #e0796a;
     --waiting: #34291a;
     --band: #2a3941;
+    /* Lighter than `--band` here and darker than it in the light theme: in both,
+       the alternate tint is the one standing FURTHER off the page's own ground,
+       for the reason written beside the light theme's copy — `--line` lies
+       between the page and `--band`, so the ground side is where the cool-down
+       goes. #223037 put it there: dE 2.26 and dL* 0.80, which is no cool-down.
+       dE 3.99 from `--band` here, dE 4.02 for the cool-down over it, and the
+       cycle number is 4.61:1 on it. */
+    --band-alt: #30424b;
+    --band-edge: #5d7a85;
   }
 }
 :root[data-theme="dark"] {
@@ -515,6 +649,11 @@ if (storedScheme) document.documentElement.dataset.scheme = storedScheme;
   --sev-warn: #d9a557; --sev-warn-soft: #332409;
   --drop: #1e3a2b;
   --band: #2a3941;
+  /* The same two values as the media query above, and they have to be: a reader
+     who never touches the toggle matches only that block, and a reader who has
+     chosen dark matches only this one. */
+  --band-alt: #30424b;
+  --band-edge: #5d7a85;
   --pri-very-low: #6fc095; --pri-low: #8fc772; --pri-medium: #d9a557;
   --pri-high: #e08a5a; --pri-very-high: #e0796a;
   --waiting: #34291a;
@@ -563,6 +702,18 @@ if (storedScheme) document.documentElement.dataset.scheme = storedScheme;
   --sev-warn-soft: color-mix(in oklab, var(--base09) 14%, var(--bg));
   --drop: color-mix(in oklab, var(--base0B) 18%, var(--bg));
   --band: color-mix(in oklab, var(--base0C) 30%, var(--bg));
+  /* One ink, three strengths. Derived from the same base0C the band is, so a
+     scheme that moves the band moves its neighbour and its edge with it — three
+     hand-picked values here would be three that can disagree with each other in
+     twenty palettes at once.
+
+     42% and not the 18% it was, for the reason the two literal themes give: the
+     cool-down is `--line` at 50% over the band, and 18% is on the page's side of
+     30% — the side `--line` is on — so an odd cycle's cool-down collapsed into
+     its band in every scheme at once. Above `--band` and well under the edge's
+     65%, so the three strengths stay in the order they are named in. */
+  --band-alt: color-mix(in oklab, var(--base0C) 42%, var(--bg));
+  --band-edge: color-mix(in oklab, var(--base0C) 65%, var(--bg));
   --waiting: color-mix(in oklab, var(--base09) 18%, var(--bg));
   /* The ladder the meter counts: green, green-yellow, yellow, orange, red. `low`
      is a mix because the format has no slot between green and yellow, and five
@@ -656,8 +807,31 @@ nav a, nav a:visited { color: var(--muted); }
    about: the box is 24.69px against a sibling's 19.5, and the nav is 28 either
    way because the theme toggle is a 28px circle and it is the tallest thing in
    the row. Giving a row of space back at the heading and taking it again here
-   would be the change undoing itself, so a test measures this too. */
-nav a[aria-current="page"], nav a[aria-current="page"]:visited {
+   would be the change undoing itself, so a test measures this too.
+   The footer's Help link wears the same mark on the Help page, which left the
+   nav for the footer and took its you-are-here with it. One rule and not a copy
+   of it, because two copies of a mark are two marks that drift. In the footer it
+   is fighting `#build a, #build a:visited`, (1,0,1) and (1,1,1), and
+   `#build a:hover`, (1,1,1), which underlines. It is written above all three, so
+   every tie goes to them on order, and it wins each on weight instead: (1,1,1)
+   and the `:visited` twin at (1,2,1) against the first two, and the `:hover`
+   twin at (1,2,1) against the third. The `:hover` twin is not redundant beside
+   the `:visited` one, however surely a link to the page you are on is visited.
+   A browser takes only colours from a rule matched through `:visited`, so that
+   a reader's history cannot be read back out of the layout, and it decides every
+   other property as though the link were unvisited. So the `:visited` twin
+   carries the accent and nothing else, and without the `:hover` twin the Help
+   page's own Help link was underlined under the pointer, visited or not —
+   measured in Chrome with a trusted hover, while `tests/cascade.py`, which then
+   let `:visited` reach every property, said it was not. The nav has no twin of
+   this kind because it has no hover rule to fight: nothing styles a hovered nav
+   link. The link sits inside a `<span>` in the footer — see the template — so
+   it is an inline box there and not a flex item, and the padding widens the
+   mark without making the row taller: measured in Chrome, the footer is 26.3px
+   on the Help page and on the Table alike, where as a flex item it was 31.5. */
+nav a[aria-current="page"], nav a[aria-current="page"]:visited,
+#build a[aria-current="page"], #build a[aria-current="page"]:visited,
+#build a[aria-current="page"]:hover {
   color: var(--accent); font-weight: 600; text-decoration: none;
   background: var(--surface-2); border: 1px solid var(--accent);
   border-radius: 3px; padding: .1rem .45rem; }
@@ -701,8 +875,8 @@ h1 { font-size: 1.35rem; margin: .2rem 0 .6rem; }
 /* The scheme picker, sized to the corner it stands in rather than to the control
    bars: it is the only select on the page that is not a filter, and at the
    filters' size it read as one more thing to answer. */
-.schemepick select { font-size: 12px; padding: .1rem 1.4rem .1rem .4rem;
-                     background-position: right .3rem center; }
+.schemepick select, #who select { font-size: 12px; padding: .1rem 1.4rem .1rem .4rem;
+                                   background-position: right .3rem center; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
            overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* The right end of the nav, as one group rather than two things each pushing
@@ -787,10 +961,42 @@ pre.mermaid[data-processed] svg { height: auto; }
    element and of the body includes it. The rule that mattered was never "how far
    from the content" — it was "be measurable". */
 #build {
-  display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: .3rem .5rem;
   margin: 0; padding: .55rem 0 0;
   border-top: 1px solid var(--line);
   font-size: 11px; color: var(--muted); font-family: var(--font-mono);
+}
+/* **One line, at every width.** It wrapped, and on a phone, with the corner
+   parked here, it came out three lines tall. jcanton, 2026-09-25: "only one line
+   with a meatball/hamburger/arrow menu where the items that do not fit get
+   hidden". `foldBuild` in the shell's script does the hiding, and all it asks is
+   whether the row is wider than the footer.
+
+   That question only has an honest answer if nothing on the row can give. The
+   corner and its picker are `min-width: 0` so that they shrink in the nav, and
+   left to do that here they would squeeze the picker to a sliver before the row
+   ever reported that it did not fit. So nothing shrinks, and the row either fits
+   or overflows. */
+#build > *, #build .corner > * { flex-shrink: 0; }
+#build .corner { flex-wrap: nowrap; }
+#build > #buildmore::before { content: none; }
+#buildmore { position: relative; }
+#buildmore > summary {
+  list-style: none; cursor: pointer; padding: 0 .4rem; border-radius: 3px;
+  font-size: 16px; line-height: 1;
+}
+#buildmore > summary::-webkit-details-marker { display: none; }
+#buildmore > summary:hover, #buildmore[open] > summary { color: var(--accent); }
+/* Upwards, because the footer is the last row of the window and there is nothing
+   below it to open into. Absolutely placed, so opening it adds nothing to the
+   footer's height and `measureRoom`, which skips positioned elements, never
+   sees it. The right edge is the button's, and the button is the last thing on
+   the row. */
+.buildshelf {
+  position: absolute; right: 0; bottom: calc(100% + .45rem); z-index: 40;
+  display: flex; flex-direction: column; align-items: flex-end; gap: .55rem;
+  padding: .6rem .75rem; white-space: nowrap;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 4px;
 }
 #build a, #build a:visited { color: inherit; text-decoration: none; }
 #build a:hover { color: var(--accent); text-decoration: underline; }
@@ -894,7 +1100,7 @@ body:has([data-fills]) { padding-bottom: 2px; }
 #controls .aside > * { margin: 0; }
 #controls .facets { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline;
                     margin-top: .5rem; }
-/* The fold's handle, and above 40rem there is nothing to fold: the `<details>`
+/* The fold's handle, and off a phone there is nothing to fold: the `<details>`
    ships `open` and stays open, so a summary here would be a control that says
    "Filters" over filters that are already on the screen. `display: none` on a
    summary does not close its details or hide the content — only the marker and
@@ -1183,6 +1389,12 @@ li.task-list-item input { margin-right: .35em; }
    is FOR is not the same question as whether anything on it can be pressed. */
 .hill-control { display: none; }
 .record.editing .hill-control { display: block; }
+/* A finger's drag along the hill is the control's, and a finger's swipe down the
+   page is still the page's. Without this a touch that began on the hill was the
+   browser's to pan with, which it took — `pointercancel` — and the ball never
+   moved. `pan-y` and not `none`: the hill is a hundred pixels tall on a phone,
+   and a page that will not scroll under a thumb that lands on it is worse. */
+.hill-control { touch-action: pan-y; }
 /* A drawing has no text in it and so no baseline of its own, and the record
    pages' facts list aligns its rows on one (`#facts { align-items: baseline }`).
    The label for a hill was therefore hung off the BOTTOM of the picture, a
@@ -1383,6 +1595,38 @@ dt:has(+ dd .hill) { align-self: start; }
    what stop it making the row taller than the box in it, the same reason
    `.keyrow`'s children lose theirs. */
 #controls .searching #summary { margin: 0 0 0 auto; text-align: right; }
+/* The table page's column heads on a table that is not the table page — the
+   betting table and the record lists, through `gripColumns` and `sortHeads`
+   below: a grip on each head's right edge, the sorted head in bold, and its
+   direction as a small triangle in the accent. jcanton, 2026-10-13: "same as
+   the table in table/ style: with draggable column separators and the same bold
+   for the sorted column and the little triangles for sorting". The same
+   numbers as `_TABLE_STYLE`'s rules, under `.gripped` so neither page's rules
+   can reach the other's: (0,2,1) here against the table page's (0,1,1), on
+   tables the table page never draws. `th` keeps the `position: sticky` that
+   `thead th` gives it, which is what the grip is absolute against. */
+/* Border-box, because a drag freezes each head at the width it is DRAWN at, which
+   includes its padding: in content-box that width went back in as the content,
+   and the first touch of a grip grew every column by its padding — the betting
+   table jumped from 1360px to 1504px before the pointer had moved. */
+.gripped th { box-sizing: border-box; }
+.gripped th .grip { position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+                    cursor: col-resize; }
+.gripped th .grip::before { content: ""; position: absolute; top: 20%; bottom: 20%;
+                            right: 3px; width: 1px; background: var(--line-strong); }
+.gripped th .grip:hover::before,
+.gripped th .grip.dragging::before { background: var(--accent); width: 2px; }
+.gripped th.sorted { color: inherit; font-weight: 700; }
+/* Sized by hand, a row is one line high and a cell that does not fit ends in an
+   ellipsis — jcanton, 2026-10-13: "eclipsing instead of new lines when reducing
+   the widths of columns". Only once a grip has been used: a table laid out by
+   the browser still wraps a long title, which is what it has always done. */
+.gripped.sized th, .gripped.sized td { white-space: nowrap; overflow: hidden;
+                                       text-overflow: ellipsis; }
+.gripped th .dir { display: inline-block; width: .8em; color: var(--accent); }
+.gripped th button.sorter { font: inherit; color: inherit; background: none; border: 0;
+                            padding: 0; cursor: pointer; text-transform: inherit;
+                            letter-spacing: inherit; text-align: inherit; }
 /* The whole phrase, not the digit: "1 blocking problems" in danger red with the
    count black beside it read as two separate facts. And the colour has to mean
    something — at zero it is muted, because danger nobody can act on is danger
@@ -1417,6 +1661,26 @@ span.bar > span { display: block; height: 100%; background: var(--accent); }
 .chip { display: inline-block; font-family: var(--font-mono); font-size: 11px;
         line-height: 1.45; text-transform: uppercase; letter-spacing: .04em;
         padding: .1rem .4rem; border-radius: 2px; white-space: nowrap; }
+/* The record references a box holds, by title, above the box that adds one
+   (`refChips`). Not `.chip`, which is the uppercase mono label a kind or a status
+   wears: these are titles somebody reads, at the page's own size. One line each,
+   a long title cut with an ellipsis and given back whole on hover — jcanton,
+   2026-10-20, having seen them wrap in the card: "I'd make the titles eclipse,
+   not wrap, and display in full when hovering over them", and the × on the left
+   so it stays put while the titles end in different places. `[hidden]` written
+   out, because the `display` above it would otherwise keep an empty row laid out. */
+.refs { display: flex; flex-wrap: wrap; gap: .25rem; margin: 0 0 .25rem; }
+.refs[hidden] { display: none; }
+.ref { display: inline-flex; align-items: center; max-width: 100%; box-sizing: border-box;
+       border: 1px solid var(--line-strong); border-radius: 3px; background: var(--surface);
+       padding: .05rem .45rem .05rem 0; font-size: 13px; line-height: 1.45; }
+/* `white-space` said outright rather than inherited: the card draws each fact
+   on one line already, and the record page does not. */
+.ref > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref > button { flex: none; border: 0; background: none; margin: 0; padding: 0 .35rem;
+                font: inherit; line-height: 1; color: var(--muted); cursor: pointer; }
+.ref > button:hover { color: var(--danger); }
+.ref.on { outline: 2px solid var(--focus); outline-offset: 1px; }
 {#- Written by the loop rather than by hand: five statuses times four tokens is
     twenty values to keep in step, and the pair that drifts is the pair nobody
     reads until a chip turns white on white.
@@ -1474,6 +1738,18 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
 .sev-mark { font-family: var(--font-mono); font-size: 11px; cursor: help; }
 .sev-mark-blocker { color: var(--sev-blocker); }
 .sev-mark-warn { color: var(--sev-warn); }
+/* GitHub's mark where the pull requests a record lists disagree with its status:
+   `--ok` for all landed, `--danger` for all closed unmerged, and struck through
+   as well for the second, so the two differ in shape and not only in hue. One
+   em, so it sits on the line of the chip or the sentence beside it. */
+.ghmark { display: inline-block; width: 1em; height: 1em; margin-left: 4px;
+          vertical-align: -0.15em; cursor: help; }
+.ghmark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.ghmark path { fill: currentColor; }
+.ghmark .ghgap { fill: none; stroke: var(--bg); stroke-width: 4.5; stroke-linecap: round; }
+.ghmark .ghstrike { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.gh-landed { color: var(--ok); }
+.gh-dropped { color: var(--danger); }
 /* Every interactive thing, and :focus-visible rather than :focus so a mouse
    click does not leave a ring behind it. :where() keeps the specificity at zero,
    so a page stylesheet loaded after this one still wins on colour. */
@@ -1659,7 +1935,7 @@ table.tight-priority td[data-col="priority"] .chip.pri { padding: .1rem .3rem; }
    on a row that has only one key and would push a lone legend to the right edge
    for no reason anybody asked for. */
 .keyrow > .legend + .legend { margin-left: auto; }
-/* Nothing to fold above 40rem, and nothing to say so. Same shape as the filter
+/* Nothing to fold off a phone, and nothing to say so. Same shape as the filter
    bar's summary and for the same reason — see `#controls .facetbox > summary`.
    `.keyrow` keeps its own top margin, so the folded box adds none of its own. */
 .keyfold > summary, .windowfold > summary { display: none; }
@@ -1997,7 +2273,9 @@ tr.nothing .hint { margin: 0 0 .75rem; }
   table.unfitted { width: max-content; min-width: 100%; }
   table.unfitted th, table.unfitted td { white-space: nowrap; }
 }
-@media (max-width: 40rem) {
+/* `phone` is `env.PHONE`: below 40rem, or a touch screen under 32rem tall — a
+   phone on its side, which is wider than 40rem and has least room of all. */
+@media {{ phone }} {
   input, select, textarea { font-size: 16px !important; }
   /* The search box is `min-width: 16rem`, which was 256px of 13px text and is
      256px of 16px text — the same box holding a fifth fewer characters, so
@@ -2039,13 +2317,19 @@ tr.nothing .hint { margin: 0 0 .75rem; }
      the whole risk of folding this away is a filter somebody forgot. */
   #controls .facetbox > summary .facetboxsaid { color: var(--accent); margin-left: .35rem; }
   #controls .facetbox > summary .facetboxsaid:empty { display: none; }
-  /* The footer holds the corner on a phone — see `stowCorner`. A row rather than
-     a stack, and wrapping, because the three controls in it are narrow and the
-     version line beside them is short: on a 390px page they come out as two
-     lines where the nav was spending one on its own. `margin-left: auto` is the
-     corner's own rule and still right here — it pushes the controls away from
-     the version line, which is the only other thing on the row. */
-  #build { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+  /* The footer holds the corner on a phone — see `stowCorner`. Still one line:
+     what does not fit is folded into `#buildmore` rather than wrapped onto a
+     second one. `margin-left: auto` is the corner's own rule and still right
+     here. The corner comes after everything but the fold, so it pushes the
+     controls away from the version, the plan's sha, Help and Report issue. */
+  #build { gap: .5rem .75rem; }
+  /* The fold's `⋯` is a target and was 22x16, two pixels from the theme
+     toggle's 28px circle: the one control on the row a thumb is sent to when the
+     row runs out of room. As big as that circle, and centred like it. */
+  #buildmore > summary {
+    display: flex; align-items: center; justify-content: center;
+    min-width: 28px; min-height: 28px; padding: 0;
+  }
   /* The nav loses the element that was forcing it wide, so what is left is
      links. Nothing else changes: they were already wrapping. */
   #build .corner { font-size: 13px; }
@@ -2058,6 +2342,21 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     font-size: 11px; color: var(--muted);
     text-transform: uppercase; letter-spacing: .04em;
   }
+  /* Window and Key share a row while both are shut. They were a 31px row each,
+     and on a phone on its side that second row was most of what pushed the
+     timeline's footer off the screen. An open one is a block again, so what it
+     holds still drops in underneath its own handle rather than beside the
+     other's. */
+  .windowfold:not([open]), .windowfold:not([open]) + .keyfold:not([open]) {
+    display: inline-block; margin-right: 1.5rem;
+  }
+}
+/* The furniture a phone on its side cannot spare. 390px is the whole window
+   there, and a sentence about how to drag is the one line above the plan that
+   says nothing about the plan — the reader turning the phone has already read
+   it upright. */
+@media {{ short_phone }} {
+  #controls .aside > .hint { display: none; }
 }
 /* A reader who has told their operating system they want less motion gets none.
    It is a system setting and not a preference this app keeps, so there is no
@@ -2372,6 +2671,108 @@ function found(needle, hay) {
 // A login, a tag and a pull request are copied off a screen, so the substring
 // tier already serves them and the loose tier only costs them. `nameable` in
 // `index.py` builds `narrow`.
+// Which column a table is sorted by, drawn the way the table page draws it: the
+// head in bold, ▴ or ▾ in its `.dir`, and `aria-sort` for a reader who cannot see
+// either. `th` is the sorted head, or null for none.
+function sortHeads(table, th, descending) {
+  for (const head of table.querySelectorAll('th[data-sort]')) {
+    const here = head === th;
+    head.classList.toggle('sorted', here);
+    head.setAttribute('aria-sort', here ? (descending ? 'descending' : 'ascending') : 'none');
+    const dir = head.querySelector('.dir');
+    if (dir) dir.textContent = here ? (descending ? '▾' : '▴') : '';
+  }
+}
+
+// A grip on the right edge of every head of `table`: drag it and the line between
+// that column and the next one moves, remembered per browser under `key`;
+// double-click any grip and the table lays itself out again. The table page's own
+// grips are not this — they live inside its fit model, which clamps, sheds and
+// re-proportions fourteen columns to the window — and the two tables this serves
+// have no fit to keep in step with, so this is only the gesture.
+//
+// **The table stays as wide as the page** — jcanton, 2026-10-13. So a drag moves
+// a line between two columns and never the table's right edge: what one column
+// gains the next one gives up, and the last column has no grip at all, because
+// its right edge is the page's. The widths are kept as SHARES of the table, not
+// pixels, so a layout made in one window is the same layout in another one.
+//
+// Every column is frozen at the width it is DRAWN at when a drag starts, the
+// table page's rule and for its reason: sizing one column of an automatic layout
+// reflows all the others under the pointer. Sized by hand, a cell holds one line
+// and ends what does not fit in an ellipsis (`.sized` in the stylesheet) rather
+// than growing a second line. And nothing on a phone, where the record lists
+// stop being columns at all.
+function gripColumns(table, key) {
+  // A table with no head row has no columns to grip — and the JS tests' DOM
+  // shim, which builds no `tHead`, is the page this would otherwise throw on.
+  if (!table || !table.tHead) return;
+  const heads = [...table.tHead.rows[0].cells];
+  const name = th => th.dataset.col || String(heads.indexOf(th));
+  let shares = {};
+  try { shares = JSON.parse(remembered.get(key) || '{}') || {}; } catch (e) { shares = {}; }
+  const apply = () => {
+    for (const th of heads) th.style.width = shares[name(th)] + '%';
+    table.style.tableLayout = 'fixed';
+    table.classList.add('sized');
+  };
+  const reset = () => {
+    shares = {};
+    remembered.forget(key);
+    for (const th of heads) th.style.width = '';
+    table.style.tableLayout = '';
+    table.classList.remove('sized');
+  };
+  table.classList.add('gripped');
+  heads.slice(0, -1).forEach((th, at) => {
+    const grip = document.createElement('span');
+    grip.className = 'grip';
+    grip.setAttribute('aria-hidden', 'true');
+    th.append(grip);
+    grip.onclick = event => event.stopPropagation();
+    grip.ondblclick = event => { event.stopPropagation(); reset(); };
+    grip.onpointerdown = event => {
+      event.stopPropagation();
+      event.preventDefault();
+      grip.classList.add('dragging');
+      const drawn = heads.map(head => head.getBoundingClientRect().width);
+      const whole = drawn.reduce((sum, width) => sum + width, 0);
+      const next = at + 1;
+      const share = widths => {
+        heads.forEach((head, k) => {
+          shares[name(head)] = Math.round(widths[k] / whole * 10000) / 100;
+        });
+        apply();
+      };
+      share(drawn);
+      const from = event.clientX;
+      const move = e => {
+        // Neither column narrower than 40px, which is the table page's floor.
+        const delta = Math.max(40 - drawn[at], Math.min(drawn[next] - 40, e.clientX - from));
+        const widths = drawn.slice();
+        widths[at] += delta;
+        widths[next] -= delta;
+        share(widths);
+      };
+      const stop = () => {
+        grip.classList.remove('dragging');
+        remembered.set(key, JSON.stringify(shares));
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', stop);
+      };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', stop);
+    };
+  });
+  // Read back only when it still describes these columns: a list that has
+  // gained or lost one since is laid out afresh rather than half by hand.
+  // And only when it is shares at all: a hundred, give or take the rounding.
+  const wide = getComputedStyle(table.tHead).display !== 'none';
+  const total = heads.reduce((sum, th) => sum + (shares[name(th)] || 0), 0);
+  if (wide && heads.every(th => shares[name(th)] > 0)
+      && Object.keys(shares).length === heads.length && Math.abs(total - 100) < 1) apply();
+}
+
 function bare(needle, wide, narrow) {
   if (!needle) return 0;
   if (wide.includes(needle)) return 1;
@@ -2552,9 +2953,9 @@ function cardTitleOf(id) {
 //
 // **The names are fields and not the card's own vocabulary**, which is the whole
 // of what changed here on 2026-09-18. The card used to list `With` — the
-// assignees minus the owner, deduped, because "ann, ann" is a box nobody trusts
+// developers minus the owner, deduped, because "ann, ann" is a box nobody trusts
 // the rest of — and `Scheduled`, one row holding two dates. Both read well and
-// neither is a field: the right-click box edits `assignees` and `start_date`,
+// neither is a field: the right-click box edits `developers` and `start_date`,
 // and a card that shows one thing while the box beside it edits another is two
 // boxes however alike they look. jcanton, asking for exactly this: "it should
 // display the editable fields as the edit view, so owner, assignees, reviewer,
@@ -2689,6 +3090,7 @@ function showCard(row, x, y, extra) {
   if (!CARD || !row) return Promise.resolve();
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
+  cardPinned = false;
   cardShowing = row.id;
   CARD.innerHTML = cardHtml(row, extra || []);
   CARD.hidden = false;
@@ -2725,6 +3127,8 @@ const CARD_DELAY = 600;
 const CARD_GRACE = 220;
 let cardTimer = 0;
 let cardLeaving = 0;
+// Whether the card was opened by a click rather than by a hover. See `pinCard`.
+let cardPinned = false;
 // Whether a right-click menu is up. `design/context-menus.md`: **opening the menu
 // kills the card, and the card does not come back while the menu is up** — and the
 // third of that rule's three parts is this flag, because the pointer is sitting over
@@ -2951,10 +3355,22 @@ if (CARD_GRIP) CARD_GRIP.ondblclick = () => {
   fitCardGrip();
 };
 
+// A card opened by a click, which a pointer leaving does not close. The graph
+// opens its card this way — jcanton, 2026-10-12: "let's not make the pop-up card
+// show up on hover, only when clicking a record/node". A clicked card that went
+// the moment the pointer wandered off it would be a hover card with an extra
+// step, so it stays until something says it should go: a press anywhere outside
+// it, Escape, or `hideCardNow` from the page (a pan, a zoom, a drag).
+function pinCard(row, x, y, extra) {
+  const shown = showCard(row, x, y, extra);
+  cardPinned = Boolean(CARD && row && !cardStandsDown);
+  return shown;
+}
+
 // Asked for by a pointer leaving, and answered a moment later: the gap between
 // the row and the card is a place the pointer has to be allowed to cross.
 function hideCard() {
-  if (!CARD || cardResizing) return;
+  if (!CARD || cardResizing || cardPinned) return;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardLeaving = setTimeout(hideCardNow, CARD_GRACE);
@@ -2966,9 +3382,23 @@ function hideCardNow() {
   if (!CARD || cardResizing) return;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
+  cardPinned = false;
   cardShowing = null;
   CARD.hidden = true;
 }
+
+// The two ways out of a pinned card that are not the page's own. Capture phase,
+// so a press on something that stops its own event still closes the card — and
+// so it runs BEFORE the click it belongs to, which is what lets a click on a
+// second node close the first card and then open the second, in that order.
+// A press inside the card is somebody reading it: scrolling, selecting, dragging
+// its grip.
+addEventListener('pointerdown', event => {
+  if (cardPinned && !CARD.contains(event.target)) hideCardNow();
+}, true);
+addEventListener('keydown', event => {
+  if (cardPinned && event.key === 'Escape') hideCardNow();
+});
 
 // The card, out of the way while the right-click menu owns the pointer, and back
 // afterwards. One function for `pop.py` to call rather than three globals for it to
@@ -2990,6 +3420,7 @@ function cardYields(yielding) {
   if (!yielding) return;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
+  cardPinned = false;
   cardShowing = null;
   if (CARD) CARD.hidden = true;
 }
@@ -3032,6 +3463,258 @@ function announce(message) {
     return;
   }
   where.textContent = message;
+}
+
+// --- record references, by their titles ------------------------------------
+//
+// jcanton, 2026-10-20: "when editing dependencies of a record (in the blocked-by
+// field) it shows record ids but not titles … when going in editing view I see
+// [task-c4d934, pitch-4a7250, pitch-bdb8d1] and it's not immediately obvious
+// which one that is." And of the right-click card's Edit: "same problem for the
+// same field". Adding one was already fine — the completion offers titles — so
+// the defect was the list you remove from.
+//
+// So every box that holds record ids draws them as titles: one chip per
+// reference, with × to take it away, above the box that still adds one. Here in
+// the shell and not beside either completion, because there are two and they
+// cannot share anything else: `attachSuggest` (`controls.py`) on the record
+// page, the create form and the table's cells, and `popComplete` (`pop.py`) on
+// the right-click card, which completes through a `<datalist>` because two of
+// its three host pages carry no `SUGGEST` at all. `known` is `{value, label}`
+// rows, the shape both already hold.
+//
+// **The box stays the box.** Every host reads and writes `input.value` — the
+// detail page's Reset, the table's commit on blur, the card's save — and the
+// table commits the moment its input loses focus. So the input keeps focus, keeps
+// every key and keeps its listeners, and `.value` is redefined ON THIS INPUT to
+// answer the whole list (chips, then whatever is still being typed) while the
+// text drawn inside it is only what is being typed. Writing `.value` from
+// anywhere redraws the chips, which is what keeps a Reset or a redraw honest
+// without every host having to know the chips exist. The × buttons are kept out
+// of the focus order and take no focus when pressed, because a button that took
+// it would blur the table's cell and commit a half-made edit.
+//
+// The keyboard path is Backspace: in an empty box it marks the last chip and a
+// second press removes it, so holding the key down to clear what you typed does
+// not run on into the references. ←/→ move the mark, Delete removes the marked
+// one, Escape lets go of it. Each is said through `announce`. × leaves the
+// keyboard where it was: jcanton, on the first version, "clicking x on one moves
+// to the add field … not ideal" — it focused the box, which opened its list.
+//
+// **`folds`** is the record page's and the create form's, where every field of a
+// record is on screen at once: "I prefer the way the popup card works: renders as
+// plain text until you click on the field for editing it. the /detail page shows
+// all the chips all the time and that's not great". Folded, the field is one line
+// of titles — a button, so the keyboard reaches it — and pressing it opens the
+// chips and the box; leaving the box folds it again, saying what it now holds.
+// The card and the table's cell open a field only when it is pressed already,
+// so they never fold.
+function refChips(input, known, multi, folds) {
+  const titles = new Map(known.map(one => [one.value, one.label]));
+  // Where the text drawn in the box lives: the browser's own `value` accessor,
+  // found on the prototype chain before it is shadowed below — or, under the node
+  // driver, whose elements carry `value` as a plain property, a variable.
+  const drawn = (() => {
+    for (let at = input; at; at = Object.getPrototypeOf(at)) {
+      const own = Object.getOwnPropertyDescriptor(at, 'value');
+      if (own && own.get) return {get: () => own.get.call(input), set: v => own.set.call(input, v)};
+      if (own) { let held = own.value || ''; return {get: () => held, set: v => { held = v; }}; }
+    }
+    let held = '';
+    return {get: () => held, set: v => { held = v; }};
+  })();
+  const split = text => String(text || '').split(',').map(one => one.trim()).filter(Boolean);
+  const said = id => titles.get(id) || id;
+  // What a reference says on hover, where its line cuts it: the whole title, and
+  // the id, which is what a commit message or a teammate in chat will quote.
+  const whole = id => (titles.has(id) ? `${titles.get(id)} — ${id}` : id);
+  let ids = [];
+  // The chip the keyboard has marked, or -1.
+  let on = -1;
+  const row = document.createElement('span');
+  row.className = 'refs';
+  row.setAttribute('role', 'list');
+  row.hidden = true;
+  if (input.parentNode) input.parentNode.insertBefore(row, input);
+  let opened = !folds;
+  const say = folds ? document.createElement('button') : null;
+  if (say) {
+    say.type = 'button';
+    say.className = 'refsays';
+    if (input.parentNode) input.parentNode.insertBefore(say, row);
+    say.addEventListener('click', unfold);
+    // The field's own label names a box that is not drawn while folded, and a
+    // press on it would focus nothing. It opens the field instead.
+    for (const label of input.labels || []) {
+      label.addEventListener('click', event => {
+        if (opened) return;
+        event.preventDefault();
+        unfold();
+      });
+    }
+    // Folded on the way out, after the browser has said where focus went: a press
+    // on a suggestion or a × keeps it in the box and must not fold anything.
+    input.addEventListener('blur', () => setTimeout(() => {
+      if (document.activeElement !== input) fold();
+    }, 0));
+  }
+  // What the folded line says it is, for a reader who cannot see the line: the
+  // field's own name first, then what is in it.
+  const named = () => {
+    const label = (input.labels || [])[0];
+    return label ? label.textContent.trim() : input.getAttribute('aria-label') || '';
+  };
+  // What the box under the chips is for, since it is empty most of the time it
+  // is on screen. A hint and not a name: the name is the field's label, which
+  // this leaves alone, and a box somebody already gave a hint keeps its own.
+  if (!input.getAttribute('placeholder'))
+    input.setAttribute('placeholder', multi ? 'Type to add…' : 'Type to change…');
+
+  function drawChips() {
+    row.innerHTML = '';
+    ids.forEach((id, i) => {
+      const chip = document.createElement('span');
+      chip.className = i === on ? 'ref on' : 'ref';
+      chip.setAttribute('role', 'listitem');
+      chip.title = whole(id);
+      const word = document.createElement('span');
+      word.textContent = said(id);
+      // First, on the left: a cut title ends at a different place on every chip,
+      // and a × after it moved with it.
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.textContent = '×';
+      drop.setAttribute('tabindex', '-1');
+      drop.setAttribute('aria-label', `Remove ${said(id)}`);
+      drop.addEventListener('mousedown', event => event.preventDefault());
+      drop.addEventListener('click', () => remove(i));
+      chip.append(drop, word);
+      row.append(chip);
+    });
+    row.hidden = !opened || !ids.length;
+    input.classList.toggle('folded', !opened);
+    if (say) {
+      // One title to a line, as the record being read draws the same field
+      // (`_link_lines` in `detail.py`), each cut to its line and whole on hover.
+      const typed = drawn.get().trim();
+      const lines = [...ids.map(id => [said(id), whole(id)]), ...(typed ? [[typed, typed]] : [])];
+      say.hidden = opened;
+      say.innerHTML = '';
+      for (const [text, whole] of lines) {
+        const line = document.createElement('span');
+        line.className = 'refline';
+        line.textContent = text;
+        line.title = whole;
+        say.append(line);
+      }
+      if (!lines.length) say.textContent = '—';
+      say.setAttribute('aria-label',
+        `${named()}: ${lines.map(([text]) => text).join(', ') || 'none'}, edit`);
+    }
+  }
+  function unfold() {
+    opened = true;
+    drawChips();
+    input.focus();
+  }
+  function fold() {
+    if (!opened) return;
+    opened = false;
+    on = -1;
+    drawChips();
+  }
+  // Every host listens for `input` to know the value moved. Marked, so the
+  // completion beside this does not open its list over a removal.
+  function changed() {
+    const event = new Event('input', {bubbles: true});
+    event.fromRefs = true;
+    input.dispatchEvent(event);
+  }
+  function hold(id) {
+    if (!multi) ids = [id];
+    else if (!ids.includes(id)) ids.push(id);
+  }
+  function remove(i) {
+    const gone = ids[i];
+    ids.splice(i, 1);
+    on = -1;
+    drawChips();
+    changed();
+    announce(`${said(gone)} removed`);
+  }
+  function mark(i) {
+    on = i;
+    drawChips();
+    if (on >= 0) announce(`${said(ids[on])} — Backspace removes it`);
+  }
+
+  Object.defineProperty(input, 'value', {
+    configurable: true,
+    get() {
+      const typed = drawn.get().trim();
+      if (!multi) return typed || ids[0] || '';
+      return [...ids, ...split(typed).filter(one => !ids.includes(one))].join(', ');
+    },
+    set(text) {
+      ids = multi ? [...new Set(split(text))] : split(text).slice(0, 1);
+      drawn.set('');
+      on = -1;
+      drawChips();
+    },
+  });
+  input.value = drawn.get();
+
+  // A comma ends a reference, and a whole id is one already — typed, pasted, or
+  // picked from the card's `<datalist>`, which writes the id into the box.
+  input.addEventListener('input', event => {
+    if (event.fromRefs) return;
+    const marked = on >= 0;
+    on = -1;
+    const parts = drawn.get().split(',');
+    const last = parts.pop().trim();
+    const done = multi ? parts.map(one => one.trim()).filter(Boolean) : [];
+    const whole = titles.has(last);
+    if (!done.length && !whole) { if (marked) drawChips(); return; }
+    done.forEach(hold);
+    if (whole) hold(last);
+    drawn.set(whole ? '' : last);
+    drawChips();
+  });
+  input.addEventListener('blur', () => { if (on >= 0) { on = -1; drawChips(); } });
+  input.addEventListener('keydown', event => {
+    if (!ids.length || drawn.get() !== '') return;
+    if (event.key === 'Backspace') {
+      event.preventDefault();
+      if (on >= 0) remove(on);
+      else mark(ids.length - 1);
+    } else if (event.key === 'Delete' && on >= 0) {
+      event.preventDefault();
+      remove(on);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      mark(on < 0 ? ids.length - 1 : Math.max(0, on - 1));
+    } else if (event.key === 'ArrowRight' && on >= 0) {
+      event.preventDefault();
+      mark(on + 1 < ids.length ? on + 1 : -1);
+    } else if (event.key === 'Escape' && on >= 0) {
+      // Consumed, so the table's cell and the card's field, which both answer
+      // Escape by giving the whole edit up, leave it alone.
+      event.preventDefault();
+      mark(-1);
+    }
+  });
+
+  return {
+    ids: () => ids.slice(),
+    typed: () => drawn.get(),
+    add(id) {
+      hold(id);
+      drawn.set('');
+      on = -1;
+      drawChips();
+      changed();
+    },
+  };
 }
 
 // One reading of a write's answer, for every page that writes.
@@ -3228,7 +3911,34 @@ function measureRoom() {
 // `fitRoom` takes no arguments on purpose: it is handed straight to
 // `addEventListener`, and a counter as a default parameter would have been
 // re-seeded with an Event on every resize.
-function settleRoom(passes) {
+//
+// **A correction is kept only if the page took it.** The slack assumes that
+// whatever the document overflows by is height the box can give back, and that
+// is not always so: something outside the box can overflow the document on its
+// own. On a phone the likely one is the browser's toolbar: once it slides away
+// `100dvh` is taller than the root's `clientHeight`, which stays the height of
+// the window with the toolbar showing. Taking height off the box changes
+// neither number, so the same overflow came back on every pass and was added
+// again each time: three passes, three times the overflow, all of it drawn as
+// empty page between the box and the footer. jcanton, 2026-09-25, with phone
+// screenshots of the graph and of a record: "very visible on mobile but also on
+// PC, especially in the record edit view". Measured in Chrome, a stray 41px
+// overflow on the edit view left a 123px band.
+//
+// So each pass says what it took off and what it was paying for, and the next
+// pass checks whether the overflow actually shrank. If it did not, the
+// overflow was never the box's to fix: the correction is handed back and the
+// settle stops.
+//
+// `turn` is which settle this is. Every `resize` starts one, a phone's toolbar
+// fires a burst of them while it slides, and a settle already waiting on a frame
+// used to go on adding to the one `roomSlack` the newer settle had just reset.
+// Five resizes in one burst left the band at 205px, which is why the gap was
+// "sometimes enlarged": its size depended on how many events the gesture fired.
+// A newer settle ends every older one.
+let roomTurn = 0;
+function settleRoom(passes, turn, owed) {
+  if (turn !== roomTurn) return;
   const moved = measureRoom();
   // What the page still overflows by, asked AFTER the box has been given its
   // height. Anything here is height the subtraction did not know about, so it
@@ -3237,18 +3947,23 @@ function settleRoom(passes) {
   // going to, and a correction that keeps growing is better stopped than
   // trusted.
   const over = ROOT.scrollHeight - ROOT.clientHeight;
-  if (over > 0 && passes > 1) {
-    roomSlack += over;
-    requestAnimationFrame(() => settleRoom(passes - 1));
+  if (owed && over >= owed.over) {
+    roomSlack -= owed.took;
+    measureRoom();
     return;
   }
-  if (moved && passes > 1) requestAnimationFrame(() => settleRoom(passes - 1));
+  if (over > 0 && passes > 1) {
+    roomSlack += over;
+    requestAnimationFrame(() => settleRoom(passes - 1, turn, {over, took: over}));
+    return;
+  }
+  if (moved && passes > 1) requestAnimationFrame(() => settleRoom(passes - 1, turn));
 }
 // The slack is forgotten before each fresh settle and learned again. It corrects
 // for whatever the current layout hides, and a window that has just grown may
 // hide less — so carrying the old number forward would leave the box short of
 // the room it now has, for ever, with nothing on screen to say why.
-function fitRoom() { roomSlack = 0; settleRoom(4); }
+function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
 </script>
 <main id="main">
 {#- What the plan holds that is not a record, on every page because the shell
@@ -3268,6 +3983,29 @@ function fitRoom() { roomSlack = 0; settleRoom(4); }
   <li><code>{{ one.path }}</code> — {{ one.why }}</li>{% endfor %}
 </ul>
 <p class="hint">Fix them in git and reload. Everything else in the plan is here.</p>
+</section>
+{% endif -%}
+{#- Its sibling, and a second <section> rather than more <li>s in the one above:
+    the two say opposite things about the same kind of file. That banner says the
+    file is not in the plan; this one says it is, that everything else in it is in
+    force, and that one setting in it could not be used as written — a number that
+    is not one, so the page is drawing a date or a bar off a bound nobody chose, or
+    a `views` or `kinds` that names something it cannot switch, so the nav is what
+    the tool made of it rather than what was written. Folded into one list the
+    headline would have to be true of both, and the only sentence true of both is
+    "something is wrong with some files", which is not a sentence anybody can act
+    on.
+
+    `.unreadable` for the paint, because the two ARE the same weight and a second
+    colour would be a channel carrying nothing. The `id` differs so a test and a
+    reader can tell them apart, which is the only thing that has to. -#}
+{% if unusable %}<section id="unusable" class="unreadable">
+<p class="headline">{{ unusable_headline }}</p>
+<ul>{% for one in unusable %}
+  <li><code>{{ one.path }}</code> — {{ one.why }}</li>{% endfor %}
+</ul>
+<p class="hint">Fix them in git and reload. Everything else in the plan is here,
+  and so is the rest of each of these files.</p>
 </section>
 {% endif -%}
 {#- The pile banner: the loud middle of the deferred push's escalation, between
@@ -3325,23 +4063,50 @@ function fitRoom() { roomSlack = 0; settleRoom(4); }
     In the footer because it is reference and not news. It is on every page, out
     of the reading column, and it is the first thing anybody asks for when a
     page behaves unexpectedly. -#}
-{#- Three facts, and the separators between them are the stylesheet's rather than
-    the template's. Written as literal ` · ` text this row said `openproj 0.37.0 ·
-    · Report issue` for the whole of the second or two before the health poll
-    answered, and permanently on any page where it never did — a dangling
-    separator beside an empty box, which reads as a page that failed to draw
-    something rather than as a fact that has not arrived. `#planhead:empty` takes
-    the span out and `* + *::before` takes its dot with it. -#}
+{#- A row of facts and links, and the separators between them are the
+    stylesheet's rather than the template's. Written as literal ` · ` text this
+    row said `openproj 0.37.0 · · Report issue` for the whole of the second or two
+    before the health poll answered, and permanently on any page where it never
+    did — a dangling separator beside an empty box, which reads as a page that
+    failed to draw something rather than as a fact that has not arrived.
+    `#planhead:empty` takes the span out and `* + *::before` takes its dot with
+    it. -#}
 <footer id="build">
-  <a href="https://github.com/jcanton/openproj/releases/tag/v{{ version }}">openproj
+  <a id="version" href="https://github.com/jcanton/openproj/releases/tag/v{{ version }}">openproj
     {{ version }}</a>
   {%- if live %}<span id="planhead" title="the plan's own commit"></span>{% endif %}
   {#- jcanton, 2026-08-27, asking for it here and not in the nav: it is the thing
       you reach for at the moment the page in front of you is wrong, which is the
       moment you are already reading this row for the version to quote. `issues/new`
       on the TOOL's repository and never the plan's — a bug in the app is not a
-      record in somebody's plan, and the two repositories stay two. -#}
-  <a href="https://github.com/jcanton/openproj/issues/new">Report issue</a>
+      record in somebody's plan, and the two repositories stay two.
+
+      Help immediately before it, for the same reason: the documentation is what
+      you open when a page is not doing what you expected. It left the nav for
+      this row (see `_OFF_NAV`), so this is also where the Help page marks itself.
+
+      **In a `<span>`, and the span is the whole of a defect.** The row's dots are
+      each child's own `::before`, and a `::before` is drawn inside the box of the
+      element it belongs to — so with the link a child of the row, the Help page
+      drew its separator inside the you-are-here box, in the accent and at 600, as
+      `[· Help]`. Seen on a screenshot, not in a test: every rule resolved the way
+      it was meant to. The span takes the dot and the link inside it takes the
+      box, and as an inline box inside a flex item the link's padding widens the
+      mark without making the row any taller on the one page that draws it. -#}
+  <span id="buildhelp"><a href="{{ links.help }}"
+    {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
+  <a id="report" href="https://github.com/jcanton/openproj/issues/new">Report issue</a>
+  {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
+      "on mobile takes up too much space: I'd rather it be only one line with a
+      meatball/hamburger/arrow menu where the items that do not fit get hidden".
+      Hidden until `foldBuild` below finds something that does not fit, so a
+      window wide enough for the whole row draws no button at all. A
+      `<details>` because it is how every other thing on a phone folds away
+      here: the filter bar, the key and the window controls. -#}
+  <details id="buildmore" hidden>
+    <summary title="More" aria-label="More">⋯</summary>
+    <div class="buildshelf"></div>
+  </details>
 </footer>
 <script>
 // **Sign-in, the plan picker and the theme toggle move to the footer on a
@@ -3372,15 +4137,112 @@ const CORNER = document.querySelector('nav .corner');
 const NAVBAR = document.querySelector('nav');
 const BUILD = document.getElementById('build');
 
+const BUILD_MORE = document.getElementById('buildmore');
+const BUILD_SHELF = BUILD_MORE && BUILD_MORE.querySelector('.buildshelf');
+
 function stowCorner(narrow) {
   if (!CORNER || !BUILD || !NAVBAR) return;
   const home = narrow ? BUILD : NAVBAR;
   // Appending a node that is already the last child of `home` is a no-op that
   // still moves focus off it in some browsers, so the question is asked first.
-  if (CORNER.parentElement !== home) home.append(CORNER);
+  // In the footer it goes before the fold, which stays the last thing on the row.
+  if (CORNER.parentElement !== home) home.insertBefore(CORNER, home === BUILD ? BUILD_MORE : null);
 }
+
+// **The footer is one line, and what does not fit goes into `#buildmore`.**
+// The row cannot wrap (see `#build`), so "does not fit" is simply the row being
+// wider than the footer, and the fold takes items off it one at a time until it
+// is not.
+//
+// This is the order they go in, first to last, and it is the whole of the
+// design. The build facts go first because they are reference and not news:
+// nobody reads the version until something behaves oddly. Then the two links you
+// reach for when a page is wrong, then the palette, then who you are. The theme
+// toggle goes last, because it is one small button and the one control here
+// somebody presses on a phone in the dark.
+//
+// A relocation and not a copy, for the reason `stowCorner` gives: one element,
+// one id, one listener. `BUILD_ITEMS` is where each one lives, in the order it
+// is drawn: the footer's own four, then the corner's three. An item goes back
+// in front of the next of its neighbours that is still at home, or else to the
+// end of its home. In the footer the end is just before the corner, or before
+// the fold button when the corner is in the nav. Only items whose home is in the
+// footer can fold: the corner in the nav is not this row's to fold.
+//
+// Remembered as homes and an order, and not as comment nodes left behind as
+// place markers, which was the first version of this. `tests/js/drive.js`
+// builds these pages without comment nodes, and every page it drove stopped
+// on `document.createComment` before its interesting half had run.
+const BUILD_ITEMS = ['#version', '#planhead', '#buildhelp', '#report',
+                     '#who', '.corner .schemepick', '#theme']
+  .map(selector => document.querySelector(selector))
+  .filter(Boolean)
+  .map(el => ({el, home: el.parentElement}));
+const BUILD_FOLDS = ['#planhead', '#version', '#report', '#buildhelp', '.corner .schemepick',
+                     '#who', '#theme']
+  .map(selector => document.querySelector(selector))
+  .map(el => BUILD_ITEMS.find(one => one.el === el))
+  .filter(Boolean);
+
+function unshelve(one) {
+  const later = BUILD_ITEMS.slice(BUILD_ITEMS.indexOf(one) + 1)
+    .find(other => other.home === one.home && other.el.parentElement === one.home);
+  const end = one.home !== BUILD ? null
+    : CORNER && CORNER.parentElement === BUILD ? CORNER : BUILD_MORE;
+  one.home.insertBefore(one.el, later ? later.el : end);
+}
+
+function foldBuild() {
+  // A row nothing is drawing has nothing to fold. This is the test `measureRoom`
+  // makes of its box, and for the same reason.
+  if (!BUILD_MORE || !BUILD_SHELF || !BUILD || !BUILD.getClientRects().length) return;
+  for (const one of BUILD_ITEMS) if (one.el.parentElement === BUILD_SHELF) unshelve(one);
+  BUILD_MORE.hidden = true;
+  const fits = () => BUILD.scrollWidth <= BUILD.clientWidth;
+  if (fits()) { BUILD_MORE.open = false; return; }
+  BUILD_MORE.hidden = false;
+  for (const one of BUILD_FOLDS) {
+    if (one.home !== BUILD && one.home.parentElement !== BUILD) continue;
+    BUILD_SHELF.append(one.el);
+    if (fits()) break;
+  }
+  // In the menu they read in the order the row had them, not in the order they
+  // were taken off it.
+  BUILD_SHELF.append(...BUILD_ITEMS
+    .filter(one => one.el.parentElement === BUILD_SHELF).map(one => one.el));
+}
+
+// For the two things that change the row's width after load without the window
+// changing: the plan's sha arriving and the sign-in being filled in. The room
+// is measured again after, because the row's height is its tallest item and the
+// fold can take the tallest one, the theme toggle, off it.
+function refoldBuild() {
+  foldBuild();
+  if (typeof fitRoom === 'function') fitRoom();
+}
+
 stowCorner(NARROW.matches);
-NARROW.addEventListener('change', event => stowCorner(event.matches));
+foldBuild();
+NARROW.addEventListener('change', event => { stowCorner(event.matches); refoldBuild(); });
+// Before the shell's own `resize` listener, which is registered further down, so
+// the room is measured against a footer that has already folded.
+addEventListener('resize', foldBuild);
+if (document.fonts) document.fonts.ready.then(foldBuild);
+// A menu closes the way the others on these pages do: a press anywhere else, or
+// Escape, which hands focus back to the button that opened it. The Escape stops
+// here, because on the record page Escape also ends an editing session, and
+// closing a menu must not do that.
+if (BUILD_MORE) {
+  document.addEventListener('pointerdown', event => {
+    if (BUILD_MORE.open && !BUILD_MORE.contains(event.target)) BUILD_MORE.open = false;
+  });
+  BUILD_MORE.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !BUILD_MORE.open) return;
+    event.stopPropagation();
+    BUILD_MORE.open = false;
+    BUILD_MORE.querySelector('summary').focus();
+  });
+}
 
 // No third state to cycle through: with nothing stored the page follows the
 // system, and the first click stores the opposite of whatever is on screen.
@@ -3471,11 +4333,59 @@ if (SCHEME) {
   };
 
   WHO.replaceChildren();
-  if (!me.login) {
+  if (me.auth === 'tailscale') {
+    // The tailnet said who this is, so there is nothing to sign in to and
+    // nothing to sign out of: a Sign in here would lead to a GitHub sign-in no
+    // tailnet server has configured, and Sign out would answer with the same
+    // person on the next request. Somebody it did not name reads, and the
+    // reason is the tailnet's own sentence — visible as a word, whole on hover
+    // and to a screen reader, because it is long and names an address.
+    if (me.login && me.choices) {
+      // A shared device: the tailnet names it by one person, and anybody on
+      // the list may pick who it writes as (`acting_as`, `web.py`). A native
+      // select, because it is the one control a tablet, a phone and a screen
+      // reader all already know how to drive.
+      const pick = document.createElement('select');
+      pick.setAttribute('aria-label', 'Writing as');
+      pick.title = 'Writing as — the name this device saves under';
+      for (const login of me.choices) {
+        const option = element('option', login === me.device ? `${login} (this device)` : login);
+        option.value = login;
+        option.selected = login === me.login;
+        pick.append(option);
+      }
+      pick.onchange = async () => {
+        pick.disabled = true;
+        try {
+          const response = await fetch('/api/as', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+            body: JSON.stringify({login: pick.value}),
+          });
+          // Reloaded rather than patched: who may edit what — the icon picker,
+          // the editor's socket, a stamped `reported_by` — is decided when the
+          // page is served, so the page has to be served again to be right.
+          if (response.ok) { location.reload(); return; }
+        } catch (error) { /* said below */ }
+        pick.value = me.login;
+        pick.disabled = false;
+        announce('Could not switch who this device writes as');
+      };
+      WHO.append(pick);
+    } else if (me.login) {
+      WHO.append(element('span', me.login));
+    } else {
+      const reading = element('span', 'read-only', 'warn');
+      reading.title = me.refusal || '';
+      WHO.append(reading);
+    }
+  } else if (!me.login) {
     // A link and not a form: `/login` starts an OAuth redirect, which is a
     // navigation, and the state cookie it sets is what makes the callback safe.
+    // Carrying where it was pressed, so the sign-in comes back to this page
+    // rather than to the front one; the server keeps only a path of its own.
     const link = element('a', 'Sign in');
-    link.href = '/login';
+    link.href = '/login?' + new URLSearchParams({next: location.pathname + location.search});
     WHO.append(link);
   } else {
     WHO.append(element('span', me.login));
@@ -3490,6 +4400,7 @@ if (SCHEME) {
     WHO.append(form);
   }
   WHO.hidden = false;
+  refoldBuild();
 })();
 
 // `2026-09-01` as `01.09.2026` — `_read_date`'s twin, and the second copy of a
@@ -3575,8 +4486,9 @@ if (document.fonts) document.fonts.ready.then(() => fitRoom());
 // back link is the records list, exactly as it was before any of this.
 //
 // The switch is `ORIGIN`, which the shell fills in for a view and leaves empty
-// for the two pages that are reached from one. Nothing here decides between
-// them twice: a page with a name stamps, a page without one reads.
+// for the pages that are not one: the record page, the create form and Help,
+// which `_OFF_NAV` explains. Nothing here decides between them twice: a page
+// with a name stamps, a page without one reads.
 const ORIGIN_KEY = 'openproj:origin';
 const ORIGIN = {{ origin|tojson }};
 if (ORIGIN) {
@@ -3599,6 +4511,27 @@ if (ORIGIN) {
 // that costs the whole script and not one line.
 const ORIGIN_PATH = new RegExp({{ origin_path|tojson }});
 
+// The stamp names a page that may have been switched off since it was written: a
+// tab that sat on the Table while somebody committed `views` without it would
+// otherwise send its reader, from every record it opens, to a page that answers
+// 404. Honoured only while the page it names is one this plan still has — a nav
+// href exactly, or in the export a file of that name at the end of an absolute
+// path on disk; or, on a server, a per-cycle or deck page under a prefix that is
+// still on. `BACK_TO` is the shell's answer to which those are, as data.
+//
+// A path that ends in a slash is judged as the index file under it, because an
+// export put on a web server is reached at `https://host/plan/` as well as at
+// `…/plan/index.html`. Judged as it came, that landing was no file of the
+// export, and a filter it had been opened with was lost from every back link.
+// Only for the export's file names: a server's routes are matched exactly.
+const BACK_TO = {{ back_to|tojson }};
+function stillHere(href) {
+  const path = href.split('?')[0];
+  const file = path.endsWith('/') ? path + 'index.html' : path;
+  return BACK_TO.exact.some(p => path === p || (!p.startsWith('/') && file.endsWith('/' + p)))
+    || BACK_TO.under.some(p => path.startsWith(p));
+}
+
 // **Where you came from, or nothing.** A function rather than the inline read it
 // was, because a second caller turned up: deleting a record navigates away, and
 // the page it should navigate to is the page the back link would have taken you
@@ -3610,7 +4543,8 @@ const ORIGIN_PATH = new RegExp({{ origin_path|tojson }});
 // view is simply the view before it, which is nothing anybody wants.
 function cameFrom() {
   const from = forThisTab.map(ORIGIN_KEY);
-  if (typeof from.href !== 'string' || !ORIGIN_PATH.test(from.href) || !from.label) return null;
+  if (typeof from.href !== 'string' || !ORIGIN_PATH.test(from.href)
+      || !stillHere(from.href) || !from.label) return null;
   return {href: from.href, label: from.label};
 }
 
@@ -3715,19 +4649,67 @@ function showMoved(message) {
   // and into the reading view with their draft folded away. Reported by jcanton
   // beside the banner itself.
   //
-  // `keepView` is the record page's, and it is the same call Save makes before
-  // the reload IT needs: the mode goes into `sessionStorage` and `RESUMING` puts
-  // it back. Guarded on the function rather than on a page name, because the
-  // shell is on every page and only one of them has a view to keep — the same
-  // shape `aceSurface` uses for the preferences block it cannot assume.
+  // `keepView` is the record page's: the mode goes into `sessionStorage` and
+  // `RESUMING` puts it back. Save made the same call before its own reload
+  // until it stopped reloading at all. Guarded on the function rather than on a
+  // page name, because the shell is on every page and only one of them has a
+  // view to keep — the same shape `aceSurface` uses for the preferences block it
+  // cannot assume.
   document.getElementById('movedgo').onclick = () => {
     if (typeof keepView === 'function') keepView();
   };
 }
 
-const source = new EventSource('/api/events');
-source.onmessage = event => {
+// **Closed while the page is in the back/forward cache, and opened again when it
+// comes out.** Chrome keeps a page it has navigated away from alive for the Back
+// button, and this stream lives on with it. Six of them is Chrome's whole
+// allowance of connections to one HTTP/1.1 host, so the seventh page a tab
+// opened on `openproj serve` or `demo` asked for a socket that never came, and
+// sat on a blank screen for as long as anybody waited — measured, 2026-10-08,
+// and gone the moment the cache was switched off. Cloud Run speaks HTTP/2 to the
+// browser and multiplexes every stream over one connection, which is why the
+// deployed service never showed it.
+//
+// What a stream misses while closed is not replayed — no stream here ever is,
+// see `PILE_POLL_MS` — so a page brought back by Back is the plan as it was when
+// you left it, which is what Back has always meant. A save from it is checked
+// against the commit it was drawn from, like any other.
+let source = null;
+function listen() {
+  source = new EventSource('/api/events');
+  source.onmessage = onPlanNews;
+  source.onerror = () => { if (document.hidden) unlisten(); };
+}
+addEventListener('pagehide', () => { if (source) source.close(); source = null; });
+addEventListener('pageshow', event => { if (event.persisted && !source) listen(); });
+
+// Cloud Run bills the instance while any request is open, and this stream is
+// one, so a tab left in the background can keep the service billed all night
+// (936k vCPU-seconds in October 2026, against 180k free). A hidden tab does not
+// reconnect when Cloud Run closes the stream at five minutes, and listens again
+// once it is looked at.
+//
+// Nothing missed is replayed, so the first health read after that compares the
+// plan's head with the last one this page heard of.
+let deaf = false;
+let heardHead = null;
+function unlisten() {
+  source.close();
+  source = null;
+  deaf = true;
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !source) listen();
+});
+function heardOf(commit) {
+  if (deaf && heardHead && commit !== heardHead) showMoved({commit, changed: []});
+  deaf = false;
+  heardHead = commit;
+}
+
+function onPlanNews(event) {
   const message = JSON.parse(event.data);
+  if (message.t === undefined) heardHead = message.commit;
   // The pusher's landed frame — {t: 'landed', landed, remapped, parked},
   // defined at web.py's `broadcast` — re-broadcast as a DOM event because its
   // consumers (the table's row marks, the editor's save state) live in other
@@ -3738,7 +4720,8 @@ source.onmessage = event => {
     dispatchEvent(new CustomEvent('openproj:landed', {detail: message}));
   }
   if (movedWriting) movedHeld.push(message); else showMoved(message);
-};
+}
+listen();
 </script>
 <script>
 // The pile banner (design/deferred-push.md, "Saying it on the page"): loud when
@@ -3767,7 +4750,13 @@ const PILE_POLL_MS = 60000;
 // A second request for seven characters would be a second request.
 function showHead(health) {
   const at = document.getElementById('planhead');
-  if (at && health.head) at.textContent = 'plan ' + String(health.head).slice(0, 7);
+  if (!at || !health.head) return;
+  const said = 'plan ' + String(health.head).slice(0, 7);
+  // Refolded only when the text changes: this runs on every poll, and a refold
+  // that moves nothing still re-measures the room.
+  if (at.textContent === said) return;
+  at.textContent = said;
+  refoldBuild();
 }
 
 function showPile(health) {
@@ -3817,16 +4806,23 @@ async function readPile() {
     const health = await (await fetch('/api/health')).json();
     showPile(health);
     showHead(health);
+    if (health.head) heardOf(health.head);
   } catch {}
 }
 
 readPile();
-setInterval(readPile, PILE_POLL_MS);
+// Not while hidden: a poll can be the request that cold-starts the instance,
+// and a cold start clones the plan
+setInterval(() => { if (!document.hidden) readPile(); }, PILE_POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) readPile(); });
 // A landing is the moment the news changes, so re-ask at once rather than in
 // up to a minute — but only while the banner is up: on the quiet day this
 // frame follows every save, and a health read per save per open tab is a poll
 // pretending to be an event.
 addEventListener('openproj:landed', () => { if (!pile.hidden) readPile(); });
+// Back from the back/forward cache, the numbers are as old as the visit away
+// was long — and the interval was frozen with the page, so ask now.
+addEventListener('pageshow', event => { if (event.persisted) readPile(); });
 </script>
 {% endif %}
 {% if mermaid %}
@@ -4027,31 +5023,6 @@ def _titles(index: Index) -> dict[str, str]:
     return {record_id: record.title for record_id, record in index.plan.items()}
 
 
-# The nav, as the field on `Links` each item points at and the word it wears. One
-# list, because the mark for "you are here" has to be decided once: six links
-# written out by hand were six places for a seventh page to be added and marked
-# nowhere.
-_NAV = (
-    ("records", "Records"),
-    ("table", "Table"),
-    ("graph", "Graph"),
-    ("timeline", "Timeline"),
-    ("cycles", "Cycles"),
-    ("people", "People"),
-    # The two inbox views of the landing list, back in the nav on jcanton's
-    # ruling: quick access to what would otherwise be a click on a filter. At
-    # the end, where they sat before the records flip retired their own pages.
-    ("issues", "Issues"),
-    ("notes", "Notes"),
-    # Last, and after the two inboxes, because it is the one item that is not a
-    # view of the plan: everything to its left answers "what is in the plan" and
-    # this answers "what is this tool". jcanton, 2026-08-27, given the choice
-    # between a nav item and a `?` in the corner beside the sign-in — the corner
-    # already wraps at 500px with three controls in it, and an item here gets the
-    # `aria-current` mark every other page has for free.
-    ("help", "Help"),
-)
-_NAV_KEYS = frozenset(key for key, _ in _NAV)
 # What a record page's back link calls the view it was opened from. The nav's own
 # word for all but one of them: the link has read "all records" since it could
 # only ever go there, and that is still what it says when there is no origin to
@@ -4081,10 +5052,21 @@ _ORIGIN_PATH = r"^/($|[^/\\])"
 # export `detail.html` is the whole corpus in one file — so the page stays and
 # only the nav slot goes.
 #
+# `help` was the last nav item and is in the footer now, immediately before Report
+# issue, on jcanton's word, 2026-09-24: "we move help to the footer, before
+# `report issue` and it stays always on there". It is the thing you reach for when
+# the page in front of you is not what you expected — the same argument that put
+# Report issue there — and it was the one item in the nav that was not a view of
+# the plan. Its you-are-here mark moved with it: `help_here` puts
+# `aria-current="page"` on the footer's link. Off the nav it has no word in `_NAV`
+# either, so it stamps no back-link origin, and a record page reached after it
+# goes back to the view the tab stood on before Help; Help itself has no
+# `a.origin` for a stamp to rewrite.
+#
 # The distinction is worth encoding rather than deleting the guard: `/deck/<n>`
 # is in the same position already, and the next page will be too. A `current`
 # that is neither a nav item nor a page is still a typo and still raises.
-_OFF_NAV = frozenset({"detail"})
+_OFF_NAV = frozenset({"detail", "help"})
 _PAGE_KEYS = _NAV_KEYS | _OFF_NAV
 
 
@@ -4095,6 +5077,7 @@ def _page(
     links: Links = STATIC,
     current: str = "",
     unreadable: Sequence[Unreadable] = (),
+    unusable: Sequence[Unusable] = (),
     origin: str | None = None,
     fills: bool = False,
     cardtitles: dict[str, str] | None = None,
@@ -4130,9 +5113,22 @@ def _page(
     than by each page for the same reason the nav mark is decided here: eight
     entry points is eight places to forget, and the one page that forgot would be
     a page that silently draws a plan short.
+
+    `unusable` is its sibling and rides in the same banner: the config and cycle
+    files that READ, and hold a setting that could not be used as written — a
+    number nothing can compute with, or a `views` or `kinds` naming something it
+    cannot switch. A separate parameter and a separate sentence, because every
+    word of the one above is false about it — those files are in the plan, their
+    other settings are in force, and this page is drawn off what the tool made of
+    the value rather than leaving it out. Said as every entry point and not as a
+    count, which was twelve here until the switched-off page made it wrong;
+    `test_every_page_says_so_when_a_config_file_holds_a_number_that_is_not_one`
+    is the tripwire that the next one cannot forget it.
     """
     if current and current not in _PAGE_KEYS:
         raise ValueError(f"{current!r} is not a page: {sorted(_PAGE_KEYS)}")
+    labels = dict(_NAV)
+    settings = len({(one.path, one.field) for one in unusable})
     return _compiled(_SHELL).render(
         title=title,
         content=Markup(content),
@@ -4160,6 +5156,7 @@ def _page(
         hillgeom=hill_geometry(),
         fills=fills,
         unreadable=list(unreadable),
+        unusable=list(unusable),
         # The sentence is built here rather than in the template, because English
         # is not something Jinja should be doing arithmetic about and "1 files
         # are not records" is the kind of copy that tells a reader nobody looked.
@@ -4169,13 +5166,35 @@ def _page(
             else f"{len(unreadable)} files in the plan are not records, "
             "so nothing in them is on this page."
         ),
+        # Built here for the same reason, and worded from the reader's side of
+        # it: what is wrong is not that a file is broken but that this page was
+        # drawn from something other than what the plan says. "Not a number" was
+        # the whole of it until `views` and `kinds` could be written wrong too —
+        # a typo, a duplicate, a name that is always on — and the list below each
+        # headline says which, in the setting's own words.
+        # Counted by setting and not by line: `views: [records, help, detail]` is
+        # one setting with three things wrong in it, and "3 settings" named a
+        # count the reader could not find anywhere in the file.
+        unusable_headline=(
+            "One setting in the plan could not be used as written, so this page was "
+            "drawn without it."
+            if settings == 1
+            else f"{settings} settings in the plan could not be used as written, "
+            "so this page was drawn without them."
+        ),
+        # The plan's nav and not every view there is: `links.nav` is what
+        # `links_for` left on, in the plan's order, and `_NAV` only says what each
+        # one is called.
         nav=[
-            {"href": getattr(links, key), "label": label, "current": key == current}
-            for key, label in _NAV
+            {"href": getattr(links, key), "label": labels[key], "current": key == current}
+            for key in links.nav
         ],
+        # The Help page's own mark, on the one link to it, which is in the footer
+        # and not in the nav above: `nav` cannot carry it.
+        help_here=current == "help",
         # What a record page reached from this one should call it, and empty on
-        # the pages that are not a view: the record page itself and the create
-        # form. That is the whole switch the script below turns on — a page with
+        # the pages that are not a view: the record page itself, the create form
+        # and Help. That is the whole switch the script below turns on — a page with
         # a name leaves it behind, a page without one picks it up. `current` and
         # not the route, because `/cycle/37` and `/deck/37` are both Cycles and
         # neither of them is the href of the link that leads there.
@@ -4192,6 +5211,17 @@ def _page(
             else next((_BACK_LABEL.get(key, label) for key, label in _NAV if key == current), "")
         ),
         origin_path=_ORIGIN_PATH,
+        # Where a stamp may still lead, for `stillHere` in the script: the nav's
+        # own hrefs exactly, and the per-cycle and deck pages under their prefixes
+        # while those are on — neither `/cycle/37` nor `/deck/37` is a nav href,
+        # and both are views a record is opened from. Data rather than a pattern
+        # written into the template, for the reason `origin_path` is. A blank field
+        # is left out rather than carried: an empty prefix is a prefix of
+        # everything.
+        back_to={
+            "exact": [href for key in links.nav if (href := getattr(links, key))],
+            "under": [prefix for prefix in (links.cycle, links.deck) if links.served and prefix],
+        },
         # The shell writes the chip and legend rules for every status, so a
         # status added to the model cannot arrive with three of its four tokens
         # wired up and the fourth still spelled out on a line nobody edited. The
@@ -4210,8 +5240,9 @@ def _page(
         highlighting=Markup(_code_css()),
         status_slots=STATUS_SLOTS,
         # Only the server has an event stream to listen to. A static page opening a
-        # connection to nothing would retry forever in the console.
-        live=links.table.startswith("/"),
+        # connection to nothing would retry forever in the console. Asked of
+        # `served` and not of any one link, which a plan may blank.
+        live=links.served,
         # Whether this page has a diagram on it, and therefore whether it should
         # carry the loader that fetches 3.5 MB of mermaid.
         #
@@ -4235,4 +5266,124 @@ def _page(
         # not about the page, and `pyproject.toml` and `__init__.py` have already
         # disagreed with each other and with the newest tag once.
         version=__version__,
+    )
+
+
+# The views whose address can answer "turned off": the lists of an optional kind,
+# which exist exactly when their kind does (`model.reachable`). Every other view
+# answers at its address in every plan, listed or not. Each has a nav word, which
+# is the page's heading, since that is what the reader was looking for.
+_CAN_BE_OFF = tuple(view for view in VIEWS if VIEW_NEEDS.get(view) in RUNG)
+assert all(view in _NAV_KEYS for view in _CAN_BE_OFF), "a list that can be off has a nav word"
+_OFF_STYLE = ".switched-off code { font-family: var(--font-mono); }\n"
+# Every key of an address that Records filters on: the bar's fields, which are
+# `FILTERS` in `_FILTER_JS` plus `predicate`, and the search box. What a
+# switched-off address hands on to Records, and nothing else.
+_RECORDS_READS = frozenset({*_PLAN_FACETS, "q"})
+
+
+def render_not_found(index: Index, links: Links = STATIC, said: str = "", path: str = "") -> str:
+    """What a page address answers when there is nothing at it.
+
+    It was FastAPI's own answer: `{"detail":"no record 'nope'"}` as the whole
+    document, with no viewport tag, so on a phone it was a 980px-wide line of
+    JSON in tiny type and no way back into the plan but the browser's Back. A
+    stale link in a chat message is the most ordinary way to arrive here.
+
+    The same shell and the same shape as `render_switched_off` — one heading,
+    one sentence, one way out — and still a 404. `said` is the route's own
+    reason when it gave one; `path` is what is said when it did not, because a
+    mistyped address has no reason but the address.
+    """
+    sentence = (
+        Markup("{}.").format(said[:1].upper() + said[1:].rstrip("."))
+        if said
+        else Markup("There is no page at <code>{}</code>.").format(path or "this address")
+    )
+    body = Markup(
+        '<section class="switched-off">\n<h1>Not in this plan</h1>\n<p>{}</p>\n'
+        "<p>A link to something renamed or deleted in git lands here too.</p>\n"
+        '<p><a href="{}">Go to Records</a></p>\n</section>'
+    )
+    return _page(
+        "openproj — not found",
+        body.format(sentence, links.records),
+        _OFF_STYLE,
+        links,
+        "",
+        index.unreadable,
+        index.unusable,
+        fills=True,
+    )
+
+
+def render_switched_off(
+    index: Index,
+    links: Links = STATIC,
+    view: str = "issues",
+    off_kind: str = "",
+    query: str = "",
+) -> str:
+    """What an address answers when the plan has switched its page off.
+
+    The ordinary shell, so the nav and the footer are where they always are and
+    the nav is already this plan's; one heading; one sentence naming the setting
+    and the file it is in; and one way out. A 404 and not a redirect: a bookmark
+    that silently landed on Records would be a page that changed under its reader
+    with nothing saying why — empty looking like broken, which is finding F1.
+
+    `view` is the list that is off — only the Issues and Notes lists can be,
+    because every other view answers at its address whether `views` lists it or
+    not (`model.reachable`); `off_kind`, when given, is a kind that is off
+    instead, at the create form. Either way **the setting named is `kinds`**,
+    because that is the one that did it: a sentence sending the reader of
+    `/issues` to `views` sent them to a key whose every fix — `views: [issues]`
+    — turned the other views out of the nav and left Issues off. `_scope` on the
+    Help page asks the same question the same way.
+
+    The way out is Records with the filters the address carried, and Records
+    bare when it carried none. **Only the filters**, which are the keys Records reads —
+    `_RECORDS_READS` — and not the query as it came: `/timeline?zoom=week` has no
+    filter in it, and a link promising "the same filters" that landed on every
+    record with Clear hidden said something that was not going to happen. And an
+    inbox's kind with them, because `/issues?owner=ann` is issues owned by ann,
+    and its kind is in its route rather than its query.
+
+    `current` is empty on purpose: a page that marked Table would stamp itself as
+    the tab's origin and send the next record's back link here again. And every
+    parameter but `index` has a default, because the namespace censuses draw
+    every `render_*` from an index alone.
+    """
+    kinds_from = index.switches_from.get("kinds", SWITCHES_FILE)
+    if off_kind:
+        heading, need = f"New {off_kind}", ""
+        said = Markup(
+            "{} are turned off for this plan. <code>kinds</code> in <code>{}</code> "
+            "decides which kinds of record it has."
+        ).format(RUNG[off_kind].directory.capitalize(), kinds_from)
+    else:
+        heading, need = dict(_NAV)[view], VIEW_NEEDS[view]
+        said = Markup(
+            "The {} list is turned off for this plan, because {} are. <code>kinds</code> "
+            "in <code>{}</code> decides which kinds of record it has."
+        ).format(heading, RUNG[need].directory, kinds_from)
+    kept = [(key, value) for key, value in parse_qsl(query) if key in _RECORDS_READS]
+    if kept and need:
+        kept = [("kind", need), *((key, value) for key, value in kept if key != "kind")]
+    if kept:
+        out = Markup('<a href="{}?{}">Show the same filters on Records</a>').format(
+            links.records, urlencode(kept)
+        )
+    else:
+        out = Markup('<a href="{}">Go to Records</a>').format(links.records)
+    body = Markup('<section class="switched-off">\n<h1>{}</h1>\n<p>{}</p>\n<p>{}</p>\n</section>')
+    return _page(
+        f"openproj — {heading.lower()}, turned off",
+        body.format(heading, said, out),
+        _OFF_STYLE,
+        links,
+        "",
+        index.unreadable,
+        index.unusable,
+        fills=True,
     )

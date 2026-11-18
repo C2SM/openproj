@@ -59,19 +59,29 @@ def headings(page: str) -> list[tuple[frozenset[str], str]]:
 
 
 class _Nav(HTMLParser):
-    """The nav's links, as (label, href, marked-as-current)."""
+    """One landmark's links, as (label, href, marked-as-current) — the nav's by
+    default, or the element with the id `landmark` (the footer is `build`).
 
-    def __init__(self) -> None:
+    The footer is asked for by id and not by tag, because a slide or a shaping
+    document can carry a `<footer>` of its own and the shell's is the one Help
+    moved into, taking its you-are-here mark with it.
+    """
+
+    def __init__(self, landmark: str = "") -> None:
         super().__init__(convert_charrefs=True)
         self.found: list[tuple[str, str, bool]] = []
-        self._in_nav = False
+        self._landmark = landmark
+        # The tag of the landmark being read, and empty outside it.
+        self._inside = ""
         self._link: tuple[str, bool] | None = None
         self._text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "nav":
-            self._in_nav = True
-        elif tag == "a" and self._in_nav:
+        if not self._inside and (
+            dict(attrs).get("id") == self._landmark if self._landmark else tag == "nav"
+        ):
+            self._inside = tag
+        elif tag == "a" and self._inside:
             found = dict(attrs)
             self._link = (found.get("href") or "", found.get("aria-current") == "page")
             self._text = []
@@ -81,8 +91,8 @@ class _Nav(HTMLParser):
             href, marked = self._link
             self.found.append(("".join(self._text).strip(), href, marked))
             self._link = None
-        elif tag == "nav":
-            self._in_nav = False
+        elif tag == self._inside:
+            self._inside = ""
 
     def handle_data(self, data: str) -> None:
         if self._link is not None:
@@ -96,11 +106,29 @@ def nav_of(page: str) -> list[tuple[str, str, bool]]:
     return parser.found
 
 
-class _Unreadable(HTMLParser):
-    """The shell's "not a record" banner: its headline, and each file it lists."""
+def footer_of(page: str) -> list[tuple[str, str, bool]]:
+    """(label, href, marked) for every link in the shell's footer, `#build`, in
+    document order. The shape `nav_of` answers in, because the question is the
+    same one: which links, where to, and which of them says it is this page."""
+    parser = _Nav("build")
+    parser.feed(page)
+    return parser.found
 
-    def __init__(self) -> None:
+
+class _Unreadable(HTMLParser):
+    """One of the shell's two file banners: its headline, and each file it lists.
+
+    `which` is the section id — `unreadable` for the plan files that are not
+    records, `unusable` for the config and cycle files that read and hold a
+    number nothing can compute with. One parser for both because the two sections
+    have the same shape on purpose and a second copy of this would be a second
+    thing to keep in step; the id is the only thing that differs, and it is the
+    only thing that tells a reader them apart.
+    """
+
+    def __init__(self, which: str = "unreadable") -> None:
         super().__init__(convert_charrefs=True)
+        self._which = which
         self.found: list[str] = []
         self.headline = ""
         self._depth = 0
@@ -109,7 +137,7 @@ class _Unreadable(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         found = dict(attrs)
-        if found.get("id") == "unreadable":
+        if found.get("id") == self._which:
             self._depth = 1
             # A banner that exists says at least this much, so an empty one is
             # still distinguishable from no banner at all.
@@ -155,6 +183,27 @@ def unreadable_in(page: str) -> list[str]:
     parser = _Unreadable()
     parser.feed(page)
     return parser.found
+
+
+def unusable_in(page: str) -> list[str]:
+    """ "<path> — <why>" for each file the page says holds a number that is not one.
+
+    `unreadable_in`'s sibling, and parsed rather than searched for the reason
+    that one gives — with a second one here: the two banners are drawn with the
+    same `class="unreadable"`, because they are the same weight and a second
+    colour would be a channel carrying nothing. A substring test cannot tell them
+    apart at all; the section id can.
+    """
+    parser = _Unreadable("unusable")
+    parser.feed(page)
+    return parser.found
+
+
+def unusable_banner_says(page: str) -> str:
+    """The headline of that banner, or "" when the page draws none."""
+    parser = _Unreadable("unusable")
+    parser.feed(page)
+    return parser.headline
 
 
 def banner_says(page: str) -> str:
@@ -308,6 +357,32 @@ def elements(page: str) -> list[Element]:
     parser = _Elements()
     parser.feed(page)
     return parser.found
+
+
+def tags(page: str) -> set[str]:
+    """Every element name a rendered document actually contains.
+
+    For the assertion whose whole content is "there is no `<img>` here" — which
+    is the shape that kept being written as `"<img" not in page`, and which that
+    string cannot answer for two reasons at once.
+
+    **A page carries its own stylesheet and its own scripts.** Everything is
+    inlined, so a `<style>` or `<script>` block is part of the text of every
+    page this app renders, and a comment inside one that names the element it is
+    describing satisfies the search. That is not a hypothetical: a comment added
+    to `styles.py` saying that a `<code>` inside a `<pre>` is inline failed a
+    deck test asserting `"<pre>" not in page` — a test about what a review slide
+    carries, red because of prose about a selector. `html.parser` reads the
+    contents of `<style>` and `<script>` as text, so nothing in either reaches
+    this set.
+
+    **And a substring cannot tell markup from text.** `&lt;script&gt;` in a
+    rendered fence contains no `<script`, but `<script` appears in plenty of
+    things that are not an element. Five escaping bugs shipped here under tests
+    that asserted on substrings of a page; the claim in every one of them was
+    about an element.
+    """
+    return {one.tag for one in elements(page)}
 
 
 # The renderer's own source, as one text. It was one file until render.py became

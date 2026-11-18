@@ -6,6 +6,7 @@ from pygments.formatters import HtmlFormatter
 from pygments.token import STANDARD_TYPES, Token
 
 from ..themes import FAMILIES, contrast
+from .env import PHONE
 
 # Which hue each status wears. The one place taste enters the derivation: the
 # format's eight hues are red, orange, yellow, green, cyan, blue, magenta, brown,
@@ -229,9 +230,17 @@ def _code_css(prefix: str = "hl-") -> str:
                 break
             node = node.parent
     return "\n".join(
-        f"{', '.join(sorted(selectors))} {{ color: var(--code-{role}); }}"
+        f"{', '.join(sorted(selectors))} "
+        f"{{ color: var(--code-{role});{_CODE_STYLE.get(role, '')} }}"
         for role, selectors in grouped.items()
     )
+
+
+# A comment is the one role told apart by its shape as well as its colour, in the
+# preview and in the editor alike (`.ace_comment` in `render/editor.py`): its hue
+# is `--muted`, which is the colour of everything on the page that is not the
+# point, and italic is what says this grey is a comment rather than a caption.
+_CODE_STYLE = {"comment": " font-style: italic;"}
 
 
 # `nowrap`, so Pygments hands back the spans and nothing else: the `<pre><code>`
@@ -388,6 +397,76 @@ _TREE_STYLE = """
 """
 
 
+# **On a phone a row is a card**, on the two tables a plan is read down: the
+# records list and the plan's table. At 390px the records list was a 1299px table
+# in a 350px box, so a reader saw a kind chip and the first twenty-odd characters
+# of each title, cut mid-word with no ellipsis; the plan's table gave its title
+# about fifteen characters and cut its status to `IN PROGR`. A title is the thing
+# being read, and a phone has room for one column.
+#
+# So the title wraps across the whole card and a few cells follow it on one line.
+# The SAME rows, restyled — not a second list drawn beside the table. Every filter,
+# every live redraw, every row mark and every empty state on these pages is
+# written against `<tr>`s, and a second builder for the phone would be each of
+# those written twice. Which cells follow the title is each table's own choice,
+# and it says so in its own sheet with `order` (title first, at -1) and by putting
+# `display: block` back on the cells it keeps; everything here is the mechanism.
+#
+# Specificity, resolved rather than guessed: `.carded > table > tbody > tr > td`
+# is (0,1,4), which beats every rule that sets padding, a border, a ground or a
+# position on these cells — the shared `th, td` at (0,0,2), the frozen columns'
+# bare `[data-col]` at (0,1,0), the severity grounds' `td.sev-cell-…` at (0,1,1),
+# the dimmed row's `tr.context > td` at (0,1,2). The tree's indent, `tr.dN >
+# td[data-col="title"]` at (0,2,2), is the one it does not beat, and it
+# needs the title's own (0,2,4) below, which says `padding: 0` again for exactly
+# that reason — (0,1,4) loses to it on the class. The grounds go because a ground
+# on one chip inside a card is a patch, not a state: the card says it instead.
+#
+# `:not([hidden])` on the row because the browser's own `[hidden]` is (0,1,0) and
+# the row rule below is (0,2,3) without it — any `hidden` row on a carded table
+# would come back on a phone. The records list pins its own `tr[hidden]` at
+# (1,1,2) and would survive; the table pins nothing, and is what this is for.
+_CARD_STYLE = (
+    """
+@media """
+    + PHONE
+    + """ {
+  /* (0,2,1), one class over `table.unfitted`'s phone rule in the shell, which
+     sizes the records list to its content: a card list that wide is one line
+     of title per card and a box that scrolls sideways again. */
+  .table-scroll.carded > table, .carded > table > tbody { display: block; width: auto; }
+  /* The headers sort and size columns, and a card has no columns. */
+  .carded > table > thead { display: none; }
+  .carded > table > tbody > tr:not([hidden]) {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem;
+    /* The tree's containing block, now that the title cell is not sticky: the
+       connectors are drawn down the whole card rather than down the title. */
+    position: relative;
+    padding: .5rem .5rem .6rem; border-bottom: 1px solid var(--line);
+  }
+  .carded > table > tbody > tr > td {
+    display: none; padding: 0; border: 0; background: none;
+    white-space: nowrap;
+  }
+  /* The title takes the whole first line and wraps there. Static, not sticky:
+     a frozen column is a column, and `position: sticky` here would also keep
+     being the box the tree's connectors are measured against. */
+  .carded > table > tbody > tr > td[data-col="title"] {
+    display: block; order: -1; flex: 1 0 100%; position: static; padding: 0;
+    white-space: normal; font-size: 15px; line-height: 1.35;
+  }
+  /* The link is the card's target: a block with room above and below it, so
+     the thing a thumb aims at is the line it reads and not twenty pixels of
+     underlined text. */
+  .carded > table > tbody > tr > td[data-col="title"] a { display: block; padding: .2rem 0; }
+  /* The rows that are not records — nothing matched, or the create control —
+     keep their one cell. */
+  .carded > table > tbody > tr:not([data-id]) > td { display: block; flex: 1 0 100%; }
+}
+"""
+)
+
+
 _SUGGEST_STYLE = """
 /* Absolute against the page, not against the cell it belongs to: `attachSuggest`
    parks the list on the body and writes its `top` and `left` in page
@@ -403,56 +482,28 @@ _SUGGEST_STYLE = """
 .suggest li { padding: .25rem .5rem; cursor: pointer; }
 .suggest li.on { background: var(--accent); color: var(--on-accent); }
 textarea.dropping { outline: 2px dashed var(--accent); outline-offset: -2px; }
-/* `flex: none`, and it is the whole of what keeps the toolbar on one row. The
-   bar is a flex line the toolbar shares with a status message, and a flex item's
-   default `min-width: auto` still lets it shrink to its content — so the marks
-   resolved to 430.9px where the fourteen buttons and their two rules need 482.8,
-   and wrapped, with the break falling inside the third group and no rule in
-   front of the two buttons that landed on the second row. Measured in Chrome at
-   1000, 1200, 1440 and 1920 CSS px: two rows at every one of them. The message
-   beside it takes the shrink instead, which is the right way round — it is a
-   sentence and it can wrap. `flex-wrap` stays as the answer to a window narrower
-   than the toolbar itself, where wrapping beats a scrollbar. */
+/* **The marks take the row, less what the full-page toggle needs, and wrap
+   inside it.** `flex: 1 1 0%`: a basis of nothing and all the growth, so the
+   line the bar is laid out on always has room for the toggle beside it, and the
+   marks get everything else — one row where that is enough, and wrapped inside
+   their own box where it is not.
+
+   It was `flex: none`, and before that the default. The default let the status
+   message beside the marks share the shrink, so a 97-character upload message
+   wrapped them at every width from 1000 to 1920 with the break inside a group;
+   `flex: none` stopped that by refusing to shrink at all, with a `max-width:
+   40rem` query to give the shrink back on a phone. But the column the bar is
+   drawn in is not the window: beside the fields it is the measure less 22.5rem,
+   600px in a 1000px window, and the query never fired there. The marks ran off
+   the end of the column, which is a scrollport, so the full-page toggle — the
+   last thing on the row — sat 53px past its edge and could not be pressed. The
+   Template button, 2026-10-09, made that the case at the default measure too.
+
+   The message no longer shares the row at all — see `.markbar > .hint` — so
+   nothing but the toggle competes with the marks for it, and the toggle is a
+   fixed 30px. */
 .marks { display: inline-flex; gap: .15rem; align-items: stretch; flex-wrap: wrap;
-         flex: none; }
-/* And the window the toolbar does not fit in, where `flex: none` is the wrong
-   answer and `flex-wrap` above cannot engage without this.
-
-   `0 0 auto` pins the bar at its max-content width whatever the window, so the
-   wrap never happens: measured in Chrome at 500px on /detail while editing, on
-   /new and on the since-deleted /note/new and /issue/new, the Link, Image,
-   Table and Horizontal-rule
-   buttons sat 101px past the right edge of `article.record` — off the surface,
-   reachable only by scrolling the whole document sideways, which is also what
-   took that page's `scrollWidth` to 581.
-
-   **`min-width: 0` is not needed here, and the fix this was written from said it
-   was the load-bearing half.** Measured both ways: `flex: 0 1 auto` alone gives
-   the same four widths the same answer. A flex item's automatic minimum size is
-   its MIN-CONTENT size, and the min-content size of a container that wraps is
-   its widest single item — one button, about 40px — not the whole bar. The
-   declaration would be inert, and an inert declaration under a comment calling
-   it load-bearing is the next reader's wasted hour.
-
-   `@media` and not `@container`, and that is measurement rather than taste: this
-   rule was proved at eight widths as a media query, in the days when the issue
-   and note pages loaded a stylesheet with no `container-type` in it and a
-   container query measured byte-identical to no fix at all on /note/new. Those
-   pages are gone and every editor now sits in `.panes`, which IS a container
-   (it was `article.record` until 2026-08-24, when the measure moved down to the
-   panes so the header could span the page) — but re-cutting this as a container
-   query is a re-measurement at eight widths on the merged page, not an edit.
-
-   40rem and not the 34rem this was first written for: that number was measured
-   against fourteen buttons needing 482.8px, and the history group made it
-   sixteen needing 561px. Swept in Chrome at eight widths on both surfaces:
-   unpatched, the overhang is 101px at 500, 41px at 560 and gone by 620; patched,
-   the bar is on two rows to 616 and back on one at 624. The query has to reach
-   past both numbers, and between 624 and 640 it applies and does nothing —
-   `flex-shrink` only shrinks an item there is not room for. */
-@media (max-width: 40rem) {
-  .marks { flex: 0 1 auto; }
-}
+         flex: 1 1 0%; }
 /* The line between one group of marks and the next. `align-self: stretch` so it
    is the height of the buttons rather than of the text inside them. */
 .marks .sep { width: 1px; background: var(--line); margin: 0 .3rem; align-self: stretch; }
@@ -464,8 +515,10 @@ textarea.dropping { outline: 2px dashed var(--accent); outline-offset: -2px; }
    above a document; `var(--line)` and `var(--muted)` in place of the default's
    `--line-strong` and `--fg` are the same argument in ink — sixteen controls at
    full contrast would shout over the writing they sit on. */
+/* 1.8rem and not 1.9: eighteen buttons, the toggle and four rules in the 664px
+   the default measure gives the column, on one row. At 1.9 they needed 680. */
 button.mark {
-  font-size: 12px; line-height: 1; min-width: 1.9rem; padding: .3rem .35rem;
+  font-size: 12px; line-height: 1; min-width: 1.8rem; padding: .3rem .35rem;
   border-color: var(--line); color: var(--muted);
 }
 button.mark:hover { border-color: var(--accent); color: var(--accent); }
@@ -562,7 +615,17 @@ _EDITING_STYLE = """
 .bodybar { display: none; gap: .6rem; align-items: baseline; margin: 1rem 0 .3rem; }
 /* The second row sits under the first rather than a paragraph's worth away: they
    are two halves of one bar, and the box they belong to is below both. */
-.bodybar.markbar { margin-top: .25rem; }
+.bodybar.markbar { margin-top: .25rem; flex-wrap: wrap; }
+/* **What the bar says goes under it, never beside it.** An upload's progress
+   and the gutter's note are sentences, the longest 97 characters, and beside
+   the marks they either squeezed them onto two rows or were squeezed to nothing
+   themselves. A line of their own, after the toggle in `order`, and none at all
+   while they are empty — which is nearly always, and an empty flex item still
+   costs a gap either side. `overflow-wrap: anywhere` because the longest of
+   them is one word: `assets/` and sixty-four hex digits, 550px on a 460px
+   column. */
+.markbar > .hint { order: 2; flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+.markbar > .hint:empty { display: none; }
 .record.editing .bodybar { display: flex; }
 .record.editing .field[hidden] { display: none; }
 /* One declaration for the box and for the numbers beside it. Written twice, the
@@ -638,6 +701,15 @@ button.stat.pick:hover { color: var(--accent); }
    and the word is in the element too, because a colour on its own is a channel a
    dichromat does not have. */
 .stat.over { color: var(--danger); font-weight: 600; }
+/* What a phone's editor can spare. A keymap is a set of keys a phone has no
+   keyboard for, and its picker was the item that wrapped the strip onto a second
+   line under the box. The marks' separators are a gap between groups, and the
+   gaps were what pushed sixteen 30px buttons onto a third row at 350px — a row
+   holding one `—`, 27px of the height Ace has least of with the keyboard up. */
+@media """ + PHONE + """ {
+  .statusbar .keymap { display: none; }
+  .marks .sep { display: none; }
+}
 .bodywrap { position: relative; }
 /* Three states of one thing, drawn as one control: adjacent segments inside a
    single bordered box, the pressed one filled. Visible outside a session as
@@ -922,8 +994,149 @@ article.record.editing .bodysplit { flex: 1; min-height: 16rem; }
    `.bodysplit` is definite in both: it is the growing row of `.main`. */
 article.record.editing .bodywrap { height: 100%; min-height: 0; }
 article.record.editing textarea.body-field { height: 100%; min-height: 0; resize: none; }
+/* **Full page: the article over the whole window, and only the writing left in
+   it.** jcanton, 2026-09-25, the drawing popup's toggle for the record editor
+   (`wholePage` in `_VIEWS` has the argument). `position: fixed`, and it is an
+   overlay the way `.drawpopup` is, not a layout: the page under it is left
+   exactly as it was, still filling the window, so taking the class off is the
+   whole of the way back.
+
+   z-index 15: over the nav's menus at 12, which it covers; under everything
+   parked on the body that has to open OVER the writing — the `[` completion
+   (20), the card (20), the right-click menu (25) and the drawing popup (40). A
+   menu that opens behind the box it was opened from is a menu that does not
+   open. The commit bar's sticky 10 is not in that list because it is inside
+   this box, in the stacking context the box makes.
+
+   `.editing` in every selector, so a `whole-page` left on an article that has
+   stopped editing draws nothing. */
+article.record.editing.whole-page {
+  position: fixed; inset: 0; z-index: 15;
+  margin: 0; padding: .75rem 1.25rem; box-sizing: border-box;
+  background: var(--bg);
+}
+/* What is left is named, and everything else goes: the switcher's row with Save
+   in it, the delete question that row can open, and inside the form the panes'
+   writing column. Named rather than listing what to hide, so the next thing
+   somebody adds to the header is off the full page until somebody decides it
+   belongs there, rather than on it because nobody did. Inside the writing
+   column the list is the other way round, and short: `.hints` and `.progress`
+   sit above the bars and are reading, not writing, and everything else in that
+   column is the writing or news about saving it. */
+article.record.editing.whole-page > :not(.toolrow, .confirming, form),
+article.record.editing.whole-page > form > :not(.panes),
+article.record.editing.whole-page .panes > :not(.main),
+article.record.editing.whole-page .panes > .main > :is(.hints, .progress) { display: none; }
+/* The window's width, and one row. Which way the cascade resolves: these are
+   (0,4,1) and (0,5,1), against the split's `article.record.view-both .panes`
+   width and the editing `grid-template-rows`, both (0,3,1), and the two-column
+   query's `grid-row: 1 / -1` at (0,4,1) — so full page wins in all three views
+   without relying on order. One row because the facts are gone: the editing template's
+   `fit-content(30%)` first row would otherwise be where the writing column lands
+   when stacked, and the box would be 30% of the window. */
+article.record.editing.whole-page .panes { width: auto; grid-template-rows: minmax(0, 1fr); }
+article.record.editing.whole-page .panes > .main { grid-row: 1; grid-column: 1; }
+/* No floor here. `.bodysplit`'s 16rem is for a row whose height is its content;
+   this row is the window's, so the floor can only ever push the box past it —
+   which it did on a phone with the keyboard up, 390x420, where the window has
+   about 220px for the box and the floor took 256 and pushed the status strip
+   off the bottom. (0,4,1) over (0,3,1). */
+article.record.editing.whole-page .bodysplit { min-height: 0; }
+/* The toggle, at the right-hand end of the formatting row: the bar is packed
+   left, so `margin-left: auto` on its last child is the edge of the box it sizes.
+   Centred and sized the way `.marks .hist` is, so it comes out the height of the
+   undo button, which is what sets the height of the toolbar's row.
+
+   `flex-start` and not `stretch`, and that is measured. The row is
+   `baseline`-aligned and a drawing has no baseline to sit on, so it needs an
+   alignment of its own; `stretch` matched `#marks` exactly on one row and, on a
+   phone where `#marks` wraps to three, drew a bordered box three rows tall. */
+.markbar .grow {
+  order: 1; margin-left: auto; align-self: flex-start; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 0;
+}
+.markbar .grow svg { display: block; width: 13px; height: 13px; }
 """
 
+
+# The record page on a phone: its fields folded — `.factsfold` in `_DETAIL`, shut
+# by the script beside it — and its controls the size of a thumb. Joined to
+# `env.PHONE` rather than spelling the query, because this sheet is inlined and
+# not rendered, and a second spelling of "a phone" is two answers to it.
+_RECORD_ON_A_PHONE = (
+    """
+/* Off a phone the box ships open and stays open, and its handle is not drawn: a
+   summary there would be a control saying "17 fields" over seventeen fields that
+   are already on the screen. `display: none` on a summary does not close its
+   details or hide what is in it — only the handle goes — so a laptop sees the
+   column it always saw. */
+.factsfold > summary { display: none; }
+/* The warnings the handle carries, in the colour the overrun row is drawn in. */
+.factswarn { color: var(--sev-warn); font-weight: 600; margin-left: .4rem; }
+/* Written out, because `[hidden]` is a UA rule and loses to the author `display`
+   any later rule might give a span — the trap `.focusbar[hidden]` documents. */
+.factsneed[hidden] { display: none; }
+@media """
+    + PHONE
+    + """ {
+  /* `list-item`, so the browser's own disclosure triangle is the mark that says
+     the row opens — the shape the filter bar's handle takes, and for its
+     reasons. Padded to a thumb's height: it is the one way to the fields. */
+  .factsfold > summary {
+    display: list-item; list-style-position: inside; cursor: pointer;
+    padding: .7rem .1rem; border-bottom: 1px solid var(--line);
+    font-size: 14px; line-height: 1.45;
+  }
+  .factsfold[open] > summary { margin-bottom: .75rem; }
+  .factsfold > summary .factscount {
+    float: right; margin-left: .5rem; color: var(--muted); font-size: 12px;
+  }
+  /* Stacked and editing, the fields hold a 6rem floor so two of them stay in
+     sight above the document box (see `.panes`). Shut, there is one row to keep
+     in sight and it is 44px: the floor would be 52px of nothing between the
+     handle and the editor, on the screen with least room for either. (0,6,1)
+     with the `:has`, over the floor's (0,4,1) — it wins on weight, not order. */
+  article.record.editing .panes > .facts:has(> .factsfold:not([open])) { min-height: 0; }
+  /* And its own height, not 30% of the box: the share is a cap meant for a list
+     of fields, and on a short box it cut the one-line handle in half — 36px of
+     a 44px row on a phone on its side, 22px with the keyboard up. A handle cut
+     in half is a sentence about the fields nobody can read.
+
+     `:not(.whole-page)`, because full page is the one layout with no fields in
+     it, and this rule was outranking its grid: (0,7,1) here against
+     `.whole-page .panes`'s (0,4,1), so the box over the whole window was laid
+     out `auto 1fr` and the editor stopped at its own 256px floor with half the
+     phone empty under it — on the layout a phone now writes in by default. */
+  article.record.editing:not(.whole-page) .panes:has(> .facts > .factsfold:not([open])) {
+    grid-template-rows: auto 1fr;
+  }
+  /* **The row of controls above the record, at a thumb's size.** The three
+     view segments and Slide were 33x25 with Delete six pixels to their right:
+     a row a finger meant for Write could land on as Delete. 2.5rem tall, as wide
+     as tall, and Delete a clear gap away from the rest — the confirmation it
+     opens is the second guard, and this is the first. Save, Reset and Create
+     beside them are the same height so the row is one line of one size.
+
+     `.views .seg` is (0,2,0) and `.editbar .slide-view` (0,2,0) in the sheet
+     above; these are (0,3,1)-(0,3,2) with the `article.record` prefix, so they
+     win on weight and not on being inlined later. */
+  article.record .views .seg, article.record .editbar .slide-view {
+    min-width: 2.75rem; min-height: 2.5rem; box-sizing: border-box;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  article.record .editbar button.delete { min-height: 2.5rem; margin-left: 1.25rem; }
+  article.record .commitbar button { min-height: 2.5rem; }
+  /* The way back is a line of text on its own, and on a phone a line of 13px
+     text is a 15px target. Padded rather than enlarged: the box grows and the
+     words stay the size of the breadcrumb they are. */
+  .back a.origin { display: inline-block; padding: .4rem 0; }
+  /* What a phone does not offer, by jcanton's call on 2026-10-08: the slide
+     editor is three panes that want a desk, and side by side is two slivers
+     (`WRITE_PHONE` turns it into Write if it is asked for anyway). */
+  article.record .editbar .slide-view, article.record #view-both { display: none; }
+}
+"""
+)
 
 _DETAIL_STYLE = (
     """
@@ -1081,8 +1294,28 @@ article.record {
    in Chrome both ways on the same page. `hidden` is what makes the article the
    height of the box, which is the whole point of the frame; what scrolls is
    named below, one level in, and the frame clips nothing that is not already
-   reachable there. */
+   reachable there.
+
+   **`height`, and not only the shell's `max-height`.** A ceiling is all every
+   other page's box needs, because there the box is a scrollport and a short page
+   is meant to end where its content ends. Here the box is a column whose last
+   child grows, and a column with a ceiling and no height is as tall as what is
+   in it: `main` is a block, so nothing above stretches this box to the room the
+   shell measured. With seventeen fields beside the document the facts were
+   taller than the window and hit the ceiling, so the writing box reached the
+   footer and nobody saw the difference. A task has eleven, a note five — and
+   jcanton, 2026-10-09, with a screenshot of the create form for a task at
+   1360px: "the editor text box in /new doesn't go all the way to the bottom of
+   the page". The box stopped where the facts did, 150px above the footer, and
+   a stored note's edit view stopped 750px above it.
+
+   While EDITING, and not while reading. Reading has no box to fill — what grows
+   there is a rendered document, which ends where it ends — and a short note's
+   Promote panel, which follows the form, went from under its last paragraph to
+   the foot of the window 700px below it. `.editing` is the class the view
+   machine sets for both session views and the create form wears from birth. */
 .pagefill:has(> article.record) { display: flex; flex-direction: column; overflow: hidden; }
+.pagefill:has(> article.record.editing) { height: var(--room); }
 .pagefill > .toc { flex: 1; min-height: 0; overflow: auto; }
 article.record { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 /* And no 3rem under it. That margin is `article.record`'s own — quiet between
@@ -1193,6 +1426,46 @@ article.record > form { display: flex; flex-direction: column; flex: 1; min-heig
      scrollport, and the overflow is handed back to the page. */
   article.record .panes > .main,
   article.record .panes > .facts { overflow: auto; min-height: 0; }
+  /* Both columns span both of the editing rows below, so side by side each is
+     the full height of the pair, as it was when there was one implicit row.
+     Spanning a `1fr` row keeps these items out of the auto row's sizing, so
+     that row comes out 0 and the flexible one takes all of it. */
+  article.record.editing .panes > .main,
+  article.record.editing .panes > .facts { grid-row: 1 / -1; }
+}
+/* **Stacked and editing, the fields get a share of the height and the writing
+   gets the rest.** jcanton, 2026-09-25: "if the edit view page gets narrow, the
+   fields go on top of the text body editor, but with the previous instructions
+   of making the editor fill height, this can become too short". It was worse
+   than short. Stacked, the facts were a row as tall as all of their fields, 765px
+   at a 900px window, and the editor was pushed below the window onto its 16rem
+   floor. You reached it by scrolling `.panes` past every field.
+
+   30% and not the 40% first proposed, on his word. `fit-content`, so a record
+   with few fields takes only what it needs and hands the rest to the editor. Its
+   own scrollport is what makes the other fields reachable. The `1fr` is
+   everything else, and its floor is `.main`'s own minimum: the bars plus
+   `.bodysplit`'s 16rem, written once, in the rule that already holds it. Below
+   that floor `.panes` scrolls as it always did.
+
+   `1fr` and not `minmax(min-content, 1fr)`, which was the first version. Side by
+   side both items span this row, and a `min-content` floor takes the min-content
+   of EVERY item crossing it. The facts are 1116px of content, so both columns
+   came out 1116px tall and neither scrolled. `1fr` floors at `auto`, and that is
+   each item's own `min-height`: 0 side by side, and min-content on `.main` only
+   when stacked (the query below).
+
+   On `.panes` and outside any query, because a container cannot answer its own
+   query (see `.panes` above). Side by side both items span both rows, in the
+   block just above, so the template is inert there. */
+article.record.editing .panes { grid-template-rows: fit-content(30%) 1fr; }
+/* Inside the stacked query because side by side the facts are already their own
+   scrollport, in the two-column block above. The 6rem is a floor on the share:
+   on a window short enough that 30% is a sliver, two fields are still in sight,
+   and past that `.panes` scrolls rather than the list shrinking to nothing. */
+@container (width < 56rem) {
+  article.record.editing .panes > .facts { overflow: auto; min-height: 6rem; }
+  article.record.editing .panes > .main { min-height: min-content; }
 }
 /* A handle, not a border. It was a full-height 2px rule in --line, which is
    exactly how a page draws the edge of a pane; this is a short grip that says
@@ -1353,26 +1626,34 @@ article.record .toolrow .commitbar {
    `fill="currentColor"`, carried over from the bundle rather than reworked
    into a stroke — which is why it can take the same box as a stroked icon
    without looking heavier than one. */
-.marks .draw svg { display: block; width: 13px; height: 13px; }
-.marks .draw { display: inline-flex; align-items: center; justify-content: center;
-               line-height: 0; }
+/* The template button's page is the same box for the same reason, and so the
+   same rule rather than a second copy of it that could disagree by a pixel. */
+.marks .draw svg, .marks .tpl svg { display: block; width: 13px; height: 13px; }
+.marks .draw, .marks .tpl { display: inline-flex; align-items: center;
+                            justify-content: center; line-height: 0; }
 /* The menu `attachDrawing` opens under the button, parked on the body the way
    every list here is. Not `.suggest`: that class lives in `_SUGGEST_STYLE`,
    which `render_slide_editor` — the other page this button draws on — never
    loads, and the button is wired on both. Self-contained here, in the one
    sheet both pages DO load, rather than a second stylesheet added to one of
-   them for four rules. */
-.drawmenu {
+   them for four rules.
+
+   `.tplmenu` is the template button's, built by the same `menuUnder` and drawn
+   by the same rules. A class of its own rather than a second `.drawmenu`,
+   because "the drawings menu" is a thing a test or a reader finds by asking for
+   that class, and the first of two would be whichever was parked first. */
+.drawmenu, .tplmenu {
   position: absolute; z-index: 20; min-width: 10rem; max-height: 16rem;
   overflow-y: auto; display: flex; flex-direction: column; padding: .25rem 0;
   background: var(--surface); border: 1px solid var(--line-strong);
   border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.12); font-size: 13px;
 }
-.drawmenu button {
+.drawmenu button, .tplmenu button {
   display: block; width: 100%; text-align: left; font: inherit; color: inherit;
   background: none; border: none; padding: .35rem .75rem; cursor: pointer;
 }
-.drawmenu button:hover, .drawmenu button:focus-visible {
+.drawmenu button:hover, .drawmenu button:focus-visible,
+.tplmenu button:hover, .tplmenu button:focus-visible {
   background: var(--accent); color: var(--on-accent); outline: none;
 }
 /* `[hidden]` written out explicitly, exactly as `.drawhead .drawask[hidden]`
@@ -1387,7 +1668,7 @@ article.record .toolrow .commitbar {
    collapses to its own padding and border and no more. Measured in Chrome at
    1200px — open 162x71, closed 162x10 — which is the thin bordered bar under
    the button in jcanton's screenshot, not a rendering artefact. */
-.drawmenu[hidden] { display: none; }
+.drawmenu[hidden], .tplmenu[hidden] { display: none; }
 /* The popup `openDrawing` mounts Excalidraw into. `position: fixed; inset: 0`
    over the whole page rather than parked beside the button the way
    `.drawmenu` is: a menu is a few words under where you pressed, and an
@@ -1466,6 +1747,12 @@ article.record .toolrow .commitbar {
   justify-content: center; line-height: 0;
 }
 .drawhead .grow svg { display: block; width: 15px; height: 15px; }
+/* What the last Save came to, between the size toggle and Save — the toggle's
+   `margin-right: auto` puts it against Save rather than against the left edge.
+   `min-width: 0` so a long refusal wraps inside the bar instead of pushing Save
+   and Close off it. No `display` here, so the UA's `[hidden]` still wins while
+   the unsaved-strokes question has the bar. */
+.drawhead .said { min-width: 0; font-size: 13px; color: var(--muted); }
 .drawhead .drawask { display: flex; align-items: center; gap: .5rem; }
 .drawhead .drawask[hidden] { display: none; }
 .drawhead .drawask .asking { margin: 0; font-size: 13px; color: var(--danger); }
@@ -1563,6 +1850,17 @@ article.record:not(.editing) .req { display: none; }
    editing, and the values they replace are hidden once it is. */
 .field { display: none; }
 .record.editing .field { display: block; }
+/* And the frame a date field wears on Firefox goes with it. `.datewrap`
+   (`_CALENDAR_STYLE`, `calendar.py`) is a block carrying the field's border and
+   padding, and the line above hides only the input inside it — so every date on
+   a record being read sat over an empty 10px box with a border round it:
+   jcanton, 2026-10-13, "date boxes not in edit mode show a bar/empty field
+   beneath them". (0,3,0) over the wrapper's (0,1,0), so it wins on weight and
+   not on which sheet is inlined second. Inert on Chrome and Safari, where no
+   wrapper is ever made. Keyed to the same mode as the rule above, and NOT to
+   `.slideedit`, whose fields show outside an editing session — it has no date
+   box, and one added there must answer this rule as well as that one. */
+.record:not(.editing) .datewrap { display: none; }
 /* Where the other people in the room are. One band per person on the line their
    caret is in, translucent so the text keeps its own contrast, with the login on
    the right — a colour on its own is a colour a reader has to be told the
@@ -1600,6 +1898,34 @@ article.record:not(.editing) .req { display: none; }
    and the gutter note. */
 .record.editing .teach:empty { display: none; }
 .record.editing .read { display: none; }
+/* A field of record references, folded (`refChips` in the shell): one line of
+   titles until it is pressed, then the chips and the box. jcanton, 2026-10-20: "I
+   prefer the way the popup card works: renders as plain text until you click on
+   the field for editing it." Its box is the one every field wears — it is in that
+   rule's selector list below, not a copy of it — so the line reads as a field
+   holding a value, and wraps onto as many lines as its titles need.
+
+   Which way the cascade resolves, since this file has lost that fight twice: the
+   box is hidden by `.record.editing .field.folded` at (0,4,0) over the (0,3,0)
+   that shows every `.field` while editing; the line's `[hidden]` is (0,4,0) over
+   its own (0,3,0); and outside editing the line is off at (0,1,0) and the chips
+   at (0,3,0) over the shell's (0,1,0) — in a record being read, `.read` holds the
+   same titles as links, and chips with a × beside them were the second copy
+   jcanton saw ("in preview mode they show up as text as well as chips"). */
+.refsays { display: none; }
+/* One record to a line, in a fact that lists them (`_link_lines`, and the folded
+   line's own lines in `refChips`), each cut by an ellipsis and whole on hover —
+   jcanton, 2026-10-20, "one line per blocker (with eclipsing) … instead of
+   comma-separated". `min-width: 0` on the cell is what lets the ellipsis happen
+   at all: a grid item's automatic minimum is its content, so a long title
+   would otherwise widen the column instead of being cut. */
+.refline { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+dd:has(> .read > .refline), dd:has(> .refsays) { min-width: 0; }
+.record.editing .refsays { display: block; margin: 0; text-align: left; cursor: text; }
+.record.editing .refsays:hover { border-color: var(--fg); }
+.record.editing .refsays[hidden] { display: none; }
+.record.editing .field.folded { display: none; }
+.record:not(.editing) .refs { display: none; }
 .record.editing dd .field[type=checkbox] { display: inline-block; }
 label { display: block; }
 /* Except in a fact list, where the label is one word in a line that also carries
@@ -1614,11 +1940,37 @@ dt > label { display: inline; }
    it: a template is an offer, not a step. */
 .tplpick { display: inline; color: var(--muted); font-size: 12px; }
 .tplpick select { font: inherit; }
-input.field, select.field, textarea.field {
+/* `.datewrap` is in this list and NOT a second copy of these six declarations.
+   It is the box a date field wears on a browser whose native picker button
+   cannot be hidden — Firefox, where there is no
+   `::-webkit-calendar-picker-indicator` to set `display: none` on and no
+   pseudo-element of its own (Mozilla bug 1812397). The input inside it is
+   clipped, which takes the button away along with the input's own right border,
+   so the border has to be on something that is not clipped.
+
+   `display: contents` below means it draws nothing at all anywhere else: an
+   element with that display generates no box, so every declaration here is
+   inert on Chrome and Safari, where the date field is still the input itself
+   and this wrapper is a span that costs a tag. The `@supports` block in
+   `_CALENDAR_STYLE` (`calendar.py`) is the only place it becomes a box, and it
+   asks the question in the same words the installer asks it in JavaScript.
+
+   `.refsays` is in it for the same reason: the folded line of a field of record
+   references (`refChips`) is a button, and it wears the box every other field
+   wears so it reads as one of them. jcanton, 2026-10-20, of the first folded
+   version, which was bare text: "without the field box they seem like they are
+   not editable until you hover the mouse over them". */
+input.field, select.field, textarea.field, .datewrap, .refsays {
   width: 100%; box-sizing: border-box; font: inherit; padding: .25rem .4rem;
   border: 1px solid var(--line-strong); border-radius: 3px;
   background: var(--surface); color: inherit;
 }
+.datewrap { display: contents; }
+/* A checkbox is the size of a checkbox. `width: 100%` above is for boxes that
+   hold text, and on "review waived" it drew a 13px box in a 350px slot whose
+   padding and border ran it past the column: the fields box on a phone scrolled
+   sideways by 7px with nothing in the gap to scroll to. */
+input.field[type=checkbox] { width: auto; }
 input.title-field { font-size: 1.4rem; font-weight: 600; margin-bottom: .6rem; }
 /* In the heading's slot the box takes the READ title's metrics, so pressing
    Write changes what the name is drawn in and never where a line of it sits —
@@ -1662,7 +2014,39 @@ article.record h1 input.title-field {
 textarea.body-field { resize: none; }
 .doc { border-top: 1px solid var(--line); padding-top: 1rem; }
 .doc h2 { font-size: 1rem; margin: 1.2rem 0 .3rem; }
-.doc code { background: var(--surface-2); padding: 0 .25em; }
+/* `overflow-wrap: anywhere` because an identifier has no space to break at. One
+   unbreakable span in backticks — a test name, a CI line of `KEY=value;`s — ran
+   past the column on a 390px phone, and the whole reading pane scrolled sideways
+   under the thumb (217px of it on task-0a1001), on a plan whose pitches are made
+   of identifiers. A fence is untouched: `pre` does not wrap at all, so the
+   property has nothing to do there and `.doc pre`'s own scroll is what a long
+   line in a fence gets. */
+.doc code { background: var(--surface-2); padding: 0 .25em; overflow-wrap: anywhere; }
+/* **A fence is one box, and the rule above was drawing it a line at a time.**
+   `.doc code` is the inline rule — a tint and a quarter-em either side, so an
+   identifier in running prose reads as code. A `<code>` inside a `<pre>` is the
+   same element and inline as well, so it took the same tint and painted one box
+   per line box, each as wide as its own text: a code block came out as a ragged
+   stack of grey bars with the indentation showing through as white, and a blank
+   line inside the block showing as a gap in the middle of it. jcanton,
+   2026-09-22: "code blocks have line background coloured line by line, and only
+   where there's chars".
+
+   So the ground moves up to the block, and the inline rule is switched off
+   inside it — the pair the Help page has had all along (`.helpdoc pre`), now
+   where every document this app draws can reach it. `.doc pre code` is (0,1,2)
+   against `.doc code` at (0,1,1) and wins on weight, in either order.
+
+   `overflow-x` is the same bargain `.doc pre` was already described as taking
+   two rules below and did not: a fence wider than the column scrolls inside its
+   own box rather than the page scrolling sideways. The values are `pre.mermaid`'s
+   (`shell.py`), because an undrawn diagram is meant to look like exactly this;
+   the two rules are both (0,1,1), so they agree by having the same values
+   rather than by winning, and `pre.mermaid[data-processed]` at (0,2,1) still
+   outranks both to switch the box off once mermaid has drawn. */
+.doc pre { background: var(--surface-2); padding: .6rem .7rem; border-radius: 3px;
+           overflow-x: auto; margin: 0 0 1rem; }
+.doc pre code { background: none; padding: 0; }
 /* Where a promoted record says where it came from. It is the first thing in the
    document and it is not part of the problem statement, so it is set apart
    rather than left as an indented paragraph that reads like one. One copy now:
@@ -1670,6 +2054,33 @@ textarea.body-field { resize: none; }
    a stylesheet of their own, and it went with the stylesheet. */
 .doc blockquote { margin: 0 0 1rem; padding-left: .8rem; color: var(--muted);
                   border-left: 2px solid var(--line-strong); }
+/* **A body reads in the colours it was written in.** jcanton, 2026-09-25, with
+   the same record in the editor and in its preview: "the editor colours syntax
+   nicely, and the preview does but only in the code blocks. can the preview use
+   the same colours as the editor?"
+
+   So each element wears the role its source wears in the editor (`.ace_heading`,
+   `.ace_list`, `.ace_md-*` in `render/editor.py`). There are no new colours
+   here. A scheme that recolours one recolours the other, and the roles are AA
+   against `--surface-2`, which is the harder ground of the two a body sits on.
+
+   `.syntax` and not all of `.doc`: it goes where a record or cycle body is read
+   back, which is the read view, the preview pane and the slide editor's record
+   pane. The deck's slides are `.doc` on white paper, and Help is the user guide
+   rather than something written in the editor.
+
+   The list marker and not the item, because the editor colours the `-` and the
+   `1.` and leaves the words ink. A link gets its hover back. `.doc.syntax a` is
+   (0,2,1) and would otherwise beat the shell's `a:hover`. */
+.doc.syntax :is(h1, h2, h3, h4, h5, h6) { color: var(--code-function); }
+.doc.syntax li::marker { color: var(--code-name); }
+.doc.syntax a, .doc.syntax a:visited { color: var(--code-name); }
+.doc.syntax a:hover { color: var(--accent); }
+.doc.syntax strong { color: var(--code-type); }
+.doc.syntax em { color: var(--code-keyword); }
+.doc.syntax :is(del, s) { color: var(--muted); }
+.doc.syntax :not(pre) > code { color: var(--code-string); }
+.doc.syntax :is(blockquote, math) { color: var(--code-escape); }
 /* --- maths -----------------------------------------------------------------
 
    Drawn by the browser: `$…$` and `$$…$$` become MathML on the server, so there
@@ -1862,4 +2273,5 @@ button.kindchip[hidden] { display: none; }
 #promote .hint { margin: 0; }
 """
     + _EDITING_STYLE
+    + _RECORD_ON_A_PHONE
 )

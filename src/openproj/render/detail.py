@@ -13,6 +13,7 @@ from ..model import (
     NOTE_STATES,
     RUNG,
     Record,
+    a_number,
     checklist,
     sections,
     size_weeks,
@@ -21,7 +22,8 @@ from ..model import (
     workers_on,
 )
 from ..vendor import _ace, _yjs
-from .controls import _REQUIRED_JS, _combobox_html, _control_html
+from .calendar import _CALENDAR_STYLE, _calendar_js
+from .controls import _REQUIRED_JS, _combobox_html, _control_html, _offered_templates
 from .editor import (
     _ACE_SURFACE,
     _COEDIT,
@@ -29,7 +31,7 @@ from .editor import (
     _ace_wanted,
     _editing_possible,
 )
-from .env import _compiled, _fragment
+from .env import PHONE, _compiled, _fragment
 from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
 from .markdown import _body_html, _pr_link
 from .shell import ROUTES, STATIC, Links, _page
@@ -45,9 +47,9 @@ from .tokens import (
     PRIORITY_GLYPH,
     STATUS_TEACH,
     STATUSES,
-    TEMPLATES,
     _editable_for,
     _human,
+    _percent,
     _read_date,
     _status_class,
 )
@@ -110,6 +112,13 @@ _VIEW_SEGMENTS = (
 # the current view, and a control that says which one you are in is what the
 # three beside it already do.
 def _slidebar(record_id: str, links: Links, here: bool = False) -> Markup:
+    # Nothing when the plan does not list the deck: an unlisted view is one no page
+    # links to, though its address still answers. Here and not at either caller,
+    # so the record page and the slide editor cannot disagree about it — the slide
+    # editor is drawn with the deck's own links put back (`render.opened`), so on
+    # that page the control is always there to say which view this is.
+    if not links.deck:
+        return Markup("")
     return Markup(
         '<a class="seg slide-view" href="{}{}?view=slide" aria-pressed="{}"'
         ' aria-label="Slide" title="Slide  the slide this record makes in its'
@@ -190,13 +199,87 @@ const LANDING = VIEW_ARTICLE.querySelector('.doc.read');
 // of a session all come here.
 const GROUND = LANDING ? 'view' : null;
 let VIEW = GROUND;
+// **How a phone writes** — jcanton, 2026-10-08. Write opens over the whole
+// window: with the keyboard up, the page layout left Ace 8 to 116px under the
+// title and the fields, and the full-page box measured 224px with Save still at
+// the top. And side by side is not offered: at 390px it was two 163px slivers,
+// an editor nobody could read beside a preview nobody could read. `env.PHONE`,
+// joined in because this script is inlined rather than rendered.
+const WRITE_PHONE = matchMedia(""" + json.dumps(PHONE) + r""");
+
+// --- full page -----------------------------------------------------------------
+//
+// The writing box and its bars over the whole window, on a button — jcanton,
+// 2026-09-25, "similar to that of the excalidraw drawing pane". So it is what that
+// toggle is: full PAGE and not the Fullscreen API, which was his call for the
+// drawing ("so we don't have the browser going to a different space on mac"); the
+// same two bracket drawings from `DRAWING_SIZE_MARKS`, naming the next press
+// rather than the state, and for the reason `drawPopup` gives it is not
+// `aria-pressed`.
+//
+// **What stays is the two bars and the box, which is his answer to a question.**
+// The switcher's row stays above the formatting bar — Save, Reset and the count of
+// what is unsaved are in it, and a page that shows its save model and then hides
+// it at the one moment somebody is writing hardest is two save models. The title,
+// the fields, the nav and the footer go.
+//
+// **Not remembered, which is the other answer, and it is where this differs from
+// the drawing.** Remembered, every Edit on every record would open over the whole
+// window, which is the full-page surface he had taken out on 2026-08-24 ("the nav
+// bar disappears when entering edit or side-by-side modes, should not do that").
+// It lasts until the button is pressed again, Escape, or the read view.
+//
+// **A class and not a surface.** Nothing moves out of the article and nothing is
+// built: `whole-page` makes the article `position: fixed` over the window and the
+// stylesheet leaves only the two bars and the box drawn, so turning it off is
+// removing one class. The nav, the skip link and the footer go `inert` with it,
+// because they are behind an opaque box and still in the tab order — a focus ring
+// nobody can see is the floor broken.
+//
+// Looked up at each press and not once here: this script is inside `<main>`, and
+// the footer comes after it, so at this line it has not been parsed yet — a list
+// taken now left the footer's links in the tab order behind the box.
+const WHOLE = document.getElementById('editor-size');
+function wholePage(on) {
+  VIEW_ARTICLE.classList.toggle('whole-page', on);
+  for (const outside of document.querySelectorAll('body > .skip, body > nav, body > footer')) {
+    outside.inert = on;
+  }
+  WHOLE.innerHTML = on ? DRAW_SIZE_ART.small : DRAW_SIZE_ART.full;
+  const says = on ? 'Smaller' : 'Full page';
+  WHOLE.setAttribute('aria-label', says);
+  WHOLE.title = says;
+}
+wholePage(false);
+WHOLE.onclick = () => {
+  wholePage(!VIEW_ARTICLE.classList.contains('whole-page'));
+  reshaped();
+  // Back into the writing, the way the drawing's toggle hands the keyboard back to
+  // the canvas: the press left focus on this button, and the point of it was to
+  // write in the bigger box. Ace's own input is the textarea inside its host.
+  const into = SURFACE.el.matches('textarea') ? SURFACE.el : SURFACE.el.querySelector('textarea');
+  if (into) into.focus();
+};
 
 function showView(mode) {
+  // Out of a session and onto the read view, which a save in place left behind.
+  if (mode === 'view' && VIEW !== 'view' && freshen()) return;
+  if (mode === 'both' && WRITE_PHONE.matches) mode = 'edit';
+  const was = VIEW;
   VIEW = mode;
   for (const name of VIEWS) {
     VIEW_ARTICLE.classList.toggle('view-' + name, mode === name);
     document.getElementById(VIEW_IDS[name]).setAttribute('aria-pressed', String(mode === name));
   }
+  // Full page is a size for the writing box, and the reading view has none: its
+  // `.markbar` is `display: none`, so staying whole there would be a window-sized
+  // page with no way back but Escape. Edit and split keep it, since the box is in
+  // both and the switcher is on screen to move between them.
+  if (mode !== 'edit' && mode !== 'both') wholePage(false);
+  // Into Write on a phone, over the whole window — see `WRITE_PHONE`. Only on the
+  // way IN, so "Smaller" stays smaller until the reader leaves Write; and never
+  // on the create form, whose title box is part of the page full page hides.
+  if (mode === 'edit' && was !== 'edit' && LANDING && WRITE_PHONE.matches) wholePage(true);
   // A view is the classes above and nothing else. This function used to build a
   // full-page surface here — `.full` on the article, `body.fullpage`, an
   // `inert` sweep of `body > nav, body > a.skip`, and `#theme` and `#who`
@@ -228,6 +311,14 @@ function showView(mode) {
     if ((mode === 'edit' || mode === 'both') && !editing) showEditing(true);
     if (mode === 'view' && editing) showEditing(false);
   }
+  reshaped();
+  refreshPreview(true);
+}
+
+// What has to be told when the box changes size without the window changing: a
+// view change, and full page going on or off. One list, because a second copy for
+// full page is the copy that forgets the splitter.
+function reshaped() {
   // The room's bands are measured against a box that has a size, and a view
   // change is exactly when the box changes size. The Preview button this
   // replaces took the box away by setting its `hidden` attribute and dispatched
@@ -259,7 +350,6 @@ function showView(mode) {
   // The room under the preview is this view's: it exists in the split and
   // nowhere else, and the box it is measured against has just changed size.
   fitPreviewTail();
-  refreshPreview(true);
 }
 
 // --- where the join between the two panes is --------------------------------
@@ -548,7 +638,8 @@ async function askPreview() {
 // Both sides of the split are a list of (source line, pixel top), so both
 // directions are one interpolation read the other way round. The rendered side
 // gets its lines from `data-startline`, which the renderer stamps on every
-// top-level block from markdown-it's own token map; the source side gets its
+// block that begins a source line — list items and table rows included — from
+// markdown-it's own token map; the source side gets its
 // pixels from `lineTops`, which measures rather than assuming that one line is
 // one row — in a pane half a window wide most lines wrap, and `scrollTop /
 // lineHeight` is only right for a document in which none of them do.
@@ -638,11 +729,15 @@ function previewMap() {
     // staying put; this arithmetic asks the question that is actually being
     // asked.
     const zero = VIEW_PANE.getBoundingClientRect().top - VIEW_PANE.scrollTop;
+    // Later in the source AND no higher on the screen, because the points are
+    // nested now and a nested block need not be drawn where its line suggests:
+    // one inside something collapsed measures 0, and a map whose tops go back
+    // up is a map `lineOfPixel` walks off the wrong end of.
     for (const block of VIEW_PANE.querySelectorAll('[data-startline]')) {
       const line = Number(block.dataset.startline);
-      if (line > previewPoints[previewPoints.length - 1].line) {
-        previewPoints.push({line, top: block.getBoundingClientRect().top - zero});
-      }
+      const top = block.getBoundingClientRect().top - zero;
+      const last = previewPoints[previewPoints.length - 1];
+      if (line > last.line && top >= last.top) previewPoints.push({line, top});
     }
     // The foot of the rendered document, and then the foot of the room below it
     // — the same two points the source side ends with, so the two empty spaces
@@ -819,7 +914,36 @@ addEventListener('keydown', event => {
 // is the sessionless landing, so Escape ends the session — and ends it without
 // discarding anything, which every door out of a session now does. Putting a
 // record back is `resetEdits`, a button that says so and does nothing else.
-BODY.addEventListener('openproj:escaped', event => {
+//
+// **On the surface's element, and it was on `BODY`.** `attachEditing` dispatches
+// this on `surface.el`, which is `BODY` only for the plain box. On Ace — what
+// nearly everybody writes in — it is the host `div` beside the hidden textarea, an
+// event dispatched on one sibling never reaches the other, and so Escape in Ace
+// opened the Tab hatch and never left the view. Measured in Chrome on 2026-09-25,
+// both surfaces, one press each: the plain box landed on `view`, Ace stayed in
+// `edit` saying "Press Tab to leave the document".
+//
+// Full page is the first thing Escape leaves, ahead of the view it is a size of:
+// one press gives the page back, a second ends the session, and neither discards
+// anything.
+//
+// **Not under vim, which owns Escape.** Vim's insert mode takes the key before
+// this is ever dispatched, but its normal mode does not, and Escape in normal mode
+// is what a vim hand presses without thinking — to cancel a half-typed command, or
+// just to be sure. Moving the listener off `BODY` made each of those presses end
+// the session: `test_a_vim_yank_reaches_the_system_clipboard` presses Escape to
+// reach normal mode and found itself on the read view, yanking nothing. So a
+// keymap of its own claims the key outright, and the page leaves full page and the
+// session by its buttons. That is exactly what vim on Ace had before, when the
+// listener was deaf to it.
+SURFACE.el.addEventListener('openproj:escaped', event => {
+  if (SURFACE.setKeymap && EDITOR.keymap !== 'default') return;
+  if (VIEW_ARTICLE.classList.contains('whole-page')) {
+    event.preventDefault();
+    wholePage(false);
+    reshaped();
+    return;
+  }
   if (VIEW === GROUND) return;
   event.preventDefault();
   showView(GROUND);
@@ -833,16 +957,16 @@ BODY.addEventListener('openproj:escaped', event => {
 const VIEW_ASKED = new URLSearchParams(location.search);
 const VIEW_LINKED = VIEWS.find(name => VIEW_ASKED.has(name)) || null;
 
-// --- the view a Save comes back into -----------------------------------------
+// --- the view a reload comes back into ---------------------------------------
 //
-// Both save paths end in `location.reload()`, and they have to: the read view
-// under the box is HTML the server rendered at the commit this page LOADED at,
-// so closing the editor without reloading leaves the document and the facts as
-// they were until somebody refreshes. What the reload cost was the mode —
-// nothing in the reloaded page says a session was open, so every Save landed on
-// the preview. jcanton, 2026-08-25: "currently clicking save in the editor exits
-// edit mode and sends you back to preview, let's change that and stay in
-// whatever mode the user is in (edit or side-by-side)".
+// **Save does not reload any more** — see `STALE` below — and this is what is
+// left of the machinery that carried a session across the reload it used to
+// end in: the shell's "the plan changed — reload" link still reloads a page
+// somebody may be writing in, and it comes back into the view and onto the line
+// it left from by the same two keys. jcanton, 2026-08-25, when it was Save's:
+// "currently clicking save in the editor exits edit mode and sends you back to
+// preview, let's change that and stay in whatever mode the user is in (edit or
+// side-by-side)".
 //
 // **A one-shot handed across the reload, not the stored preference.**
 // `EDITOR.mode` is what a session opens in and is deliberately not applied at
@@ -853,15 +977,15 @@ const VIEW_LINKED = VIEWS.find(name => VIEW_ASKED.has(name)) || null;
 //
 // **In `forThisTab` and not in `remembered`.** The reload is this tab's; a save
 // here must not open an editor in the other tab that happens to load a record
-// next. That is the one thing this key does differently from `SAID` beside it.
+// next.
 const RESUMED = 'openproj:resumed';
 
 // And where in the document it was, which is the second half of "stay where you
 // are". jcanton, 2026-09-18: "for some reason clicking save on editing a record
 // resets the scroll to the top line of the editor box (while I'd prefer if it
-// didn't)". The reason is that Save reloads — a commit changes the page's base,
-// its history and its rendered copy — and a reload is a new document with a new
-// editor in it, scrolled where a new editor starts.
+// didn't)". The reason was that Save reloaded, and a reload is a new document
+// with a new editor in it, scrolled where a new editor starts. Save no longer
+// does; the reload link beside the plan-changed banner still does.
 //
 // **A line number and not a pixel.** The page comes back at the same width today
 // and need not: a window resized between the press and the paint, a different
@@ -875,9 +999,11 @@ const RESUMED_AT = 'openproj:resumed-at';
 const RESUMING = (() => {
   const held = forThisTab.get(RESUMED);
   forThisTab.forget(RESUMED);
-  // Only the two session views. `view` is the landing and is what a page does
-  // anyway, and anything else is a hand-edited entry.
-  return held === 'edit' || held === 'both' ? held : null;
+  // The two session views, and `view` from `freshen`: a page with a draft in
+  // it opens a session on load, and one that was left for the read view goes
+  // back to it with the draft still in the box. Anything else is a hand-edited
+  // entry.
+  return held === 'edit' || held === 'both' || held === 'view' ? held : null;
 })();
 
 // Read and forgotten in the same breath, for the reason above it: a one-shot
@@ -888,11 +1014,10 @@ const RESUMING_AT = (() => {
   return Number.isFinite(held) && held > 1 ? held : 0;
 })();
 
-// Called by both save paths immediately before their reload, and by nothing
-// else. Declared here, beside the key and the branch that reads it, so the two
-// halves of this cannot drift; the scripts that call it run earlier on the page
-// and later in time, which is the same arrangement `SAID` already has with the
-// room's save.
+// Called by the shell's reload link immediately before the reload, and by
+// nothing else. Declared here, beside the key and the branch that reads it, so
+// the two halves of this cannot drift; the script that calls it runs earlier on
+// the page and later in time.
 //
 // The create form is deliberately not a caller. Its Save navigates to a record
 // that did not exist a moment ago rather than reloading the page you were on,
@@ -904,6 +1029,80 @@ function keepView() {
   // scrolls by — so a wrapped line counts as the one line it is rather than as
   // the three rows it draws.
   forThisTab.set(RESUMED_AT, String(Math.round(lineOfPixel(sourceMap(), SURFACE.scrolled()))));
+}
+
+// --- a save that lands where you are -----------------------------------------
+//
+// jcanton, 2026-09-24: "`:w` with vim keys works and saves the record, however
+// it also removes the cursor from the editor and reloads the page, effectively
+// interrupting editing." Both save paths ended in `location.reload()`, and
+// `keepView` above carried the view and the top line across it — but not the
+// caret, not the focus, not vim's mode and not the undo history, which is a
+// reload's to throw away and nobody's to carry. A save is a statement about the
+// document and never about whether you are finished writing it.
+//
+// So a save moves the page's own idea of what is committed — the base, the
+// body, the fields — and leaves the editor alone. That is what the room has
+// always done for every member who did NOT press the button; the tab that did
+// is now one more of them.
+//
+// **What it costs is the read view, and it is paid when you leave.** The
+// document under the box and the facts beside it (Scheduled, Blocks) are the
+// server's rendering of the commit this page loaded at, which is the reason the
+// reload was there at all (jcanton, 2026-08-20: "it shows the un-edited text
+// until I refresh"). They are not on screen while a session is open, so
+// `freshen` brings them up to date on the way out rather than on every save.
+let STALE = false;
+
+// The read view, brought up to the last save before anybody reads it — by a
+// reload, because it is the only thing that redraws all of it: the facts, the
+// title, the Progress section, and the diagrams, whose loader runs once at load.
+// True when the page is going away.
+//
+// **What is unsaved decides whether it may.** A changed FIELD cannot cross a
+// reload — a draft is the body and nothing else — so with one in the form there
+// is no reload, and the page says why the text under the box is older than the
+// save. Nor with an unsaved body in a LIVE ROOM: that text is the room's, as
+// much somebody else's typing as this tab's, and reloading would bring it back
+// as this tab's "restored draft". The room commits it — its quiet window, or the
+// last member out, which leaving this session makes this tab — and the next
+// load of the page shows it. Out of a room an unsaved body is this tab's, and it goes
+// across as a draft written now rather than on the draft timer's next tick, with
+// a one-shot landing the reload on the read view: a restored draft otherwise
+// opens a session, and a reload would put somebody who asked to read straight
+// back into the editor. Where this browser keeps no drafts there is no reload.
+function freshen() {
+  // The create form has no read view and never reaches the flag.
+  if (!LANDING || !STALE) return false;
+  let fields = true;
+  // A number typed as a word throws in `read`, and that is unsaved too.
+  try { fields = Object.keys(changed()).length > 0; } catch (error) { fields = true; }
+  if (fields) return stillBehind();
+  if (SURFACE.text() !== ORIGINAL_BODY) {
+    if (COEDIT.live()) return stillBehind();
+    writeDraft();
+    if (!draftWritten) return stillBehind();
+    forThisTab.set(RESUMED, 'view');
+  }
+  STALE = false;
+  // And out of the address, the flag that opened this session: `?edit` and
+  // `?both` beat any one-shot on load, and a reload keeps the query string, so
+  // leaving would reload straight back into the editor.
+  try {
+    const flags = new URLSearchParams(location.search);
+    for (const name of VIEWS) flags.delete(name);
+    const query = flags.toString();
+    history.replaceState(history.state, '', location.pathname + (query ? '?' + query : '')
+                         + (location.hash || ''));
+  } catch (error) { /* the reload still happens; it lands in the linked view */ }
+  location.reload();
+  return true;
+}
+
+function stillBehind() {
+  announce('The page under the editor is from before the last save. It is redrawn '
+           + 'once nothing in the editor is unsaved.');
+  return false;
 }
 
 // And then the remembered one, which is the second half of the preference this
@@ -925,8 +1124,8 @@ if (VIEW_LINKED) {
   // re-adds the flag when it reloads so the session survives the navigation.
   showView(VIEW_LINKED);
 } else if (RESUMING) {
-  // This tab saved and reloaded itself a moment ago. It goes back into the view
-  // it was in, which is the whole of what `keepView` above wrote down.
+  // This tab reloaded itself out of a session a moment ago. It goes back into
+  // the view it was in, which is the whole of what `keepView` above wrote down.
   showView(RESUMING);
   // And back to the line it was on. **After `showView`**, because the editor is
   // laid out by it and `lineCoords` off a box with no size is a column of
@@ -1360,6 +1559,26 @@ _DETAIL = """
           the id is a hook rather than a rule. A hook that answers the wrong
           element is worse than no hook, and `{% if single %}` is what an id
           means. -#}
+      {#- **Folded on a phone, and open everywhere else.** The fields came first
+          and the document — what a pitch page is opened to read — started two
+          screens down under seventeen of them. Shut, the handle says the status,
+          the priority and the owner in words, how many fields are behind it, and
+          anything among them that is wrong; open, it is the list it always was.
+
+          Ships `open`, and the script shuts it, for the reason the filter bar's
+          fold gives: a reader whose script did not run has no other way to these
+          fields. Off a phone the handle is not drawn at all — `_RECORD_ON_A_PHONE`
+          in `styles.py` — so a laptop sees exactly the column it saw before. -#}
+      <details class="factsfold" open>
+      <summary><span class="factssaid">{{ e.fold.said }}</span>
+        {%- for warn in e.fold.warn %} <span class="factswarn"><span
+          class="sev-mark sev-mark-warn" aria-hidden="true">▲</span> {{ warn }}</span>
+        {%- endfor %}
+        {%- if editable %} <span class="factswarn factsneed" hidden><span
+          class="sev-mark sev-mark-warn" aria-hidden="true">▲</span> <span
+          class="factsneedsaid"></span></span>{% endif %}
+        <span class="factscount">{{ e.fold.count }} field
+        {{- '' if e.fold.count == 1 else 's' }}</span></summary>
       <dl{% if single %} id="facts"{% endif %}>
         {#- The label only where the control it names is on the page. In read
             mode there is no control and a `<label for>` would point at nothing;
@@ -1417,6 +1636,7 @@ _DETAIL = """
         {% endif %}
         {% endfor %}
       </dl>
+      </details>
     </aside>
     <div class="main">
       {#- What the form or the server refused a create with: empty markup filled
@@ -1458,7 +1678,7 @@ _DETAIL = """
           view machine's `LANDING` looks for exactly this element, and the
           create form having nothing to land on is what keeps its `view` a
           draft preview instead of a sessionless page. -#}
-      {% if not creating %}<div class="doc read">{{ e.body }}</div>{% endif %}
+      {% if not creating %}<div class="doc read syntax">{{ e.body }}</div>{% endif %}
       {% if editable %}
       {#- Who else is in this document, by name. A name is the channel that
           survives every reader; a colour is not, and a caret drawn one line off
@@ -1472,24 +1692,6 @@ _DETAIL = """
         <span id="together" class="together" role="status" aria-live="polite"></span>
       </p>
       {%- endif %}
-      {% if creating %}
-      {#- The template is offered, never imposed: it fills an untouched box and
-          refuses to overwrite one somebody has typed in. `template` and not
-          `start from`: the label names the control, and the sentence it was
-          part of ended in the option list. -#}
-      <p class="field bodybar">
-        <label class="tplpick">template
-          <select id="template">
-            <option value="pitch">the shaping template</option>
-            <option value="task">a task</option>
-            <option value="project">a project</option>
-            <option value="product">a product</option>
-            <option value="blank">nothing</option>
-          </select>
-        </label>
-        <span class="hint" id="tplnote" role="status" aria-live="polite"></span>
-      </p>
-      {% endif %}
       {#- The hint that was here — "paste or drop an image to put it in the
           plan" — is gone, and it is the Image button that replaced it: a
           sentence describing a gesture is what a toolbar puts in a control. It
@@ -1503,6 +1705,16 @@ _DETAIL = """
             not in a banner: a gutter that simply vanishes on a long document is
             the one somebody reports as broken. -#}
         <span class="hint" id="gutter-note" role="status" aria-live="polite"></span>
+        {#- Full page, the drawing popup's toggle brought to the writing box —
+            jcanton, 2026-09-25: "can we add a full screen button similar to that
+            of the excalidraw drawing pane? next to the other editor buttons on
+            the bar with bold etc. the buttons bar stays visible in full screen".
+            In this row and not in `#marks`, whose buttons are all things done TO
+            the document; this changes how much room there is to do them in. Its
+            drawing, its name and what it does are `wholePage` in `_VIEWS`. Here
+            and not in the slide editor's markup, which is the "only on the
+            /details page" of the same message. -#}
+        <button type="button" id="editor-size" class="mark grow"></button>
       </p>
       {#- The two panes of the split view, in one box so the view can hand them a
           column each and so each scrolls on its own. The box, and a layer over it
@@ -1518,7 +1730,7 @@ _DETAIL = """
                     {% endif %}aria-label="Shaping document">{{ e.raw_body }}</textarea>
         </div>
         {{ splitter }}
-        <div id="body-preview" class="field doc" hidden></div>
+        <div id="body-preview" class="field doc syntax" hidden></div>
       </div>
       {#- The strip along the foot of the box. Filled by `attachStatus`, which
           wraps whatever the page put in it — here the draft's interval, because
@@ -1541,6 +1753,91 @@ _DETAIL = """
   {{ e.promote }}
 </article>
 {% endfor %}
+<script>
+// **The fields fold away on a phone** — `.factsfold` above. Shut here and
+// nowhere else, both ways, whenever the window crosses the query: a phone turned
+// on its side with the box shut would otherwise keep a fold the stylesheet has
+// stopped drawing a handle for, which is seventeen fields with no way in. The
+// query is `env.PHONE`, the one the filter bar's fold asks.
+//
+// `FACTS_PHONE` and not `PHONE`, which `_FILTER_JS` declares: every script on a
+// page shares one global scope, and this page not loading that one is a fact
+// about today.
+const FACTS_PHONE = matchMedia({{ phone|tojson }});
+function foldFacts(phone) {
+  for (const box of document.querySelectorAll('.factsfold')) box.open = !phone;
+}
+foldFacts(FACTS_PHONE.matches);
+FACTS_PHONE.addEventListener('change', event => foldFacts(event.matches));
+{%- if editable %}
+
+// While there is a form, the handle says what the form says. The server wrote
+// the stored record's words, and they stay until somebody changes a control —
+// after that the box is about the record as it will be saved, which is the one
+// a person editing with the fields folded away needs to see.
+//
+// The status word from the hill's checked stop, and only from there. A locked
+// status has no stops and draws a state derived from a link (`_STATE_HINT`), so
+// its hidden input holds a word the picture deliberately does not show; the
+// server's word is the right one for it and is kept.
+//
+// Read after the event rather than inside it: `markRequired` sets
+// `aria-required` from its own `change` listener, and the count of required
+// fields left empty is a question about what it decided.
+let factsTouched = false;
+function sayFacts() {
+  const form = document.getElementById('edit');
+  const box = form && form.querySelector('.factsfold');
+  if (!box) return;
+  const live = control => control && !control.closest('[data-kinds]')?.hidden;
+  const word = typeof cardWord === 'function' ? cardWord : value => value;
+  const said = box.querySelector('.factssaid');
+  if (factsTouched) {
+    const words = [];
+    const stop = box.querySelector('input[type=radio]:checked');
+    words.push(stop ? word(stop.value) : said.textContent.split(' · ')[0]);
+    const priority = form.querySelector('[data-type][name=priority]');
+    if (live(priority)) words.push(word(priority.value));
+    const owner = form.querySelector('[data-type][name=owner]');
+    if (live(owner)) words.push(owner.value.trim() || 'no owner');
+    said.textContent = words.join(' · ');
+  }
+  // `display` rather than `getClientRects`: inside a shut fold nothing has a
+  // box, and what is being counted is the rows the open list would draw — the
+  // editing-only ones while editing, and only this kind's on the create form.
+  const rows = [...box.querySelectorAll('dl > dt')]
+    .filter(dt => !dt.hidden && getComputedStyle(dt).display !== 'none');
+  box.querySelector('.factscount').textContent =
+    `${rows.length} field${rows.length === 1 ? '' : 's'}`;
+  // `#kind` is the create form's picker and nothing else's; `CREATING` is the
+  // same answer, declared by a script further down the page than this one.
+  const writing = document.getElementById('kind')
+    || document.querySelector('article.record.editing');
+  const empty = writing ? [...form.querySelectorAll('[aria-required="true"]')]
+    .filter(control => live(control) && !String(control.value).trim()).length : 0;
+  // The span is the server's, drawn hidden beside the other warnings and in
+  // their shape, so this sets words and nothing else.
+  const need = box.querySelector('.factsneed');
+  need.hidden = !empty;
+  need.querySelector('.factsneedsaid').textContent =
+    `${empty} required field${empty === 1 ? '' : 's'} empty`;
+}
+// Only from the fields and the kind picker: the document box is in the same
+// form, and a recount per keystroke of the body is work for a line nobody moved.
+for (const kind of ['input', 'change']) {
+  document.addEventListener(kind, event => {
+    if (!event.target.closest?.('.factsfold, #kind')) return;
+    factsTouched = true;
+    setTimeout(sayFacts);
+  });
+}
+// Entering and leaving Write changes which rows exist without any control
+// changing. `openproj:session` is the page's own word for exactly that — a
+// session began or ended — so it is heard rather than the class it flips.
+addEventListener('openproj:session', () => setTimeout(sayFacts));
+setTimeout(sayFacts);
+{%- endif %}
+</script>
 <div id="grip" title="drag to set the width"></div>
 <script>
 // What this page is looking at, for the shell's "somebody else changed this"
@@ -1658,7 +1955,10 @@ function place() {
   // typed fields, can you remove it from there and only leave it for edit and
   // preview views?" The width control in this view is `#splitter`, which is
   // between the two panes where there is something on both sides of it.
-  grip.hidden = !article || article.classList.contains('view-both');
+  // Off in full page too, where the box is the window's width and the measure it
+  // would drag decides nothing.
+  grip.hidden = !article || article.classList.contains('view-both')
+    || article.classList.contains('whole-page');
   if (!grip.hidden) grip.style.left = column(article).getBoundingClientRect().right + 'px';
 }
 place();
@@ -1756,6 +2056,9 @@ grip.ondblclick = () => {
 {{ acesurface }}{% endif %}
 {% if editable %}{{ combobox }}{% endif %}
 {% if editable %}<script>{{ required }}</script><script>{{ hill }}</script>{% endif %}
+{#- Empty unless this page drew a date box — the gate is at `calendar=` below,
+    where the reason is, the way `{{ pop }}` on the table is gated at `pop=`. -#}
+{{ calendar }}
 {% if editable %}<script>
 // Only what changed travels. Serialising the whole form would send back every
 // field as this tab last saw it, overwriting whatever somebody else changed while
@@ -1784,7 +2087,11 @@ const TITLED = document.querySelector('.title-field');
 // shared block. Nothing below this line touches `.value` or a selection.
 const SURFACE = bodySurface(BODY);
 attachUploads(SURFACE, document.getElementById('upload'));
-attachEditing(SURFACE, document.getElementById('marks'), CREATING);
+// The bodies the toolbar's Template button offers — `_offered_templates`, one
+// per kind this plan has switched on. Top level and not inside the create
+// form's block below, because the record page offers them too.
+const TEMPLATES = {{ templates|tojson }};
+attachEditing(SURFACE, document.getElementById('marks'), TEMPLATES);
 // **`#state`, not `#upload`.** jcanton, 2026-08-26, with a screenshot of the
 // edit-only view: "it's the 'saved' message, which in side-by-side prints on one
 // line perfectly well but in the normal edit view doesn't. should we move this
@@ -1831,24 +2138,6 @@ const BASE = FORM.querySelector('[name=base_commit]');
 // Bumped rather than parsed loosely, so a body that happens to be valid JSON
 // cannot be mistaken for the new shape.
 const DRAFT = `openproj:draft:2:${FORM.dataset.id}`;
-// One sentence, handed from the page that saved to the page that comes back.
-// A save in a room reloads, and "saved, and somebody else's change to this file
-// was merged in" is news — it means the file holds a paragraph this person has
-// not read — announced to a page that is already on its way out. Not scoped to
-// the record: it is read and dropped by the first page that loads, which is the
-// one that was reloaded.
-const SAID = 'openproj:said';
-
-// Whatever the page before the reload was told. Read once and forgotten, so a
-// reload of the reload is silent rather than saying "saved" again.
-{
-  const before = remembered.get(SAID);
-  if (before) {
-    remembered.forget(SAID);
-    announce(before);
-  }
-}
-
 function read(control) {
   const type = control.dataset.type;
   // `!!`, so a bool is always a bool rather than whatever the DOM happens to
@@ -1969,44 +2258,28 @@ if (CREATING) {
   }
   showKind();
 
-  // The body a new record starts from. Switching kind switches template, but
-  // only while the box is still one of ours: once somebody has typed, the box
-  // is theirs — the template never changes underneath a sentence, and the
-  // picker says so rather than appearing to do nothing.
-  const TEMPLATES = {{ templates|tojson }};
-  const TPL = document.getElementById('template');
-  // Named for the element it addresses — the template picker's own message
-  // line — and never anything ending in STATE: the page has a real `#state`
-  // region beside it, every write to which must go through `announce()`.
-  const TPLNOTE = document.getElementById('tplnote');
-  function untouched() {
-    return Object.values(TEMPLATES).some(text => text.trim() === SURFACE.text().trim());
-  }
-  function applyTemplate(name) {
-    if (!untouched()) {
-      TPLNOTE.textContent = 'the body has been edited — clear it to start from a template';
-      return false;
-    }
-    // A whole-document replacement, said in those words and made once. `apply`
-    // marks it as the page writing rather than a person typing, and the event
-    // tells the layers drawn beside the box, because `apply` deliberately
-    // fires no `input` — without it, choosing `blank` left twenty-one line
-    // numbers down the side of an empty box.
-    SURFACE.apply(() => SURFACE.splice(0, SURFACE.text().length, TEMPLATES[name] ?? ''));
+  // The body a new record starts from: its kind's template, or nothing for a
+  // kind that has none. Switching kind switches it, but only while the box is
+  // still one of ours — `untouchedBody`, the question the Template button asks
+  // too. Once somebody has typed, the box is theirs and the template never
+  // changes underneath a sentence; the Template button is how to add one then.
+  //
+  // A whole-document replacement, made under `apply` because it is the page
+  // swapping something it put there itself, and the event tells the layers
+  // drawn beside the box, because `apply` deliberately fires no `input` —
+  // without it, a switch to a kind with no template left twenty-one line
+  // numbers down the side of an empty box.
+  function startFrom(kind) {
+    if (!untouchedBody(SURFACE.text(), TEMPLATES)) return;
+    const template = TEMPLATES.find(one => one.kind === kind);
+    SURFACE.apply(() => SURFACE.splice(0, SURFACE.text().length, template ? template.text : ''));
     dispatchEvent(new Event('openproj:editing'));
-    TPLNOTE.textContent = '';
-    return true;
   }
-  TPL.onchange = () => { applyTemplate(TPL.value); };
   KIND.onchange = () => {
     showKind();
-    if (untouched() && TEMPLATES[KIND.value] !== undefined) {
-      TPL.value = KIND.value;
-      applyTemplate(KIND.value);
-    }
+    startFrom(KIND.value);
   };
-  TPL.value = TEMPLATES[KIND.value] !== undefined ? KIND.value : 'blank';
-  applyTemplate(TPL.value);
+  startFrom(KIND.value);
 }
 
 // `showEditing` and not `show`: the detail page's hash router declares a `show`
@@ -2490,6 +2763,21 @@ function stillNeeded(fields) {
   return true;
 }
 
+// What both save paths do with the fields a commit took, and the flag that says
+// the read view is now behind: see `STALE` in `_VIEWS`. The fields the request
+// SENT and not what the form holds now, for the reason the body is: a field
+// changed while the save was in the air is still unsaved.
+function savedHere(fields) {
+  for (const [name, value] of Object.entries(fields || {})) {
+    ORIGINAL[name] = JSON.stringify(value);
+  }
+  STALE = true;
+  dirty();
+  // The session was left while this was in the air, so the read view is on the
+  // screen already and `freshen` ran before there was anything to freshen.
+  if (VIEW === 'view') freshen();
+}
+
 async function save() {
   // One button, two verbs: a record that exists is PATCHed with what changed;
   // a record that does not exist yet is POSTed whole. The branch is the entire
@@ -2545,10 +2833,40 @@ async function save() {
     }
     if (!response.ok) { announce(refusal(answer, response.status)); return; }
     committed = answer.commit;
-    forgetDraft();
-    // The mode survives the reload the commit needs. See `keepView` in `_VIEWS`.
-    keepView();
-    location.reload();
+    // **In place only when this page already holds what was committed**, and
+    // there are two ways it may not. A MERGE wrote somebody else's paragraph
+    // into the file beside ours, and it is not in the box: taking what was sent
+    // as the baseline would make the next save, against this very commit,
+    // write the box verbatim and take their paragraph out without a conflict.
+    // And a page that has been in a ROOM keeps a document of its own under the
+    // box, which this commit went round; on the next reconnect the room adds
+    // HEAD to a document that already holds the same lines, and commits both
+    // copies. Both are what the reload was quietly curing, so both still reload
+    // — into the view and onto the line, which is what `keepView` is for.
+    if (answer.outcome === 'merged' || COEDIT.joined()) {
+      // A keystroke made while this was in the air goes across as a draft on
+      // the base it was typed on, so saving it merges it with what landed
+      // instead of writing over the paragraph that did.
+      if (SURFACE.text() === (body === null ? ORIGINAL_BODY : body)) forgetDraft();
+      else writeDraft();
+      keepView();
+      location.reload();
+      return;
+    }
+    // Where you are, and no reload: see `STALE` in `_VIEWS`. The base and the
+    // body move together, as `BASELINE`'s comment requires, and the body is the
+    // one this request SENT — a keystroke made while it was in the air is not
+    // committed, and the counter has to go on saying so.
+    BASE.value = committed;
+    BASELINE = committed;
+    if (body !== null) ORIGINAL_BODY = body;
+    // And a draft of that keystroke is rewritten on the new base, or restoring
+    // it later would say somebody else had changed the record — this person did.
+    if (SURFACE.text() === ORIGINAL_BODY) forgetDraft();
+    else writeDraft();
+    box.hidden = true;
+    savedHere(fields);
+    announce('saved');
   } catch (error) {
     // The same missing `catch` as the uploader's, and worse, because this is the
     // path everybody walks. `announce('saving…')` above puts a word in the live
@@ -2651,7 +2969,7 @@ async function createRecord() {
       return;
     }
     committed = answer.commit;
-    location.href = '/detail/' + answer.id;
+    location.href = {{ links.record|tojson }} + answer.id;
   } catch (error) {
     // The connection went while the request was in the air. This was `try` and
     // `finally` with no `catch`, so a rejection here escaped unhandled and the
@@ -2880,6 +3198,43 @@ if (!CREATING) {
     showEditing(true);
   }
 }
+
+// GitHub disagrees with this record's status — see `askPullRequestStates`. The
+// line goes under Status, where the answer would be written, and it says what
+// GitHub said and asks; the button only fills the form, so the change is one
+// more unsaved edit on the bar like any other and Save is still the person's.
+// Done fills End date with the day the last one landed, because a done record
+// needs one and that is the day it was true — and only if End date is empty,
+// because a date somebody wrote is theirs.
+function offerStatusFromGitHub(states) {
+  const form = document.getElementById('edit');
+  const state = form && states[form.dataset.id];
+  const word = state && (state.verdict === 'landed' ? 'done' : 'shelved');
+  const stop = word && form.querySelector(`input[type="radio"][value="${word}"]`);
+  if (!stop) return;
+  const line = document.createElement('p');
+  line.className = 'hint prstate';
+  line.innerHTML = prStateMark(state);
+  line.append(' ' + prStateSentence(state) + ' ');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = word === 'done' ? 'Mark done' : 'Mark shelved';
+  button.addEventListener('click', () => {
+    if (!document.querySelector('article.record').classList.contains('editing')) flipEditing();
+    stop.click();
+    const end = form.querySelector('[name="end_date"]');
+    if (word === 'done' && end && !end.value && state.at) {
+      end.value = state.at;
+      end.dispatchEvent(new Event('input', {bubbles: true}));
+      end.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+    line.remove();
+    announce(`Status is ${word === 'done' ? 'done' : 'shelved'} — not saved yet.`);
+  });
+  line.append(button);
+  stop.closest('dd').append(line);
+}
+askPullRequestStates(offerStatusFromGitHub);
 </script>{% endif %}
 {% if editable %}{{ views }}{% endif %}
 {% if editable %}<script>{{ yjs }}</script>
@@ -2945,6 +3300,28 @@ def _links(ids: list[str], index: Index, links: Links = STATIC) -> Markup:
     )
 
 
+def _link_lines(ids: list[str], index: Index, links: Links = STATIC) -> Markup:
+    """Ids as titles, linked, one to a line — the lists of records a fact holds.
+
+    jcanton, 2026-10-20: "how about having one line per blocker (with eclipsing)
+    both in read as well as in edit mode … instead of comma-separated". A list of
+    titles run together with commas is a paragraph, and the question a reader
+    asks of Blocked by is which ones, one at a time. Each line is cut by an
+    ellipsis rather than wrapped, so a long title costs width and not a second
+    line, and its own `title` gives it back whole with the id. Escaped the way
+    `_links` is, through `Markup.format`, for the reason written there.
+    """
+    lines = []
+    for i in ids:
+        title = index.plan[i].title if i in index.plan else i
+        lines.append(
+            Markup('<span class="refline"><a href="{}{}" title="{}">{}</a></span>').format(
+                links.record, i, f"{title} — {i}" if title != i else i, title
+            )
+        )
+    return Markup("").join(lines)
+
+
 def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") -> list[dict]:
     """The rows of the facts list, each carrying both how it reads and how it edits.
 
@@ -2996,7 +3373,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
         teach_id = f"teach-{field['id']}" if teach else ""
         teach_data = ""
         if name == "depends_on":
-            display = _links(index.blocked_by[record.id], index, links) or empty
+            display = _link_lines(index.blocked_by[record.id], index, links) or empty
         elif name == "parent":
             # By title and linked, the way blockers already read. An id is what
             # the field stores; it is not what anybody is looking for when they
@@ -3006,7 +3383,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             # Links, not the bare ids the two old pages' edit boxes held: the
             # question a reader asks of this row is "what did it become", and an
             # id is not an answer anybody can press.
-            display = _links(getattr(record, name), index, links) or empty
+            display = _link_lines(getattr(record, name), index, links) or empty
         elif name == "prs":
             display = Markup(", ").join(_pr_link(ref) for ref in record.prs) or empty
         elif name == "review_waived":
@@ -3125,9 +3502,19 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
                 # person-weeks, and now has to say so on its own: this is the row
                 # that lost the unit off its label, and "1.0" under a bare
                 # "Appetite" is a number a reader cannot act on.
+                #
+                # `a_number` and not `not in ("", None)`, which is the test this
+                # had and which a `person_weeks: .nan` walks straight through: the
+                # row drew "nan person-weeks", the one readout in the whole app
+                # that still spelled a hand-edited non-number out loud after the
+                # sizes and the rates were guarded at their sources. A dash and
+                # the problem beside it in `<ul class="problems">`, which is where
+                # this record's is already drawn, say the two halves of it — where
+                # "nan person-weeks" says neither. Zero is a size and passes, the
+                # same as it did.
                 display = (
                     Markup("{} person-weeks").format(field["text"])
-                    if field["text"] not in ("", None)
+                    if a_number(field["text"])
                     else empty
                 )
             else:
@@ -3162,6 +3549,9 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             display = escape(field["text"]) if field["text"] not in ("", None) else empty
         rows.append(
             {
+                # Which field, for `_folded`: the label is the reader's word for
+                # it and is free to change.
+                "name": name,
                 "label": LABELS.get(name, name),
                 # What the `<dt>`'s label points at. The derived rows below have
                 # no control, so they get no label — a `for` naming nothing is a
@@ -3252,6 +3642,15 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
                 "gates": (),
                 "derived": True,
                 "editing_only": False,
+                # The same overrun, as words the folded fields can say on a phone
+                # — see `_folded`. A fold that hid this row's warning would be a
+                # closed box over the one sentence on the page saying a bet does
+                # not fit.
+                "warn": (
+                    f"overruns cycle {span.overruns_cycle}"
+                    if span and span.overruns_cycle_weeks
+                    else ""
+                ),
             }
         )
     if why:
@@ -3285,7 +3684,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             {
                 "label": "Blocks",
                 "for": "",
-                "display": _links(index.blocks[record.id], index, links) or empty,
+                "display": _link_lines(index.blocks[record.id], index, links) or empty,
                 "control": "",
                 "gates": (),
                 "derived": True,
@@ -3310,7 +3709,24 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
                     f"{counted.done:g}",
                     f"{counted.total:g}",
                     counted.unit,
-                    round(100 * counted.fraction),
+                    # `_percent` and not `round(100 * fraction)`, which is what
+                    # this said, so that one function in this app turns a ratio
+                    # into a width — the rule an invariant written twice is
+                    # guarded once.
+                    #
+                    # **It changes no number, and the reason is worth writing
+                    # down because the first version of this comment got it
+                    # wrong.** It claimed a pitch whose tasks outrun its bet
+                    # announced "120 per cent" over a bar `overflow: hidden` had
+                    # already clamped. `fraction` cannot exceed 1: `_weighed`
+                    # (`index.py`) sums the SAME per-child quantity for both
+                    # halves and the done half sums over a subset of the
+                    # children, so `done <= total` is structural. Constructed
+                    # deliberately — a bet of 1 holding two done tasks worth 3
+                    # and 2 — and it reads 5/5, not 5/1. The bet against its
+                    # contents is `_rollup_problems`, which is a different
+                    # sentence on a different line.
+                    _percent(counted.done, counted.total),
                 ),
                 "control": "",
                 "gates": (),
@@ -3442,7 +3858,10 @@ def _progress_view(index: Index, record: Record) -> dict | None:
         )
     return {
         "text": counted.text,
-        "percent": round(100 * counted.fraction),
+        # `_percent` for the reason the Progress row above gives: one place
+        # rounds a ratio here, and this panel and that row are the same two
+        # numbers drawn twice.
+        "percent": _percent(counted.done, counted.total),
         # `tasks` and not `items`: a Jinja lookup finds `dict.items` first, so
         # `progress.items` was the built-in method and the template raised
         # `'builtin_function_or_method' object is not iterable` on every page
@@ -3489,6 +3908,35 @@ def _shaping_hints(record: Record, has_tasks: bool = False) -> list[str]:
             "tasks are what its progress is counted from; the checklist is not."
         )
     return notes
+
+
+def _folded(state: str, priority: str, owner: str | None, rows: list[dict]) -> dict:
+    """What a record's fields say while a phone has them folded away.
+
+    The fields came first on a phone, so the document — the thing a pitch page is
+    opened to read — started 1172px into the reading box at 390x844, under
+    seventeen rows; and the hill, which says the status by where its ball sits,
+    said it in no word at all on a screen with no pointer to hover it with. So the
+    fold's handle carries the three things a reader scans a record for, in words,
+    and how many fields are behind it.
+
+    Only the ones the page draws a row for, asked of `rows` and not of the model:
+    every record type carries a priority and an owner, and a product's page shows
+    neither, so "Medium · no owner" on one would be a sentence about two rows that
+    are not there. And the warnings by name, because a closed box must not look
+    like a fine one — the overrun is the one computed row that is a problem (F1).
+    """
+    drawn = {row.get("name") for row in rows}
+    said = [_human(state)]
+    if "priority" in drawn:
+        said.append(_human(priority))
+    if "owner" in drawn:
+        said.append(owner or "no owner")
+    return {
+        "said": " · ".join(said),
+        "count": sum(1 for row in rows if not row.get("editing_only")),
+        "warn": [row["warn"] for row in rows if row.get("warn")],
+    }
 
 
 def _detail_rows(index: Index, links: Links = STATIC, only: str | None = None) -> list[dict]:
@@ -3624,6 +4072,7 @@ def _new_rows() -> list[dict]:
             row = rows.setdefault(
                 field["name"],
                 {
+                    "name": field["name"],
                     "label": LABELS.get(field["name"], field["name"]),
                     # Empty for status, for the reason the `<dt>` above gives: its
                     # control is a group, and a label names one element.
@@ -3869,6 +4318,8 @@ def render_detail(
         # A blank record through the same row machinery. No id (the server
         # mints it), no cascade (nothing to delete), no problems (nothing has
         # been refused yet).
+        fields = _KIND_MODELS[creating].model_fields
+        blank_rows = _new_rows()
         rows: list[dict] = [
             {
                 "id": "",
@@ -3880,7 +4331,15 @@ def render_detail(
                 "hints": [],
                 "progress": None,
                 "body": Markup(""),
-                "rows": _new_rows(),
+                "rows": blank_rows,
+                # The blank the kind would be. The script restates it from the
+                # controls as soon as there are any, and on every change after.
+                "fold": _folded(
+                    fields["status"].default,
+                    fields["priority"].default,
+                    None,
+                    [row for row in blank_rows if creating in row["kinds"].split()],
+                ),
                 "raw_body": "",
                 "also": [],
                 "reach": [],
@@ -3901,6 +4360,9 @@ def render_detail(
         for row in rows:
             record = index.records[row["id"]]
             row["rows"] = _fact_rows(index, record, links, signed_in)
+            row["fold"] = _folded(
+                record.state(index.records), record.priority, record.owner, row["rows"]
+            )
             row["raw_body"] = record.body
             # What deleting it would take with it, drawn into the confirmation
             # before anybody presses anything — the ids that go back to the
@@ -3944,8 +4406,13 @@ def render_detail(
         showing=[] if creating else [row["id"] for row in rows],
         single=creating is not None or only is not None,
         creating=creating,
-        kinds=KINDS,
-        templates=TEMPLATES if creating else {},
+        # The create form's picker and the kind chip's menu, both: only the kinds
+        # this plan has, because each one leads to a write the server refuses for
+        # a kind that is off. `index.kinds` is `Config.allows`'s set, carried.
+        kinds=tuple(kind for kind in KINDS if kind in index.kinds),
+        # Wherever the form is, which is wherever the Template button is: the
+        # record page offers the same bodies the create form starts from.
+        templates=_offered_templates(index) if base_commit is not None else [],
         links=links,
         editable=base_commit is not None,
         # The Delete control asks for both, and `editable` alone is not enough.
@@ -3961,6 +4428,15 @@ def render_detail(
         combobox=_combobox_html(index, linkable=True, live=base_commit is not None),
         required=_REQUIRED_JS,
         hill=_HILL_JS,
+        # The popup every date box here opens, and only where there is a box to
+        # open it. `_control_html` draws a date as text for a reader, so this
+        # page in read mode — which is what the static export writes to
+        # `detail.html` — has no `input[type="date"]` anywhere on it, and the
+        # block is 60 KB — 53 of script and 7 of stylesheet. The same gate the
+        # table already makes at `pop=`, and the same one `/help` and `/people`
+        # are kept out by: the criterion is "has a date field", and a page in
+        # read mode has not got one.
+        calendar=_calendar_js(index) if base_commit is not None else Markup(""),
         viewbar=_viewbar(_editing_possible(base_commit, may_write)),
         # Empty while creating, where there is no record yet to have a slide of
         # — the template already guards it, and passing the control anyway would
@@ -4001,6 +4477,15 @@ def render_detail(
             _COEDIT if base_commit is not None and may_write and creating is None else Markup("")
         ),
     )
+    # Beside the widget and under the same gate, and LAST in the concatenation:
+    # the calendar's own rules are written to win their ties on source order —
+    # see the ladder comment in `calendar.py` — and a sheet appended after them
+    # takes those ties instead. A plain `str` on both sides, deliberately:
+    # `str + Markup` would take markupsafe's `__radd__` and escape every `>` in
+    # the two sheets in front of it.
+    style = _DETAIL_STYLE + _SUGGEST_STYLE
+    if base_commit is not None:
+        style += _CALENDAR_STYLE
     if creating is not None:
         # No nav item marked, deliberately: `aria-current="page"` claims a page
         # within the set, and pressing Table from this form abandons it rather
@@ -4008,18 +4493,20 @@ def render_detail(
         return _page(
             f"openproj — new {creating}",
             body,
-            _DETAIL_STYLE + _SUGGEST_STYLE,
+            style,
             links,
             unreadable=index.unreadable,
+            unusable=index.unusable,
             fills=True,
         )
     return _page(
         "openproj — detail",
         body,
-        _DETAIL_STYLE + _SUGGEST_STYLE,
+        style,
         links,
         "detail",
         index.unreadable,
+        index.unusable,
         # The index of every record, and every record, and the create form all
         # come out of this one function — so all three scroll inside the shell's
         # box and all three keep the nav and the footer. This page has nothing to
@@ -4065,7 +4552,10 @@ _PROMOTE = """
         body: JSON.stringify({
           source: {{ source|tojson }},
           kind: INTO ? INTO.value : {{ only|tojson }},
-          base_commit: {{ base_commit|tojson }},
+          // The newest commit this page knows the note's body at: a save no
+          // longer reloads, so the commit the page was rendered at can be one
+          // that is missing what was just saved.
+          base_commit: typeof BASELINE !== 'undefined' ? BASELINE : {{ base_commit|tojson }},
         }),
       });
       // `answerOf` and not a bare `response.json()`: a 500 answers in

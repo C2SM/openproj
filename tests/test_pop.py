@@ -144,7 +144,7 @@ def index_holding_an_off_plan_parent(demo_root: Path) -> Index:
     records.append(
         parse_text(
             "---\nid: task-0ff001\nkind: task\ntitle: Filed off the plan\nstatus: ready\n"
-            "owner: jackdawrie\nassignees: [jackdawrie]\nreviewers: [mudlarkish]\n"
+            "owner: jackdawrie\ndevelopers: [jackdawrie]\nreviewers: [mudlarkish]\n"
             f"person_weeks: 1\nparent: {holder}\n---\n\nA hand-written parent.\n",
             "tasks/task-0ff001.md",
         )
@@ -1215,6 +1215,62 @@ return seen;
 """
 
 
+_A_FINGER_ON_A_ROW = """
+const row = document.querySelector('.labels .row[data-id]');
+if (!row) return {error: 'the chart drew no rows'};
+const link = row.querySelector('a[href]');
+if (!link) return {error: 'the first labelled row has no link in it'};
+const press = (target, pointerType) => {
+  const box = target.getBoundingClientRect();
+  const event = new PointerEvent('contextmenu', {bubbles: true, cancelable: true,
+    button: 2, buttons: 2, pointerType,
+    clientX: box.left + 2, clientY: box.top + box.height / 2});
+  target.dispatchEvent(event);
+  const seen = {open: popIsOpen(), prevented: event.defaultPrevented};
+  popClose();
+  return seen;
+};
+return {
+  fingerOnLink: press(link, 'touch'),
+  fingerOnRow: press(row, 'touch'),
+  mouseOnLink: press(link, 'mouse'),
+};
+"""
+
+
+def test_a_finger_held_on_a_link_gets_the_browsers_menu(index: Index, tmp_path: Path):
+    """On a touch screen, a long-press on a link is the browser's.
+
+    On Android a long-press is a `contextmenu`, so a thumb held on a row's title
+    got this app's menu instead of the browser's, which is the menu a phone
+    reader actually wants for a link ("open in new tab", "copy link address").
+    A touch screen has no Shift key to get it back. jcanton, 2026-10-08, chose
+    "browser on links, app elsewhere" out of three options. So the rest of the
+    row, outside the link, still opens ours, and a mouse on the same link still
+    opens ours as well.
+
+    Untrusted presses, like the timeline's test below and for the reason it
+    gives: `defaultPrevented` on a script-built event records whether the page
+    called `preventDefault()`, which is the whole of what the page decides.
+    Headless touch emulation synthesises no `contextmenu` from a held touch, so
+    a trusted long-press is not something this harness can produce.
+    """
+    got = measured_in(
+        chrome(), render_timeline(index, ROUTES), tmp_path / "t.html", 1280, _A_FINGER_ON_A_ROW
+    )
+
+    assert not got.get("error"), got
+    assert got["fingerOnLink"] == {"open": False, "prevented": False}, (
+        f"a finger held on a link opened our menu over the browser's: {got['fingerOnLink']}"
+    )
+    assert got["fingerOnRow"] == {"open": True, "prevented": True}, (
+        f"a finger held on the row outside its link opened nothing: {got['fingerOnRow']}"
+    )
+    assert got["mouseOnLink"] == {"open": True, "prevented": True}, (
+        f"a mouse on the same link no longer opens our menu: {got['mouseOnLink']}"
+    )
+
+
 def test_the_timelines_menu_opens_off_a_label_as_well_as_a_bar(index: Index, tmp_path: Path):
     """The timeline is the reader's view — `render_timeline` takes neither
     `may_write` nor `base_commit` — and until now it appeared in this file only
@@ -2016,14 +2072,23 @@ def test_the_owner_submenu_writes_a_person_and_nobody_clears_it(index: Index, tm
 
 
 _TAKING_OUT = """
-const inside = rowWhere(one => one.parent && !one.off_plan_parent);
+// Two that act, told apart by what is ABOVE the parent, and found by walking the
+// rows' own `parent` rather than by reading `out_to` — a test that took its
+// expectation from the field under test would agree with it by construction.
+const above = one => (DATA.rows[one.parent] || {}).parent;
+const inside = rowWhere(one => one.kind === 'task' && !one.off_plan_parent
+                               && (DATA.rows[above(one)] || {}).kind === 'project');
+const topmost = rowWhere(one => one.kind === 'pitch' && !one.off_plan_parent
+                                && (DATA.rows[above(one)] || {}).kind === 'product');
 const off = rowWhere(one => one.off_plan_parent);
 const loose = rowWhere(one => !one.parent && !one.off_plan_parent
                               && (POP_SCHEMA.parent_kinds[one.kind] || []).length);
 const top = rowWhere(one => !(POP_SCHEMA.parent_kinds[one.kind] || []).length);
-if (!inside || !off || !loose || !top)
-  return {error: 'the corpus does not hold all four shapes',
-          have: {inside: !!inside, off: !!off, loose: !!loose, top: !!top}};
+if (!inside || !topmost || !off || !loose || !top)
+  return {error: 'the corpus does not hold all five shapes',
+          have: {inside: !!inside, topmost: !!topmost, off: !!off, loose: !!loose, top: !!top}};
+const insideAbove = above(inside);
+const topmostAbove = above(topmost);
 // Each refusal is opened, read and PRESSED, because "drawn dim" and "does
 // nothing" are two claims and only the second one is about the plan.
 const readItem = id => {
@@ -2038,19 +2103,31 @@ const readItem = id => {
 };
 const refused = {off: readItem(off.id), loose: readItem(loose.id), top: readItem(top.id)};
 const quiet = {sent: patches().length, base: baseNow(), beats: beatsNow()};
-// The one that acts, last, so the count above cannot be confused with this one.
-openOn(inside.id);
-const acting = {word: wordIn(itemIn('take-out')),
-                disabled: itemIn('take-out').getAttribute('aria-disabled')};
+// The two that act, last, so the count above cannot be confused with these.
+const act = row => {
+  openOn(row.id);
+  return {word: wordIn(itemIn('take-out')),
+          disabled: itemIn('take-out').getAttribute('aria-disabled')};
+};
+const acting = act(inside);
 itemIn('take-out').click();
 await rest(700);
-return {refused, quiet, acting,
-        inside: {id: inside.id, title: inside.title,
-                 parentTitle: DATA.rows[inside.parent].title},
+const insideSaid = said();
+const insideClosed = !popIsOpen();
+const lifting = act(topmost);
+itemIn('take-out').click();
+await rest(700);
+return {refused, quiet, acting, lifting,
+        inside: {id: inside.id, title: inside.title, above: insideAbove,
+                 parentTitle: DATA.rows[inside.parent].title,
+                 aboveTitle: DATA.rows[insideAbove].title},
+        topmost: {id: topmost.id, title: topmost.title, above: topmostAbove,
+                  parentTitle: DATA.rows[topmost.parent].title},
         off: {id: off.id, title: off.title}, loose: {id: loose.id, title: loose.title},
         top: {id: top.id, title: top.title, kind: top.kind},
-        sent: patches(), said: said(), closed: !popIsOpen(),
-        now: DATA.rows[inside.id].parent, beats: beatsNow()};
+        sent: patches(), said: insideSaid, closed: insideClosed, liftSaid: said(),
+        now: DATA.rows[inside.id].parent, liftNow: DATA.rows[topmost.id].parent,
+        beats: beatsNow()};
 """
 
 
@@ -2109,21 +2186,38 @@ def test_take_out_acts_on_a_parent_and_refuses_the_three_ways_there_is_not_one(
     assert got["quiet"]["base"] == HEAD
     assert got["quiet"]["beats"] == {"writing": 0, "wrote": []}, got["quiet"]["beats"]
 
+    # Out of a pitch is into the project the pitch is in — jcanton, 2026-10-12,
+    # "move-out should always move to the upper parent". It sent `null`, and a
+    # pitch taken out of a pitch on the graph left its project with it.
+    inside = got["inside"]
     assert got["acting"]["disabled"] is None, "the row that IS inside something was refused"
-    assert got["acting"]["word"] == f'Take out of "{got["inside"]["parentTitle"]}"', (
-        f"the item names {got['acting']['word']!r} and the parent is "
-        f"{got['inside']['parentTitle']!r}"
-    )
-    assert len(got["sent"]) == 1, got["sent"]
-    assert got["sent"][0]["url"] == f"/api/record/{got['inside']['id']}"
-    assert got["sent"][0]["body"]["fields"] == {"parent": None}, (
-        "`parent: ''` and `parent: null` are not the same write — `patch_text` "
-        f"round-trips a value: {got['sent'][0]['body']['fields']}"
+    assert got["acting"]["word"] == (
+        f'Take out of "{inside["parentTitle"]}" into "{inside["aboveTitle"]}"'
+    ), f"the item reads {got['acting']['word']!r}"
+    assert len(got["sent"]) == 2, got["sent"]
+    assert got["sent"][0]["url"] == f"/api/record/{inside['id']}"
+    assert got["sent"][0]["body"]["fields"] == {"parent": inside["above"]}, (
+        f"taking a task out of its pitch sent {got['sent'][0]['body']['fields']}, and the "
+        f"pitch is in {inside['above']}"
     )
     assert got["closed"] is True
-    assert got["said"] == f"{got['inside']['title']} is no longer inside anything"
-    assert got["now"] is None, "the row is still filed under its parent after the write"
-    assert got["beats"] == {"writing": 1, "wrote": ["c0ffee1"]}, got["beats"]
+    assert got["said"] == f'{inside["title"]} is now inside "{inside["aboveTitle"]}"'
+    assert got["now"] == inside["above"], "the row is not where the write put it"
+
+    # And where nothing above may hold it — a pitch out of its project, under a
+    # product that cannot hold a pitch — it is the top of the tree, as before.
+    topmost = got["topmost"]
+    assert got["lifting"]["word"] == f'Take out of "{topmost["parentTitle"]}"', (
+        f"the item names somewhere to land and there is nowhere: {got['lifting']['word']!r}"
+    )
+    assert got["sent"][1]["url"] == f"/api/record/{topmost['id']}"
+    assert got["sent"][1]["body"]["fields"] == {"parent": None}, (
+        "`parent: ''` and `parent: null` are not the same write — `patch_text` "
+        f"round-trips a value: {got['sent'][1]['body']['fields']}"
+    )
+    assert got["liftSaid"] == f"{topmost['title']} is no longer inside anything"
+    assert got["liftNow"] is None, "the row is still filed under its parent after the write"
+    assert got["beats"] == {"writing": 2, "wrote": ["c0ffee1", "c0ffee2"]}, got["beats"]
 
 
 # --------------------------------------------------------------------------- #
@@ -3632,7 +3726,7 @@ def test_edit_opens_on_the_record_and_one_save_commits_what_was_answered(
     assert held["status"] == was["status"], held
     assert held["priority"] == (was["priority"] or ""), held
     assert held["owner"] == (was["owner"] or ""), held
-    assert held["assignees"] == ", ".join(was["assignees"] or []), held
+    assert held["developers"] == ", ".join(was["developers"] or []), held
     assert held["review_waived"] is bool(was["review_waived"]), held
     assert held["start_date"] == (was["start_date"] or ""), held
     assert got["opened"]["names"]["person_weeks"] == LABELS["person_weeks"], (
@@ -3864,6 +3958,153 @@ def test_enter_takes_the_answer_and_closes_the_field_without_writing(
     ), got["landed"]
 
 
+_TAB_WALKS = """
+const parent = rowWhere(one => (POP_SCHEMA.child_kinds[one.kind] || []).includes('task'));
+if (!parent) return {error: 'no row on this table may hold a task'};
+const somebody = POP_SCHEMA.people[0];
+if (!somebody) return {error: 'the corpus knows nobody'};
+openOn(parent.id);
+itemIn('new-child').click();
+itemIn('new-child-task').click();
+// Tab, the way a browser delivers it, to whatever has the keyboard. **A
+// synthetic Tab moves nothing by itself**, so a box that left the key to the
+// browser would leave the keyboard exactly where it was, and the walk below
+// would read as one stop repeated — which is the failure this is written to
+// see. The return of `dispatchEvent` is the claim the key was answered here.
+const tab = (back = false) => !document.activeElement.dispatchEvent(
+  new KeyboardEvent('keydown', {key: 'Tab', shiftKey: back, bubbles: true, cancelable: true}));
+const whereNow = () => {
+  const one = document.activeElement;
+  const box = one.getBoundingClientRect();
+  return {at: one.dataset.field || one.dataset.kind || one.tagName,
+          inside: POP.contains(one), open: opensNow(),
+          fact: !!one.closest('.card-fact'), top: box.top, left: box.left};
+};
+const stops = opensInForm();
+const start = whereNow();
+const title = 'Typed, then tabbed past';
+typeInto('title', title);
+const walk = [];
+// From the title to the title again: every other field, Create, Cancel, and
+// round.
+for (let n = 0; n < stops.length + 2; n++) {
+  const prevented = tab();
+  walk.push(Object.assign({prevented}, whereNow()));
+  if (document.activeElement.dataset.field === 'owner') typeInto('owner', somebody);
+}
+const round = {title: valueIn('title'), owner: valueIn('owner'),
+               sent: patches().length + posts().length};
+const back = [];
+for (let n = 0; n < 3; n++) back.push(Object.assign({prevented: tab(true)}, whereNow()));
+// A half-written date, which Enter refuses to take, and so must Tab.
+openField('start_date');
+const date = boxIn('start_date');
+date.value = '';
+Object.defineProperty(date, 'validity', {value: {badInput: true}, configurable: true});
+const half = {prevented: tab(), ...whereNow(), why: whyLines()};
+Object.defineProperty(date, 'validity', {value: {badInput: false}, configurable: true});
+date.value = '2026-03-02';
+const finished = {prevented: tab(), ...whereNow(), says: valueIn('start_date')};
+const before = patches().length + posts().length;
+pressSave();
+await rest(1000);
+return {parent: parent.id, somebody, title, opens: POP_SCHEMA.opens.task,
+        stops, start, walk, round, back, half, finished, before,
+        sent: posts(), patched: patches().length, open: popIsOpen()};
+"""
+
+
+def test_tab_walks_the_card_field_by_field_and_wraps_inside_the_box(
+    index: Index, tmp_path: Path
+):
+    """jcanton, 2026-10-07: *"the new create child / create record pop window
+    doesn't allow for tab-bing between fields to fill them in in order as in a web
+    form. can we have that somehow? even though enter/escape are special keys?"*
+
+    Tab is the third key of the set Enter and Escape began. It takes the answer in
+    the field it leaves — onto the card as a word, exactly as Enter does, and
+    without writing — and opens the next field ready to be typed over. The
+    browser's own Tab could not do it: every row of the list is a `.card-fact`,
+    `display: contents`, with no box to focus, so it skipped all of them and went
+    from the status chip to Create.
+
+    **The order is the card's reading order**, and that is asserted in pixels as
+    well as in the DOM: `.card-facts` is a grid, and a grid's placement is the
+    stylesheet's to decide, so each stop in the list has to sit right of the one
+    before it on the same row or on a row below it.
+
+    **It wraps, which was asked.** Past Cancel is the title again and Shift+Tab
+    goes the other way round. This box refuses every close that is not a
+    decision, and a keyboard that fell onto the table behind it could no longer
+    press Escape, because this box's listener is on `#pop`.
+
+    **A half-written date stops it**, for the reason it stops Enter: the picker
+    answers `''` for `2026-0` exactly as for a box emptied on purpose, and taking
+    that would stage a deletion nobody asked for. And what Save sends at the end
+    is what was typed, and nothing for the dozen fields Tab only walked through:
+    opening a field is not answering it.
+    """
+    got = _at_a_form(index, tmp_path / "tabwalks.html", _TAB_WALKS, patience=6000)
+
+    assert not got.get("error"), got
+    stops = got["stops"]
+    assert "parent" not in stops, f"the locked parent is a Tab stop: {stops}"
+    assert got["start"]["at"] == "title", got["start"]
+    walked = [one["at"] for one in got["walk"]]
+    assert walked == stops[1:] + ["form-save", "form-cancel", "title"], (
+        f"Tab from the title went {walked}; the card's fields in order, then Create and "
+        f"Cancel, then round to the title, is {stops[1:] + ['form-save', 'form-cancel', 'title']}"
+    )
+    for one in got["walk"]:
+        assert one["prevented"] is True, f"Tab at {one['at']} was left to the browser"
+        assert one["inside"] is True, f"Tab put the keyboard outside the box: {one}"
+        wanted = [one["at"]] if one["at"] in stops else []
+        assert one["open"] == wanted, (
+            f"at {one['at']} the open fields are {one['open']} — Tab opens the field it "
+            "lands on and takes the one it leaves"
+        )
+    facts = [(one["top"], one["left"], one["at"]) for one in got["walk"] if one["fact"]]
+    assert len(facts) >= 4, f"the walk crossed {len(facts)} rows of the list"
+    for (top, left, was), (below, right, now) in zip(facts, facts[1:], strict=False):
+        assert (abs(below - top) < 8 and right > left) or below > top + 8, (
+            f"Tab went from {was} at ({left:.0f}, {top:.0f}) to {now} at "
+            f"({right:.0f}, {below:.0f}), which is not the next field in reading order"
+        )
+    assert got["round"] == {"title": got["title"], "owner": got["somebody"], "sent": 0}, (
+        f"after one lap the card reads {got['round']} — what was typed has to be on it, "
+        "and nothing may have been written"
+    )
+    assert [one["at"] for one in got["back"]] == ["form-cancel", "form-save", stops[-1]], (
+        f"Shift+Tab from the title went {[one['at'] for one in got['back']]}"
+    )
+    assert all(one["prevented"] and one["inside"] for one in got["back"]), got["back"]
+    assert got["back"][-1]["open"] == [stops[-1]], got["back"][-1]
+    assert got["half"]["at"] == "start_date" and "start_date" in got["half"]["open"], (
+        f"Tab took a half-written date and moved on to {got['half']['at']}"
+    )
+    assert len(got["half"]["why"]) == 1 and "half-written" in got["half"]["why"][0], (
+        got["half"]["why"]
+    )
+    after = stops[stops.index("start_date") + 1]
+    assert got["finished"]["at"] == after, got["finished"]
+    assert got["finished"]["says"] == "02.03.2026", got["finished"]
+    assert got["before"] == 0, "walking the card wrote to the plan"
+    assert got["patched"] == 0
+    assert len(got["sent"]) == 1, got["sent"]
+    assert got["sent"][0]["body"]["fields"] == {
+        "kind": "task",
+        "title": got["title"],
+        "status": got["opens"],
+        "owner": got["somebody"],
+        "start_date": "2026-03-02",
+        "parent": got["parent"],
+    }, (
+        "Save sent something other than the three answers typed and the two the box "
+        f"holds by itself: {got['sent'][0]['body']['fields']}"
+    )
+    assert got["open"] is False, "the box stayed up after its Create landed"
+
+
 # --------------------------------------------------------------------------- #
 # The shape of it, which is the card's
 # --------------------------------------------------------------------------- #
@@ -4042,7 +4283,7 @@ if (!row) return {error: 'the corpus draws no task'};
 openOn(row.id);
 itemIn('edit').click();
 const seen = {};
-for (const name of ['title', 'assignees']) {
+for (const name of ['title', 'developers']) {
   const box = openField(name);
   box.value = '';
   // A space, typed the way a browser delivers one: the `keydown` first, and then
@@ -4077,7 +4318,7 @@ def test_a_space_typed_into_a_field_reaches_the_field(index: Index, tmp_path: Pa
     space does not scroll the page under an open card. Written without asking
     whose key it was, it cancelled the space somebody was typing into the title:
     jcanton, 2026-09-18, on the released version — "when editing the new card I
-    can't add space characters in the fields (tried title and assignees)".
+    can't add space characters in the fields (tried title and developers)".
 
     `event.target !== part` is the fix, and it is asked rather than inferred from
     whether a control is open: a `<select>` inside the same element answers space
@@ -4090,7 +4331,7 @@ def test_a_space_typed_into_a_field_reaches_the_field(index: Index, tmp_path: Pa
     got = _at_a_form(index, tmp_path / "space.html", _A_SPACE)
 
     assert not got.get("error"), got
-    for name in ("title", "assignees"):
+    for name in ("title", "developers"):
         assert got["seen"][name]["stopped"] is False, (
             f"the space typed into {name} was cancelled before the box could have it"
         )
@@ -4162,7 +4403,7 @@ def test_every_field_that_completes_on_the_record_page_completes_in_the_card(
 
     Two halves were wrong and the second is the one that was noticed. The call
     was gated on `type === 'text'`, and a list field's type is `list` — so
-    `assignees`, `reviewers`, `tags`, `depends_on` and `prs`, five of the seven
+    `developers`, `reviewers`, `tags`, `depends_on` and `prs`, five of the seven
     fields anybody completes, had no datalist at all. And `tags`, `prs` and
     `cycles` were deliberately kept out of the schema when this box was a form of
     its own, so even the fields that did reach `popComplete` had nothing to offer.
@@ -4176,7 +4417,10 @@ def test_every_field_that_completes_on_the_record_page_completes_in_the_card(
     whole value of the box, so on `ann,` the options have to be `ann, bo` and not
     `bo` — otherwise picking one would delete the name already typed.
     """
-    got = _at_a_form(index, tmp_path / "completing.html", _COMPLETING)
+    # A plan that names its repositories, because that is all `prs` offers: the
+    # bare `owner/repo#` of each, and nothing the corpus cites.
+    named = index.model_copy(update={"repositories": ["kilnlab/kiln4py"]})
+    got = _at_a_form(named, tmp_path / "completing.html", _COMPLETING)
 
     assert not got.get("error"), got
     # Every field this record has that the detail page completes. Taken off the
@@ -6080,3 +6324,93 @@ def test_an_answer_to_one_menus_delete_does_not_reach_the_menu_opened_after_it(
     # `landed.open is False`, and it is `popClose` in `popDelete`'s `finally`
     # that keeps it rather than the event.
     assert got["beats"] == {"writing": 0, "wrote": []}, got["beats"]
+
+
+_BLOCKERS_ON_THE_CARD = """
+popMenu(300, 250, ID);
+const edit = [...POP.querySelectorAll('[data-kind="edit"]')][0];
+if (!edit) return {error: 'no Edit item on the graph'};
+edit.click();
+const fact = POP.querySelector('[data-field="depends_on"]:not(input):not(select)');
+if (!fact) return {error: 'no Blocked by on the card'};
+fact.click();
+const box = fact.querySelector('input');
+if (!box) return {error: 'Blocked by would not open', why: fact.title};
+const words = () => [...fact.querySelectorAll('.ref > span')].map(one => one.textContent);
+const key = name => box.dispatchEvent(
+  new KeyboardEvent('keydown', {key: name, bubbles: true, cancelable: true}));
+// The text drawn inside the box, which is the browser's own `value` — the input's
+// own `value` answers the whole list, chips and all.
+const drawn = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+const opened = {value: box.value, words: words(),
+                hover: [...fact.querySelectorAll('.ref')].map(one => one.title)};
+key('Backspace');
+const marked = {value: box.value, marked: fact.querySelectorAll('.ref.on').length};
+key('Escape');
+const escaped = {open: !!fact.querySelector('input'), value: box.value,
+                 marked: fact.querySelectorAll('.ref.on').length};
+fact.querySelector('.ref button').click();
+const removed = {value: box.value, words: words()};
+// What picking from the card's datalist does: the browser writes the whole id
+// into the box and says `input`.
+drawn.set.call(box, FIRST);
+box.dispatchEvent(new Event('input', {bubbles: true}));
+const picked = {value: box.value, words: words(), typed: drawn.get.call(box)};
+return {opened, marked, escaped, removed, picked};
+"""
+
+
+def test_the_cards_blockers_are_their_titles_on_the_graph(demo_root: Path, tmp_path: Path):
+    """jcanton, 2026-10-20, of the right-click card's Edit: "same problem for the
+    same field". The graph is the host whose card edits `depends_on` — the table's
+    rows carry a count and its card locks the field — and the card completes
+    through a `<datalist>`, not through `attachSuggest`, so the chips are asked
+    for here separately rather than assumed from the record page.
+
+    And the card's Escape: it gives the whole field up, so with a chip marked by
+    Backspace one Escape must let go of the mark and nothing more.
+    """
+    records, config, _ = load_repo(demo_root)
+    plan = {record.id: record for record in records if RUNG[record.kind].planned}
+    tasks = sorted(one for one, record in plan.items() if record.kind == "task")
+    waiting, first, second = tasks[-1], tasks[0], tasks[1]
+    records = [
+        record.model_copy(update={"depends_on": [first, second]})
+        if record.id == waiting
+        else record
+        for record in records
+    ]
+    index = build_index(records, config, date(2026, 8, 17))
+    assert index.blocked_by[waiting] == [first, second], "the corpus did not take the edges"
+    titles = [plan[first].title, plan[second].title]
+
+    got = measured_in(
+        chrome(),
+        render_graph(index, ROUTES, base_commit=HEAD, may_write=True),
+        tmp_path / "blockers.html",
+        1280,
+        f"const ID = {json.dumps(waiting)};\nconst FIRST = {json.dumps(first)};\n"
+        + _BLOCKERS_ON_THE_CARD,
+        patience=3000,
+    )
+
+    assert not got.get("error"), got
+    assert got["opened"]["value"] == f"{first}, {second}", got["opened"]
+    assert got["opened"]["words"] == titles, (
+        f"the card's Blocked by opens on {got['opened']['words']}, not on {titles}"
+    )
+    assert got["opened"]["hover"] == [
+        f"{titles[0]} — {first}",
+        f"{titles[1]} — {second}",
+    ], got["opened"]["hover"]
+    assert got["marked"] == {"value": f"{first}, {second}", "marked": 1}, got["marked"]
+    assert got["escaped"] == {"open": True, "value": f"{first}, {second}", "marked": 0}, (
+        f"one Escape over a marked chip did {got['escaped']}: it should let go of the "
+        "mark and leave the field open with both references in it"
+    )
+    assert got["removed"] == {"value": second, "words": [titles[1]]}, got["removed"]
+    assert got["picked"] == {
+        "value": f"{second}, {first}",
+        "words": [titles[1], titles[0]],
+        "typed": "",
+    }, f"a whole id written into the box is not a chip: {got['picked']}"

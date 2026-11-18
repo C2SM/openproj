@@ -6,25 +6,28 @@ from datetime import date
 
 from markupsafe import Markup
 
-from ..index import Index
+from ..index import Index, query_fields
 from ..model import (
     Config,
     Cycle,
     Record,
     days_after,
     is_bettable,
+    out_to,
     size_weeks,
     without_comments,
+    workers_on,
 )
 from ..query import plain
 from ..schedule import build_end
-from .controls import _FILTER_JS, _combobox_html, _cycle_numbers, _facets_html
-from .env import _compiled
+from .calendar import _CALENDAR_STYLE, _calendar_js
+from .controls import _FILTER_JS, _QUERY_JS, _combobox_html, _cycle_numbers, _facets_html
+from .env import PHONE, _compiled
 from .icons import _ICON_ART, ICONS, icon_svg
 from .markdown import _markdown
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SCROLL_STYLE, _SUGGEST_STYLE, _TREE_STYLE
-from .tokens import PRIORITIES, STATUSES
+from .tokens import PRIORITIES, STATUSES, _over, _percent
 
 # Betting table to review meeting for a plan with nothing to copy from. Four
 # weeks is the team's cadence; every cycle written after the first one carries
@@ -42,7 +45,10 @@ _CYCLE = """
     thing is, and this heading is "Cycle 37": the kind is already its first word,
     so a CYCLE chip above it would be the restatement the id column's kind chip
     was. -#}
-<p class="back"><a href="{{ links.cycles }}">← all cycles</a></p>
+{#- Asked, the way the deck link below is: the per-cycle pages go with Cycles,
+    so this is never drawn blank in practice, and a link whose href is empty is
+    a link back to the page it is on. -#}
+{% if links.cycles %}<p class="back"><a href="{{ links.cycles }}">← all cycles</a></p>{% endif %}
 <h1>Cycle {{ c.number }}</h1>
 {#- The one link off this page that is not a record: the deck for the review
     meeting, which is the other thing `reviews_on` is a date for. Drawn only where
@@ -135,7 +141,7 @@ _CYCLE = """
       class="confirm" hidden>out?<button type="button" class="yes">yes</button><button
       type="button" class="no">no</button></span></td>{% else %}<td></td>{% endif %}
     <td>{{ row.login }}</td>
-    <td><span class="read">{{ (row.rate * 100)|round|int }}%</span>
+    <td><span class="read">{{ row.rate_read }}%</span>
         <input class="field rate" data-login="{{ row.login }}" value="{{ row.rate }}"
                aria-label="{{ row.login }} availability" autocomplete="off"></td>
     <td class="derived capacity">{{ '%.1f'|format(row.capacity) }} wk</td>
@@ -256,31 +262,42 @@ _CYCLE = """
 {% endif %}
 
 <h2>The bet</h2>
-{#- The search box on the same line as the sentence that describes the table —
-    jcanton, 2026-08-25: "inline the search box left of the description". It
-    belongs to this table and not to the page, so it sits with the table's own
-    caption rather than in a control bar above the heading.
+{#- One box, and what the table shows is what it says. jcanton, 2026-10-13:
+    "remove the description next to the search box", and the shortlist with it —
+    "now the default logic is the search engine pre-filled with cycle:nr", and the
+    Every status box goes because "clearing the search engine clears that and
+    gives the same result". The page used to decide what a betting table was
+    about twice, once in a status rule the server applied and once in whatever
+    was typed, and only the second could be seen or changed by the room.
 
-    A box and not the facet bar the three plan views share. The facets it would
-    offer are status and kind, and this table is ALREADY only ready and
-    in-progress bettable records — a filter whose whole vocabulary has been
-    applied is a control with one setting. What a betting table actually needs
-    is "where is the thing somebody just said out loud", which is a search, and
-    "put the big ones together", which is a sort. -#}
+    A box and not the facet bar the three plan views share. What a betting table
+    actually needs is "where is the thing somebody just said out loud", which is
+    a search, and "put the big ones together", which is a sort.
+
+    The box opens holding `cycle:N` — jcanton, 2026-10-13: "pre-fill the search
+    box with cycle:<cycle-nr>". In the `value` attribute and not set by the
+    script, so the box says what the rows were filtered by from the first paint,
+    and `autocomplete="off"` so a reload puts the prefill back rather than the
+    browser's memory of whatever was typed last.
+
+    The count is the other views' "N of M shown", in their words and at their
+    end of the line — "x of n shown can move to the right of the pages as in the
+    table and graph views". Rendered as every row before the script narrows it,
+    because a count that is blank until JavaScript runs is a count that is wrong
+    for a moment; the script writes both numbers on every search. -#}
 <p class="hint betsearch">
   <label for="betfind" class="sr-only">Search the betting table</label>
-  <input type="search" id="betfind" placeholder="Search" autocomplete="off">
-  <span>Everything ready or in progress, with the tasks each one is made of
-  underneath it. Ticking one stamps it with cycle
-  {{ c.number }}; an item already in progress from an earlier cycle keeps the cycle it
-  was bet in, so its overrun keeps counting. A task has no tick of its own — it is
-  part of the bet above it — and its appetite is typed here because this is where
-  what the bet has to hold is argued about.</span>
+  <input type="search" id="betfind" placeholder="Search" autocomplete="off"
+    value="cycle:{{ c.number }}">
+  <span id="beterror" class="beterror" hidden></span>
+  <span class="betcount"><span id="betshown" class="num">{{ c.candidates|length }}</span> of
+    <span id="bettotal" class="num">{{ c.candidates|length }}</span> shown</span>
 </p>
 {#- Empty is not broken, and a search that matches nothing is the commonest way
-    to arrive at an empty table. Drawn inside the table's own body by the script,
-    with the control that gets you out of it — finding F1, which keeps coming
-    back through new mechanisms. -#}
+    to arrive at an empty table — on every page this one opens on, until the
+    cycle has its first bet. Drawn with the control that gets you out of it,
+    which is now also the way to every row there is: finding F1, which keeps
+    coming back through new mechanisms. -#}
 <p class="hint" id="betnone" hidden>Nothing here matches
   <strong id="betterm"></strong>. <button type="button" id="betclear">Clear the
   search</button></p>
@@ -297,13 +314,17 @@ _CYCLE = """
     cannot reach and a screen reader does not announce — the quality floor this
     repository holds every page to. -#}
 <div class="sideways">
-<table id="bets" class="unfitted" autocomplete="off"><thead><tr>
-  <th>in {{ c.number }}</th>
-  {% for column in ("title", "kind", "status", "priority", "appetite", "assignees", "reviewers") %}
-  <th data-sort="{{ loop.index }}" aria-sort="none">
-    <button type="button" class="sorter">{{ column }}</button></th>
+{#- The heads are the table page's: `.dir` for the triangle `sortHeads` draws,
+    and `data-col` for the width `gripColumns` remembers. -#}
+<table id="bets" class="unfitted gripped" autocomplete="off"><thead><tr>
+  <th data-col="bet">in {{ c.number }}</th>
+  {% for column in ("title", "kind", "status", "priority", "appetite", "developers", "reviewers") %}
+  <th data-col="{{ column }}" data-sort="{{ loop.index }}" aria-sort="none">
+    <button type="button" class="sorter">{{ column }}<span class="dir"
+      aria-hidden="true"></span></button></th>
   {% endfor %}
-  <th data-sort="8" aria-sort="none"><button type="button" class="sorter">bet in</button></th>
+  <th data-col="cycle" data-sort="8" aria-sort="none"><button type="button"
+    class="sorter">bet in<span class="dir" aria-hidden="true"></span></button></th>
 </tr></thead><tbody>
   {#- Every box in this table is named after the row it is in, not after its
       column. A column header names a cell to somebody reading down the page; to
@@ -355,13 +376,27 @@ _CYCLE = """
                aria-label="{{ row.title }} appetite in weeks"
                autocomplete="off" value="{{ row.size }}"
                placeholder="not sized"></td>
-    <td><input class="live wide" data-field="assignees" data-type="list"
-               aria-label="{{ row.title }} assignees"
-               data-suggest="people" autocomplete="off" value="{{ row.assignees }}"></td>
+    <td><input class="live wide" data-field="developers" data-type="list"
+               aria-label="{{ row.title }} developers"
+               data-suggest="people" autocomplete="off" value="{{ row.developers }}"></td>
     <td><input class="live wide" data-field="reviewers" data-type="list"
                aria-label="{{ row.title }} reviewers"
                data-suggest="people" autocomplete="off" value="{{ row.reviewers }}"></td>
-    <td class="derived">{{ row.cycle }}</td>
+    {#- A task's cell is empty, and on a page that writes it holds the one way a
+        task gets a cycle of its own: out of its pitch and into this cycle,
+        staged like every other edit here and written on Save. -#}
+    {#- `data-query` is what the box asks this row — see `_bet_query`. On the
+        last cell and not on the `<tr>`, whose attributes are read in their
+        written order by more than one test. Single quotes, because `tojson`
+        escapes `'`, `<`, `>` and `&` and not `"`: the attribute form Jinja
+        documents the filter for. -#}
+    <td class="derived" data-query='{{ row.query|tojson }}'>{% if editable and row.own_bet -%}
+      <button type="button" class="ownbet" data-out="{{ row.out_to }}"
+        data-holder="{{ row.holder }}"
+        aria-label="Bet {{ row.title }} on its own into cycle {{
+          c.number }}, out of {{ row.holder }}"
+        >Bet on its own</button>
+      {%- else %}{{ row.cycle }}{% endif %}</td>
   </tr>
   {% endfor %}
 </tbody></table>
@@ -387,12 +422,13 @@ _CYCLE = """
   placeholder="What came up at the betting table — why a pitch was left out,
 what would make it a bet next time. Markdown.">{{ c.raw_body }}</textarea>
 {% else %}
-<div class="doc read">{{ c.body }}</div>
+<div class="doc read syntax">{{ c.body }}</div>
 {% endif %}
 
 {% if editable %}
 {{ combobox }}
 <script>
+{{ query_js }}
 const BASE = document.getElementById('base');
 const BAR = document.getElementById('commitbar');
 const UNSAVED = document.getElementById('unsaved');
@@ -494,7 +530,14 @@ async function saveSetup() {
     // or a `50%` into a removal nobody asked for and nothing reported. Taking
     // somebody out is the button beside their name, which asks first. Said the
     // way the bets table one screen away says it: the field, and the value.
-    if (!typed || Number.isNaN(rate) || rate <= 0) {
+    // `Number.isFinite` and not `Number.isNaN`, which is what this asked and
+    // which `Infinity` walks straight through: `Number('Infinity')` is not NaN
+    // and it is greater than zero, so the box passed this gate — and then
+    // `JSON.stringify` wrote it as `null`, exactly the way it writes NaN, so the
+    // server was asked to refuse a blank about a box holding a word. That is the
+    // failure the comment below is about, arriving through the one spelling the
+    // fix for it did not cover. One predicate answers both.
+    if (!typed || !Number.isFinite(rate) || rate <= 0) {
       say(`${input.dataset.login}'s availability must be a number greater than `
           + `zero, not "${input.value}"`);
       input.focus();
@@ -535,7 +578,7 @@ if (GOAL) GOAL.oninput = () => {
 // Ticking is a write to the RECORD, not to the cycle: `cycle` lives on the thing
 // being bet, and one row is one commit so a half-finished betting table is still
 // a readable history rather than one commit nobody can unpick.
-for (const box of document.querySelectorAll('input.bet')) {
+function wireTick(box) {
   box.onchange = () => {
     const row = box.closest('tr');
     pend(row.dataset.id, 'cycle', box.checked ? NUMBER : null);
@@ -590,14 +633,32 @@ addEventListener('beforeunload', event => {
 // record whose title is blank is one `validate_all` complains about but still
 // draws.
 function named(id) {
-  // Walked rather than selected: an id goes into an attribute selector as text,
-  // and the shim the JS tests drive this page under has no `CSS.escape` to make
-  // that safe. `dataset.id` is the same string the row was drawn with.
-  const row = [...document.querySelectorAll('#bets tbody tr')]
-    .find(tr => tr.dataset.id === id);
+  const row = betRow(id);
   const title = row && row.querySelector('.betname a');
   return (title && title.textContent.trim()) || id;
 }
+
+// Walked rather than selected: an id goes into an attribute selector as text,
+// and the shim the JS tests drive this page under has no `CSS.escape` to make
+// that safe. `dataset.id` is the same string the row was drawn with.
+function betRow(id) {
+  return [...document.querySelectorAll('#bets tbody tr')].find(tr => tr.dataset.id === id);
+}
+
+// True while a Save is going out, which is the one time the rows may not be
+// swapped: a page fetched before a commit lands would put back the values the
+// commit has just replaced.
+let FLUSHING = false;
+// Bumped by every record this page writes, so a refresh can tell that one landed
+// while its page was in flight — see `betRefresh`.
+let WROTE = 0;
+// The refresh's own state, declared here and not beside it: `flush` calls
+// `betRefresh` after a clash, and a script stopped anywhere between the two would
+// otherwise turn that call into a ReferenceError on a `let` not yet reached.
+let betHead = null;
+let betSwapping = false;
+const BET_POLL_MS = 30000;
+const BET_CURRENT = 'The betting table is up to date with the plan';
 
 async function flush(quiet) {
   if (!PENDING.size && !ROSTER_DIRTY && !NOTES_DIRTY && !GOAL_DIRTY) return true;
@@ -615,53 +676,93 @@ async function flush(quiet) {
     if (!(await saveSetup())) { mark(); return false; }
     saved += edits;
   }
-  // One record per commit, each against the commit the last one returned: a
-  // batch that fails half way is still a readable history rather than one commit
-  // nobody can unpick.
-  for (const [id, fields] of [...PENDING]) {
-    dispatchEvent(new Event('openproj:writing'));
-    let committed = null;
-    try {
-      const response = await fetch(`/api/record/${encodeURIComponent(id)}`, {
-        method: 'PATCH', headers: {'content-type': 'application/json'},
-        body: JSON.stringify({base_commit: BASE.value, fields, body: null}),
-      });
-      const answer = await answerOf(response);
-      if (!response.ok) {
-        say(`${named(id)}: ${refusal(answer, response.status)}`
-            + (saved ? ` — ${saved} already saved` : ''));
+  // One record per commit: a batch that fails half way is still a readable
+  // history rather than one commit nobody can unpick.
+  //
+  // **Each against the commit its own row was read at**, and not the one the
+  // last write returned. People edit records while the betting table is going on
+  // — jcanton, 2026-10-12, "there will be several occasions" — and the server
+  // merges field by field against that base. Handing every row the newest commit
+  // made that merge blind from the second row on: somebody's appetite of 3,
+  // typed on the record page while this table held 5, was the base AND the
+  // stored value, so the table's 5 went over it without a word.
+  //
+  // A row nobody else touched merges as before. A clash on one row is that
+  // row's news and not the batch's: the others are separate commits, so they go
+  // on, and the row is taken back to what is stored and says what it lost.
+  const problems = [];
+  let clashed = false;
+  FLUSHING = true;
+  try {
+    for (const [id, fields] of [...PENDING]) {
+      const row = betRow(id);
+      const base = (row && row.dataset.base) || BASE.value;
+      dispatchEvent(new Event('openproj:writing'));
+      let committed = null;
+      try {
+        const response = await fetch(`/api/record/${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: {'content-type': 'application/json'},
+          body: JSON.stringify({base_commit: base, fields, body: null}),
+        });
+        const answer = await answerOf(response);
+        // A merge conflict carries its report in `conflict`; a 409 without one
+        // is a rule refusing the value, which the row keeps so it can be fixed.
+        if (response.status === 409 && answer.conflict) {
+          PENDING.delete(id);
+          clashed = true;
+          // The report names the file first, which is the store's word for the
+          // record this sentence has already named by its title.
+          const report = answer.conflict.replace(/^\\S+ — /, '');
+          problems.push(`${named(id)} was not saved — ${report}. `
+                        + 'The row now shows what is stored; change it again to keep yours.');
+          continue;
+        }
+        if (!response.ok) {
+          problems.push(`${named(id)}: ${refusal(answer, response.status)}`);
+          continue;
+        }
+        committed = answer.commit;
+        BASE.value = answer.commit || BASE.value;
+        if (row && answer.commit) row.dataset.base = answer.commit;
+        WROTE++;
+        PENDING.delete(id);
+        saved += Object.keys(fields).length;
+      } catch (error) {
+        // The connection went mid-batch. With no `catch` the rejection escaped
+        // `flush`, so Save stayed disabled over a bar still counting the edits
+        // and nothing said which row the batch stopped on — and the rows before
+        // it had really been committed, one per commit, so "nothing happened"
+        // would have been the wrong thing to say as well as an unsaid one.
+        //
+        // `PENDING` keeps this row and every row after it, which is what makes
+        // the repeat safe: `mark()` gives Save back and the retry re-sends only
+        // what is still pending, with the same values it sent this time. That is
+        // why a row that really did land is not written twice —
+        // `_merge_frontmatter` skips every key whose stored value already equals
+        // the one being sent, so the re-send merges with itself and answers 200.
+        // It is NOT refused, and this sentence used to promise that it would be.
+        say(`${named(id)}: not saved — ${error.message}`
+            + (saved ? ` — ${saved} already saved` : '')
+            + '. Press Save again: the retry sends the same values, so a row that '
+            + 'did land is not written twice.');
         mark();
         return false;
+      } finally {
+        dispatchEvent(new CustomEvent('openproj:wrote', {detail: committed}));
       }
-      committed = answer.commit;
-      BASE.value = answer.commit || BASE.value;
-      PENDING.delete(id);
-      saved += Object.keys(fields).length;
-    } catch (error) {
-      // The connection went mid-batch. With no `catch` the rejection escaped
-      // `flush`, so Save stayed disabled over a bar still counting the edits and
-      // nothing said which row the batch stopped on — and the rows before it had
-      // really been committed, one per commit, so "nothing happened" would have
-      // been the wrong thing to say as well as an unsaid one.
-      //
-      // `PENDING` keeps this row and every row after it, which is what makes the
-      // repeat safe: `mark()` gives Save back and the retry re-sends only what is
-      // still pending, with the same values it sent this time. That is why a row
-      // that really did land is not written twice — `_merge_frontmatter` skips
-      // every key whose stored value already equals the one being sent, so the
-      // re-send merges with itself and answers 200. It is NOT refused, and this
-      // sentence used to promise that it would be.
-      say(`${named(id)}: not saved — ${error.message}`
-          + (saved ? ` — ${saved} already saved` : '')
-          + '. Press Save again: the retry sends the same values, so a row that '
-          + 'did land is not written twice.');
-      mark();
-      return false;
-    } finally {
-      dispatchEvent(new CustomEvent('openproj:wrote', {detail: committed}));
     }
+  } finally {
+    FLUSHING = false;
   }
   mark();
+  if (problems.length) {
+    const others = saved ? ` ${saved} other change${saved === 1 ? '' : 's'} saved.` : '';
+    say(problems.join(' ') + others);
+    // The clashing row back to what is stored, now and not in thirty seconds:
+    // the sentence above says it shows that.
+    if (clashed) betRefresh();
+    return false;
+  }
   receipt = `${quiet ? 'Autosaved' : 'Saved'} ${saved} change${saved === 1 ? '' : 's'}`;
   say(receipt);
   return true;
@@ -690,8 +791,9 @@ setInterval(() => {
 // script's own sweep — which runs above this block — has already attached the
 // widget. Attaching again put a second widget on the same box: two lists opened
 // together, and one Enter picked a name from each — choosing `bo` wrote
-// `bo, ann, `.
-for (const input of document.querySelectorAll('#bets input.live')) {
+// `bo, ann, `. A row a refresh brings in is the exception, and `betRefresh`
+// attaches it there, once, before this runs.
+function wireLive(input) {
   let was = input.value;
   // Saving on blur alone is not safe when the field is already an input: the
   // browser restores form values across a reload, autofills, and the picker
@@ -742,7 +844,7 @@ for (const input of document.querySelectorAll('#bets input.live')) {
 // drew, and `change` fires only when somebody picked. What it shares with the
 // boxes above is the thing that matters — nothing is written here, it is staged,
 // and the one Save button on this page commits it with everything else.
-for (const pick of document.querySelectorAll('#bets select.pick')) {
+function wirePick(pick) {
   let was = pick.value;
   pick.onchange = () => {
     if (pick.value === was) return;
@@ -761,6 +863,58 @@ for (const pick of document.querySelectorAll('#bets select.pick')) {
   };
 }
 
+// Every control in these rows, wired. A function and not three loops over the
+// page, because a refresh brings in rows these loops never saw: the swap used
+// to put fresh rows in and nothing on them did anything — a tick that staged
+// nothing and a box whose typing went nowhere, until somebody reloaded and lost
+// whatever else they had not saved.
+function wireBets(root) {
+  for (const box of root.querySelectorAll('input.bet')) wireTick(box);
+  for (const input of root.querySelectorAll('input.live')) wireLive(input);
+  for (const pick of root.querySelectorAll('select.pick')) wirePick(pick);
+}
+
+// The rows as served: wired, and read at the commit this page was drawn at.
+// Here, where the three loops this replaced ran, and asked of the document
+// rather than of `BETS.tBodies`, which is declared further down and which the
+// node shim the write tests drive this page under does not have.
+for (const row of document.querySelectorAll('#bets tbody tr')) row.dataset.base = BASE.value;
+wireBets(document.getElementById('bets'));
+
+// **The browser's copy of `_percent` (`tokens.py`), and it has to stay one.**
+// Whoever changes either of these is changing an invariant written in two
+// languages, which is this repository's characteristic way of guarding half of
+// one. The server bounds the ratio at both ends; this bounded only the top —
+// `Math.min(100, Math.round(100 * held / capacity))` — so the same two numbers
+// gave two different bars. A rate box takes any text, and `-1` in one assigned
+// `width: "-25%"`, which is not a width: CSSOM refuses it and leaves the last
+// good one standing, so the bar stopped following the rate and went on drawing
+// a load nobody holds, while a reload drew `_percent(1.0, -4.0)` = 0.
+//
+// A stale bar rather than a full one only because the server always writes an
+// inline width to be stale AT. `span.bar > span` (`shell.py`) declares no width
+// of its own, so a fill that ever loses one is a block child filling the whole
+// 140px track — measured, and asserted as `bare` in
+// `test_the_load_bar_is_the_same_width_in_the_browser_as_it_is_on_the_server`.
+//
+// The bound goes BEFORE the round for the reason the Python says: `Math.round`
+// hands back the `Infinity` it was given, and a rate of `1e-323` makes the
+// ratio infinite. `Infinity%` and `NaN%` are refused exactly as `-25%` is, so
+// the JavaScript copy was only ever right about those two by accident.
+//
+// **NaN is where the two languages part and the translation is not literal.**
+// Python puts the constants first so that NaN loses every comparison and an
+// unreadable ratio draws a FULL bar — the direction this number must never be
+// wrong in, because a bar drawn empty is a cycle that looks free to bet into.
+// `Math.min` propagates NaN whichever side it is on, so the ordering trick does
+// nothing here and the case is named instead.
+function percent(part, whole) {
+  if (!whole) return 0;
+  const ratio = 100 * part / whole;
+  if (Number.isNaN(ratio)) return 100;
+  return Math.round(Math.max(0, Math.min(100, ratio)));
+}
+
 // Capacity is what a rate BUYS, so it has to move while the rate is being typed.
 // Left to the next page load, the number somebody is setting is invisible at the
 // moment they are setting it — which is most of the moment that matters.
@@ -768,14 +922,26 @@ function recount() {
   const build = BUILD_WEEKS;
   const over = [];
   for (const row of document.querySelectorAll('#roster tr')) {
-    const rate = Number(row.querySelector('input.rate').value) || 0;
+    // `|| 0` catches NaN — `Number('six')` — and lets `Infinity` past, so the
+    // capacity beside a box holding that word read "Infinity wk" where the same
+    // box holding "six" read "0.0 wk". Two unusable inputs, two behaviours, and
+    // the save gate refuses both. `Number.isFinite` is the same question
+    // `Cycle.rate` (`model.py`) asks of the same value on the server side.
+    const typedRate = Number(row.querySelector('input.rate').value);
+    const rate = Number.isFinite(typedRate) ? typedRate : 0;
     const held = Number(row.dataset.held) || 0;
     const capacity = rate * build;
     row.querySelector('.capacity').textContent = capacity.toFixed(1) + ' wk';
-    row.querySelector('.bar > span').style.width =
-      capacity ? Math.min(100, Math.round(100 * held / capacity)) + '%' : '0%';
-    row.classList.toggle('over', capacity > 0 && held > capacity);
-    if (capacity > 0 && held > capacity) over.push(row.dataset.login);
+    row.querySelector('.bar > span').style.width = percent(held, capacity) + '%';
+    // **The browser's copy of `_over` (`tokens.py`), and it has to stay one.**
+    // The server spelled this `capacity and held > capacity` in all three of the
+    // places it asks, which disagrees with the line below on every negative
+    // number — and a rate box is a plain text input, so `-1` is one keystroke.
+    // The served row came down wearing `class="over"` and this took it off. The
+    // bar on the line above was put in step by 4e259a4; the flag was not.
+    const beyond = capacity > 0 && held > capacity;
+    row.classList.toggle('over', beyond);
+    if (beyond) over.push(row.dataset.login);
   }
   const line = document.getElementById('over');
   if (line) {
@@ -892,70 +1058,106 @@ document.getElementById('add').onclick = () => {
 const BETS = document.getElementById('bets');
 const BETFIND = document.getElementById('betfind');
 const BETNONE = document.getElementById('betnone');
+const BETERROR = document.getElementById('beterror');
 
 function betRows() { return [...BETS.tBodies[0].rows]; }
 
-function betSearch() {
-  // `said` is what is in the box and `term` is what can be searched for. They
-  // part company wherever normalising leaves less than a needle: `#` is
-  // something somebody typed, so this is not an empty box and the rows must
-  // narrow — to nothing, and with the sentence below saying which `#` found
-  // none. Reading `!term` for "the box is empty" would show the whole table back
-  // instead, which is the one answer a search must never give to a term it
-  // cannot answer.
-  //
-  // `sought` and not `plain`, which is the half of that split this box was
-  // missing. `plain('C++')` is `'c'` — not empty, so nothing above catches it,
-  // and a one-character substring answers almost everything: measured on cycle
-  // 37 of the test corpus, `C++` and `c#` each kept 13 of the table's 14 rows.
-  // `sought` empties a needle `plain` truncated, so those narrow to nothing the
-  // way `#` already did. Every other box on every page reads `sought`; its
-  // comment in `_SHELL` is where the rule is written down.
-  const said = BETFIND.value.trim();
-  const term = sought(said);
-  let shown = 0;
-  for (const row of betRows()) {
-    // The whole row's text, which is what somebody means by "search": a title,
-    // an owner, a kind and an id are all things said out loud at a betting
-    // table. `textContent` misses what is inside the editable cells, whose
-    // value lives on the input rather than in the tree, so those are asked
-    // separately.
-    //
-    // **Plained per cell and per typed VALUE, then joined on a space**, which is
-    // the boundary `found` stops at. Joining the row first and plaining the
-    // result would delete the whitespace between the cells and let a subsequence
-    // run out of a title and into the owner beside it — the cross-value leak
-    // that `searchable`'s space exists to prevent, reintroduced by the one box
-    // that has no server-built blob to read. This is also the one box that
-    // normalises per row per keystroke, over one cycle's candidates; it already
-    // lowercased exactly this string just as often.
-    //
-    // **A value, and not a box.** `assignees` and `reviewers` are one input each
-    // holding a comma-joined list, so a box plained whole welds its logins into
-    // a single chunk and the leak comes back inside one cell — which is what it
-    // did. Measured on cycle 37 of the test corpus, where two rows carry
-    // `redpollard, chiffchaffy`: `dchi`, `ardchi` and `llardch` each found
-    // exactly those two rows and no others, and `redpollardchiffchaffy` found
-    // them too — as a SUBSTRING, so this was never only the loose tier's doing.
-    // Split on the comma the blur handler above stages a list on, so the
-    // boundary this box searches by is the boundary the file is written with,
-    // and one chunk per list element is what `_joined` builds on the server.
-    const typed = [...row.querySelectorAll('input')]
-      .filter(box => box.type !== 'checkbox')
-      .flatMap(box => box.dataset.type === 'list' ? box.value.split(',') : [box.value])
-      .map(value => plain(value));
-    const haystack = [...row.cells].map(cell => plain(cell.textContent))
-      .concat(typed).join(' ');
-    const hit = !said || !!found(term, haystack);
-    row.hidden = !hit;
-    if (hit) shown++;
+// What the box asks, parsed once per search and not once per row. A query that
+// cannot be read matches nothing and says why, beside the box — the rule every
+// other view keeps (`query.py`).
+function betAsked(said) {
+  try {
+    return {tree: queryTree(said), error: ''};
+  } catch (error) {
+    if (!(error instanceof QueryError)) throw error;
+    return {tree: null, error: error.message};
   }
+}
+
+// The row's query data as the server drew it (`_bet_query`), parsed once per row:
+// a refresh replaces the row, and the new one brings its own.
+function betQuery(row) {
+  if (!row._query) {
+    const cell = row.querySelector('td[data-query]');
+    try { row._query = JSON.parse(cell ? cell.dataset.query : '{}'); } catch { row._query = {}; }
+  }
+  return row._query;
+}
+
+// The row's fields as the ROOM has them, which is the server's with every edit
+// nobody has saved yet laid over them. A tick is `cycle` staged in PENDING, so
+// `cycle:39` answers for a bet ticked a minute ago and stops answering for one
+// unticked — and a task with no cycle of its own takes its bet's, ticks
+// included, for the reason `_bet_query` gives.
+function betFields(row) {
+  const query = betQuery(row);
+  const fields = {...(query.fields || {})};
+  if (query.cycle_from) {
+    const bet = betRow(query.cycle_from);
+    if (bet) fields.cycle = betFields(bet).cycle;
+  }
+  for (const [field, value] of Object.entries(PENDING.get(row.dataset.id) || {}))
+    if (field in fields)
+      fields[field] = [].concat(value ?? []).map(String).map(v => v.toLowerCase())
+        .filter(v => v !== '');
+  return fields;
+}
+
+// Whether a row answers the query. A bare word reads the row's `searchable` blob,
+// which is what it reads on every other view, and the values typed into this
+// row's boxes since — the blob is the plan as the page was drawn, and the box
+// beside the row is the plan as the room is arguing it.
+function betAnswers(tree, row) {
+  if (tree === null) return true;
+  const query = betQuery(row);
+  // Plained per VALUE and joined on a space, the boundary `found` stops at. A
+  // list box plained whole welds its logins into one chunk: measured on cycle 37
+  // of the test corpus, `redpollard, chiffchaffy` answered `dchi` and `llardch`.
+  const typed = [...row.querySelectorAll('input.live')]
+    .flatMap(box => box.dataset.type === 'list' ? box.value.split(',') : [box.value])
+    .map(value => plain(value)).filter(Boolean);
+  return answers(tree, betFields(row),
+    [query.search || '', ...typed].join(' '), query.name || '');
+}
+
+// `quiet` leaves the live region alone: a refresh re-filters rows it has just
+// brought in, and its "N of M shown" — or its blank, with nothing searched —
+// went over a row that did not save, which is the line somebody needs to read.
+//
+// It also leaves alone every row somebody is working in. A refresh runs while the
+// room works, and `cycle:39` with a bet unticked a moment ago no longer answers
+// for that row — so without this the next poll took the row away with the edit
+// still in it, which is `betPlace`'s rule broken by the search instead of by
+// the sort. Typing in the box is a person asking, and asks every row.
+function betSearch(quiet = false) {
+  // `said` is what is in the box and `term` is what the language makes of it.
+  // `#` is something somebody typed, so this is not an empty box and the rows
+  // must narrow — to nothing, with the sentence below saying which `#` found
+  // none. `queryTree` makes it the empty word, which `bare` answers nothing for.
+  //
+  // The language, and not a substring over the row's text: jcanton, 2026-10-13,
+  // "the search box doesn't know the query language (e.g. `cycle:39` doesn't
+  // work) while all other ones do". The haystack this replaced also read every
+  // `<option>` of the two pickers, so `shelved` found every row on the table.
+  const said = BETFIND.value.trim();
+  const asked = betAsked(said);
+  BETERROR.textContent = asked.error;
+  BETERROR.hidden = !asked.error;
+  const rows = betRows();
+  let shown = 0;
+  for (const row of rows) {
+    const hit = !asked.error && betAnswers(asked.tree, row);
+    if (!(quiet && betHeld(row))) row.hidden = !hit;
+    if (!row.hidden) shown++;
+  }
+  document.getElementById('betshown').textContent = shown;
+  document.getElementById('bettotal').textContent = rows.length;
   // Empty must not look like broken. A search matching nothing is the commonest
   // way to arrive at an empty table, and it is a different sentence from "this
   // cycle has nothing to bet on" — with the control that gets you out of it.
   BETNONE.hidden = shown > 0 || !said;
   if (!BETNONE.hidden) document.getElementById('betterm').textContent = said;
-  say(said ? `${shown} of ${betRows().length} shown` : '');
+  if (!quiet) say(asked.error || (said ? `${shown} of ${rows.length} shown` : ''));
   betTree();
 }
 
@@ -996,12 +1198,45 @@ function betTree() {
   });
 }
 
-BETFIND.addEventListener('input', betSearch);
+BETFIND.addEventListener('input', () => betSearch());
+// Quiet: the page opening filtered by `cycle:N` is not news, and a load that
+// announced "3 of 14 shown" would say it over whatever the region holds.
+betSearch(true);
 document.getElementById('betclear').onclick = () => {
   BETFIND.value = '';
   betSearch();
   BETFIND.focus();
 };
+
+// Bet on its own: a task out of its pitch and into this cycle, as two staged
+// fields on one row, so Save writes them as one commit and Undo takes back only
+// these two and not an appetite typed on the same row a minute ago. Where it is
+// filed is the server's answer (`data-out`), the one `Take out` reads too.
+//
+// Delegated from the table and not bound per button, because `betRefresh`
+// replaces the whole tbody and a listener on the old rows goes with them.
+BETS.addEventListener('click', event => {
+  const button = event.target.closest('button.ownbet');
+  if (!button) return;
+  const id = button.closest('tr').dataset.id;
+  const holder = button.dataset.holder;
+  const staged = PENDING.get(id) || {};
+  if ('parent' in staged) {
+    const {parent, cycle, ...rest} = staged;
+    if (Object.keys(rest).length) PENDING.set(id, rest); else PENDING.delete(id);
+    button.textContent = 'Bet on its own';
+    button.setAttribute('aria-label',
+      `Bet ${named(id)} on its own into cycle ${NUMBER}, out of ${holder}`);
+    mark();
+    say(`${named(id)} stays in ${holder}`);
+    return;
+  }
+  pend(id, 'parent', button.dataset.out || null);
+  pend(id, 'cycle', NUMBER);
+  button.textContent = 'Undo';
+  button.setAttribute('aria-label', `Undo betting ${named(id)} on its own`);
+  say(`${named(id)} will leave ${holder} and be bet into cycle ${NUMBER} on Save`);
+});
 
 // Sorting, by the text a reader can see. `appetite` is the one column where
 // that is a number and sorting it as a string would put 10 before 2 — so a cell
@@ -1026,7 +1261,14 @@ function betCell(row, at) {
   const pick = cell.querySelector('select');
   if (pick) return String(pick.selectedIndex).padStart(3, '0');
   const box = cell.querySelector('input:not([type=checkbox])');
-  return (box ? box.value : cell.textContent).trim();
+  return (box ? box.value : betText(cell)).trim();
+}
+
+// What a cell says about the record, which a button in it does not: "Bet on its
+// own" on every task row made `own` find all of them and sorted the bet-in column
+// by a control's label.
+function betText(cell) {
+  return cell.querySelector('button.ownbet') ? '' : cell.textContent;
 }
 
 function betSort(at, descending) {
@@ -1041,7 +1283,7 @@ function betSort(at, descending) {
   // Re-appending a row MOVES it, so the checkboxes and their state travel with
   // it. This is the whole reason the sort is done on the live rows rather than
   // by re-rendering the table from data: the data is in the form.
-  for (const row of rows) BETS.tBodies[0].append(row);
+  betPlace(rows);
   // And the tree goes, because it has stopped being true. Sorted by appetite a
   // task sits wherever its number falls and the bet it belongs to is somewhere
   // else entirely, so the indent points at a stranger — the same rule the table
@@ -1049,6 +1291,20 @@ function betSort(at, descending) {
   // is no way back to it but a reload, which is also the table page's answer:
   // the order a tree can be drawn over is the server's own.
   BETS.classList.add('sorted');
+}
+
+// The rows in this order, moving every one but the row somebody is in. A row
+// taken out of the document takes the focus with it — the box being typed in
+// blurs, which stages it half-typed — and a refresh now runs while people work,
+// so the row under the cursor is the one row that never moves.
+function betPlace(order) {
+  const body = BETS.tBodies[0];
+  const anchor = order.find(tr => tr.contains(document.activeElement));
+  for (const tr of [...body.rows]) if (tr !== anchor) tr.remove();
+  if (!anchor) { body.append(...order); return; }
+  const at = order.indexOf(anchor);
+  anchor.before(...order.slice(0, at));
+  anchor.after(...order.slice(at + 1));
 }
 
 // --- The table follows the plan while the table is going on ------------------
@@ -1063,53 +1319,87 @@ function betSort(at, descending) {
 // on a reading page and wrong here for the same reason it was wrong on the deck:
 // this page is a FORM, and a reload throws away every tick nobody has saved yet.
 //
-// **So it swaps the rows, and only when swapping them cannot cost anything.**
-// Three refusals, and each is a way somebody loses work:
+// **So it swaps the rows, one at a time, and never one somebody is working in.**
+// It used to swap the whole body and refuse while anything was unsaved or the
+// focus was in the table — and a betting table always has one or the other, so
+// it stopped following the plan for the length of the meeting. jcanton,
+// 2026-10-12: people edit records while the table is going on, "so it should be
+// possible for the two to happen simultaneously". So the rule is per row:
 //
-//   - not while anything on this page is unsaved, because a swap would drop
-//     ticks that are the whole point of the meeting;
-//   - not while the focus is inside the table, because the row under somebody's
-//     cursor moving mid-sentence is worse than a stale row;
-//   - not while a save is in flight, because the answer is about to move again.
+//   - a row with an unsaved edit stays exactly as the room left it, values and
+//     base commit, until Save takes it — then the next poll replaces it with
+//     what was merged, somebody else's changes to its other fields included;
+//   - the row the focus is in stays, and does not move (`betPlace`);
+//   - every other row is the server's, wired, and read at the server's commit;
+//   - nothing is swapped while a Save is going out, nor from a page fetched
+//     before one landed, because that page predates the commit.
 //
-// What it costs is that a busy table stops updating until somebody saves, which
-// is the right way round: the unsaved ticks are the thing that cannot be got
-// back, and the sentence below says so rather than leaving it silent.
-let betHead = null;
-let betSwapping = false;
-const BET_POLL_MS = 30000;
-
-// The same four things `beforeunload` above refuses to leave over, asked as one
-// question. Written as a call to that state rather than as a fifth copy of the
-// list: a swap and a tab close are the two ways unsaved work here is lost, and
-// they must not be able to disagree about what "unsaved" means.
-function betBusy() {
-  if (PENDING.size || ROSTER_DIRTY || NOTES_DIRTY || GOAL_DIRTY) return 'unsaved changes';
-  if (BETS.contains(document.activeElement)) return 'the table has focus';
-  return '';
+// A sort holds across a swap, and so does the search: the room
+// arranged the table, and a table that rearranges itself every time somebody
+// edits a record is a table nobody can point at.
+// Whether a refresh must leave this row alone.
+function betHeld(row) {
+  return PENDING.has(row.dataset.id) || row.contains(document.activeElement);
 }
 
+// True when the rows were brought up to date, false when they could not be, so
+// the poll asks again rather than believing it is current.
 async function betRefresh() {
-  if (betSwapping) return;
+  if (betSwapping || FLUSHING) return false;
   betSwapping = true;
+  const wrote = WROTE;
   try {
     const answer = await fetch(location.pathname + location.search,
                               {headers: {'accept': 'text/html'}});
-    if (!answer.ok) return;
+    if (!answer.ok) return false;
     const fresh = new DOMParser().parseFromString(await answer.text(), 'text/html');
     const rows = fresh.querySelector('#bets tbody');
-    if (!rows) return;
-    // Which rows were ticked, by id, so the swap cannot lose a decision that
-    // has been made and saved — and so a row that arrives already bet in comes
-    // back ticked rather than blank.
-    BETS.tBodies[0].replaceWith(rows);
-    // The fresh rows arrive in the server's order, which is the order the tree
-    // is drawn over — so whatever sort was applied to the rows that have just
-    // been thrown away no longer describes anything, and the class that hides
-    // the tree while a sort holds goes with them.
-    BETS.classList.remove('sorted');
-    betSearch();
-    say('The betting table was refreshed — somebody changed the plan');
+    if (!rows || FLUSHING || WROTE !== wrote) return false;
+    const base = (fresh.getElementById('base') || {}).value || BASE.value;
+    // Everything below runs without yielding, so what is held is decided in the
+    // same instant the rows are replaced.
+    const held = new Map(betRows().filter(betHeld).map(row => [row.dataset.id, row]));
+    const added = [];
+    const order = [...rows.rows].map(row => {
+      const kept = held.get(row.dataset.id);
+      if (kept) { held.delete(row.dataset.id); return kept; }
+      row.dataset.base = base;
+      added.push(row);
+      return row;
+    });
+    // A row the room is still working on that the plan no longer draws here —
+    // moved, or no longer bettable — stays at the end until it is saved or
+    // left, rather than vanishing with the edit in it.
+    order.push(...held.values());
+    betPlace(order);
+    for (const row of added) {
+      // Attached here and not by the combobox's own sweep, which ran once at
+      // load, and BEFORE the row's own keys are wired: the suggestion list has
+      // to answer Escape and Enter first (see `wireLive`).
+      for (const input of row.querySelectorAll('[data-suggest]')) attachSuggest(input);
+      wireBets(row);
+    }
+    window.SHOWING = ['cycle-' + NUMBER].concat(betRows().map(row => row.dataset.id));
+    const sorted = BETS.querySelector('th[aria-sort="ascending"], th[aria-sort="descending"]');
+    if (sorted) {
+      betSort(Number(sorted.dataset.sort), sorted.getAttribute('aria-sort') === 'descending');
+    } else {
+      BETS.classList.remove('sorted');
+    }
+    mark();
+    betSearch(true);
+    // Said only over silence or over the last time it was said. A refresh now
+    // happens while people work, and the line it would overwrite is a receipt or
+    // a row that did not save, which is the line somebody needs to read.
+    const now = (document.getElementById('state') || {}).textContent || '';
+    if (!now.trim() || now.trim() === BET_CURRENT) say(BET_CURRENT);
+    betHead = base;
+    return true;
+  } catch {
+    // Offline for a moment, or an answer that would not parse: the rows stay as
+    // they are and the next poll asks again. `flush` calls this without waiting
+    // for it, so a rejection here would have nobody to land on.
+    return false;
   } finally {
     betSwapping = false;
   }
@@ -1118,17 +1408,8 @@ async function betRefresh() {
 async function betPoll() {
   try {
     const health = await (await fetch('/api/health')).json();
-    if (betHead !== null && health.head !== betHead) {
-      const why = betBusy();
-      if (why) {
-        // Said, not swallowed. A table that has quietly stopped following the
-        // plan looks exactly like a plan that has not changed.
-        say(`The plan changed — this table will refresh once ${why} is cleared`);
-      } else {
-        await betRefresh();
-      }
-    }
-    betHead = health.head;
+    if (betHead === null) { betHead = health.head; return; }
+    if (health.head !== betHead) await betRefresh();
   } catch { /* a moment offline is not news at a betting table */ }
 }
 
@@ -1142,17 +1423,19 @@ betPoll();
 for (const head of BETS.querySelectorAll('th[data-sort]')) {
   head.querySelector('.sorter').onclick = () => {
     const at = Number(head.dataset.sort);
-    const was = head.getAttribute('aria-sort');
-    const descending = was === 'ascending';
-    for (const other of BETS.querySelectorAll('th[data-sort]'))
-      other.setAttribute('aria-sort', 'none');
-    head.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
+    const descending = head.getAttribute('aria-sort') === 'ascending';
+    sortHeads(BETS, head, descending);
     betSort(at, descending);
-    say(`Sorted by ${head.textContent.trim()}, ${descending ? 'descending' : 'ascending'}`);
+    say(`Sorted by ${head.dataset.col}, ${descending ? 'descending' : 'ascending'}`);
   };
 }
+gripColumns(BETS, 'openproj:bet-shares');
 </script>
 {% endif %}
+{#- The setup form's two date boxes are drawn on this page in BOTH modes —
+    there is no reading/editing toggle here — so the calendar is not gated on
+    `editable` the way the record page's and the table's are. -#}
+{{ calendar }}
 """
 
 _CYCLE_STYLE = (
@@ -1165,27 +1448,30 @@ _CYCLE_STYLE = (
    answer, so a row that gains or loses its box stays right. */
 #setup dd:has(input[type="date"]) > .read { display: none; }
 
-/* The betting table's search, on the line with the sentence that describes the
-   table rather than in a bar above the heading: it belongs to this table. The
-   box first, because it is the control and the sentence is the caption. */
+/* The betting table's search, over the table rather than in a bar above the
+   heading: it belongs to this table. The box at the start of the line and the
+   count at the far end of it, where the table and the graph put theirs — the
+   count wears `#summary`'s type for the same reason, so "N of M shown" reads as
+   one sentence across the four views. */
 .betsearch { display: flex; align-items: baseline; gap: .6rem; }
-.betsearch input { flex: none; width: 12rem; }
-.betsearch > span { flex: 1 1 auto; min-width: 0; }
-/* A column head that sorts. It is a real button so a keyboard can reach it, and
-   it wears the head's own type so the row still reads as a header row. */
-#bets th .sorter {
-  font: inherit; color: inherit; background: none; border: 0; padding: 0;
-  cursor: pointer; text-transform: inherit; letter-spacing: inherit;
-}
+.betsearch input[type="search"] { flex: none; width: 12rem; }
+.betsearch > .beterror { font-size: 12px; color: var(--sev-warn); }
+.betsearch > .betcount { margin-left: auto; white-space: nowrap; color: var(--muted);
+                         font-size: 13px; }
+/* A column head that sorts is the table page's: `.gripped` in the shell draws its
+   button, its triangle and its grip. Two things are this page's own. The bold,
+   because `#bets th` below sets the weight at (1,0,1) and the shell's
+   `.gripped th.sorted` at (0,2,1) loses to it — (1,1,1) here wins on weight.
+   And a positioned head for the grip to stand in: no `thead th { position:
+   sticky }` reaches this page (that rule is `_SCROLL_STYLE`'s, which it does
+   not load), so without this every grip was absolute against the page. */
 #bets th .sorter:hover { color: var(--accent); }
-/* The arrows as CHARACTERS and not as CSS escapes. `_CYCLE_STYLE` is a Python
-   string that is not raw, so `\2191` never reaches the browser as one: Python
-   reads `\21` as an octal escape first and the declaration arrives as
-   `content: " \11 93"`, which Chrome renders as the literal text "93" beside
-   every column head. `shell.py` carries a comment about this exact trap, written
-   the last time somebody put a backslash in one of these blocks. */
-#bets th[aria-sort="ascending"] .sorter::after { content: " ↑"; }
-#bets th[aria-sort="descending"] .sorter::after { content: " ↓"; }
+#bets th.sorted { color: inherit; font-weight: 700; }
+#bets thead th { position: relative; }
+/* A list box keeps a floor of 11rem so two logins fit side by side, which in a
+   column narrowed by hand is a box running out of its cell. Sized, the column
+   decides: (1,3,1) here over `#bets input.live.wide`'s (1,2,1). */
+#bets.sized input.live.wide { min-width: 0; }
 
 /* .commitbar, #unsaved and #save are the shell's: the cycle page was the first
    to need a bar that says whether the page is saved, and then the detail page
@@ -1198,7 +1484,7 @@ td .confirm { white-space: nowrap; }
 .confirm button.yes { border-color: var(--danger); color: var(--danger); }
 /* The notes box, at the width of the prose it holds rather than the width of the
    betting table beside it. */
-textarea.notes { display: block; width: 100%; max-width: 52rem; box-sizing: border-box;
+textarea.notes { display: block; width: 100%; box-sizing: border-box;
                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                  font-size: 13px; line-height: 1.55; padding: .4rem;
                  border: 1px solid var(--line-strong); border-radius: 3px;
@@ -1214,14 +1500,24 @@ textarea.notes { display: block; width: 100%; max-width: 52rem; box-sizing: bord
    sheet is concatenated after _DETAIL_STYLE and is loaded by the two cycle pages
    only, so there is no third page for it to reach. */
 .doc { border-top: 0; padding-top: 0; }
-textarea.goal { display: block; width: 100%; max-width: 52rem; box-sizing: border-box;
+textarea.goal { display: block; width: 100%; box-sizing: border-box;
                 font: inherit; font-size: 15px; line-height: 1.5; padding: .4rem;
                 border: 1px solid var(--line-strong); border-radius: 3px;
                 background: var(--surface); color: inherit; resize: vertical; }
-p.goal.read { font-size: 15px; max-width: 52rem; margin: 0 0 1rem; }
+p.goal.read { font-size: 15px; margin: 0 0 1rem; }
 .goalbar { margin: 0 0 1rem; }
 #setup .field, table.load .field { display: inline-block; }
 #setup .field { width: 12rem; }
+/* Firefox's half of that width. There the calendar wraps a date box in
+   `.datewrap` and moves its border onto the wrapper (`_CALENDAR_STYLE`), and the
+   wrapper is `width: 100%` from `_DETAIL_STYLE` — so the 12rem above sized an
+   input inside a frame as wide as the page. jcanton, 2026-10-13: "shorten /
+   adapt the date fields: they span the whole page width". (1,1,0) over the
+   wrapper's (0,1,0), and the input fills it at (1,2,0) over `#setup .field`.
+   Inert on Chrome and Safari, where the wrapper is `display: contents` and has
+   no box for a width to size. */
+#setup .datewrap { width: 12rem; }
+#setup .datewrap > .field { width: 100%; }
 #setup .read, table.load .read { display: none; }
 /* The roster and the delivered list wear one dress, said once. They are the two
    plain tables on this page — the betting table below is a grid of controls and
@@ -1233,6 +1529,24 @@ p.goal.read { font-size: 15px; max-width: 52rem; margin: 0 0 1rem; }
    delivered row has no control in it to hide a printed value behind. */
 table.load, table.delivered { border-collapse: collapse; font-size: 13px;
                               margin: .5rem 0 1rem; }
+/* One right edge for the page, the window's — jcanton, 2026-10-13: "the widths
+   of elements in the page seem quite inconsistent". The setup bar, the
+   warnings and the betting table already reached it, and the goal and notes
+   boxes stopped at 52rem, so the boxes and the delivered list are the page's
+   width.
+
+   **The roster is not, and it was, twice in one day.** Stretched, its slack had
+   to go somewhere. Given to the load bar, the bar ran the width of the page and
+   squeezed BET and SCHEDULED UNTIL onto two lines ("the super large page-wide
+   bars were better before actually"). Given to an empty strip after the last
+   column, the figures sat together on the left and every row's rule ran on to
+   the window under nothing: "the columns are now good size, but the row
+   separation lines remained page-width". A table of seven short columns has no
+   column that reads better wider, so it is as wide as its columns, and a rule
+   under a row ends where the row does. At its own width each column is also
+   at its one-line width, which is what the `nowrap` this replaces was there to
+   force against the stretch. */
+table.delivered { width: 100%; }
 table.load th, table.load td, table.delivered th, table.delivered td {
   border-bottom: 1px solid var(--line); padding: .3rem .6rem; text-align: left;
 }
@@ -1298,7 +1612,7 @@ input.rate { width: 4rem; }
    had focus; the shell's :focus-visible ring draws it now. */
 #bets input.live:focus { border-color: var(--accent); }
 /* No `#bets td { position: relative }`. It was here to anchor the suggestion
-   popup the assignees and reviewers boxes open, and the popup is parked on the
+   popup the developers and reviewers boxes open, and the popup is parked on the
    body now. Left in, it is a rule with nothing to do and a trap for whoever
    writes the next one: the identical rule on the table's cells is what stole
    `position: sticky` from the frozen title column.
@@ -1329,6 +1643,31 @@ input.rate { width: 4rem; }
 button.drop { border: none; background: none; cursor: pointer; padding: 0 .2rem;
               color: var(--muted); font-size: 13px; line-height: 1; }
 button.drop:hover { color: var(--danger); }
+/* Upright inside a `.derived` cell, which italicises a value worked out from
+   somewhere else — and this is a control, not a value. */
+#bets button.ownbet { font-size: 12px; font-style: normal; padding: 1px 6px;
+                      white-space: nowrap; }
+/* A thumb's worth of box on a phone. Both pass WCAG's spacing test at their
+   drawn size — 22x13 and 13x13 with nothing else within reach — and a review on
+   a phone still landed a tap on them only by aiming at the exact centre, which
+   is the test being right about the rule and wrong about the thumb. */
+@media """ + PHONE + """ {
+  button.drop, #bets button.ownbet { min-width: 24px; min-height: 24px; }
+  input.bet { width: 20px; height: 20px; }
+  /* The box a thumb's width across, and the count wrapped under it — still at
+     the far end, which `margin-left: auto` keeps on a line of its own. (0,2,1)
+     here and in the rule above, so this wins on order. */
+  .betsearch { flex-wrap: wrap; }
+  .betsearch input[type="search"] { width: 100%; }
+  /* "Start a cycle": three labelled boxes and a button on one wrapping line,
+     which on a phone put each box wherever its label happened to end — three
+     boxes at three different x's, 24px tall. One to a line, the label over its
+     box, and both the boxes and Start it a thumb's height. */
+  .editbar:has(> #start) { flex-direction: column; align-items: stretch; }
+  .editbar:has(> #start) > label.facet { display: flex; flex-direction: column; gap: .25rem; }
+  .editbar:has(> #start) input { min-height: 40px; box-sizing: border-box; }
+  #start { min-height: 40px; align-self: flex-start; }
+}
 #joining { font: inherit; font-size: 13px; width: 10rem; }
 /* **The two wide tables scroll themselves, not the document.** The roster is
    seven columns and the betting table is eight, and both were written down as
@@ -1542,7 +1881,7 @@ document.getElementById('yes').onclick = async () => {
       return;
     }
     committed = answer.commit;
-    location.href = '/cycle/' + number;
+    location.href = {{ links.cycle|tojson }} + number;
   } catch (error) {
     // The connection went while the request was in the air. With no `catch` the
     // rejection escaped, the confirmation panel stayed up over a Yes that had
@@ -1569,6 +1908,9 @@ document.getElementById('yes').onclick = async () => {
 };
 </script>
 {% endif %}
+{#- Only the create form has a date box, and it is inside the `{% if editable %}`
+    above; the gate is at `calendar=`, where the reason is. -#}
+{{ calendar }}
 """
 
 _PEOPLE = """
@@ -1662,7 +2004,7 @@ _PEOPLE = """
         <span class="avatar">{{ person.art }}</span>
         {%- endif %}
         {%- if person.link %}
-        <a class="who" href="{{ links.table }}?{{ person.link.field }}={{ person.login|urlencode }}"
+        <a class="who" href="{{ lands }}?{{ person.link.field }}={{ person.login|urlencode }}"
            title="{{ person.link.says }}">{{ person.login }}</a>
         {%- else %}
         <span class="who">{{ person.login }}</span>
@@ -1695,10 +2037,11 @@ _PEOPLE = """
         {%- endif %}
         {#- The counts keep their old job and take on the way in: three of the
             four roles are a filter the table has, so a count is a link to the
-            rows it counts. -#}
+            rows it counts. `lands` is the Table, or Records in a plan without
+            one — see `render_people`. -#}
         <span class="tally">
           {%- for t in person.tally -%}
-            {%- if t.field %}<a href="{{ links.table }}?{{ t.field }}={{ person.login|urlencode
+            {%- if t.field %}<a href="{{ lands }}?{{ t.field }}={{ person.login|urlencode
               }}">{{ t.n }} as {{ t.role }}</a>{% else %}{{ t.n }} as {{ t.role }}{% endif -%}
             {{- ' · ' if not loop.last else '' -}}
           {%- endfor -%}
@@ -1747,7 +2090,7 @@ _PEOPLE = """
       <button type="button" id="clear-filters">Clear filters</button>
       {% else %}
       <p class="headline">Nobody is named in this plan yet.</p>
-      <p class="hint">People appear here as soon as they own, are assigned, review or
+      <p class="hint">People appear here as soon as they own, develop, review or
         shape something.</p>
       {% endif %}
     </td></tr>
@@ -2143,14 +2486,14 @@ button.pick.unset::before { content: ""; width: 1.1rem; height: 1.1rem; border-r
 """
 )
 
-_ROLES = (("owner", "owner"), ("assignees", "assignee"), ("reviewers", "reviewer"))
+_ROLES = (("owner", "owner"), ("developers", "developer"), ("reviewers", "reviewer"))
 
 # Most answerable first. Grouped by record — which is what building the rows one
 # record at a time gave you — a person with twenty rows had their four ownerships
 # scattered through it, and ownership is the thing being on the page is for.
 # There is no shaper row any more: `shaped_by` retired into `owner`, so who
 # shaped a pitch is its Owner line.
-_ROLE_ORDER = ("owner", "assignee", "reviewer")
+_ROLE_ORDER = ("owner", "developer", "reviewer")
 
 # Which table filter answers "show me this person's <role>", and the words for
 # what that link opens. Every role this page draws is a table facet now, but the
@@ -2158,7 +2501,7 @@ _ROLE_ORDER = ("owner", "assignee", "reviewer")
 # than a dead link, which is what kept the shaper row honest while it existed.
 _ROLE_FILTER = {
     "owner": ("owner", "owns"),
-    "assignee": ("assignees", "is assigned"),
+    "developer": ("developers", "develops"),
     "reviewer": ("reviewers", "reviews"),
 }
 
@@ -2182,7 +2525,13 @@ def _proposed(index: Index, number: int, window: tuple[date, date] | None) -> Cy
     if window is None:
         starts_on = index.today
         builds_until = days_after(starts_on, _DEFAULT_CYCLE_DAYS - 1)
-        ends_on = days_after(builds_until, round(index.cooldown_weeks * 7))
+        # No `round()` around the week count: `days_after` rounds inside itself,
+        # after `within_the_calendar` has bounded the number, and a `round()`
+        # out here raises on `cooldown_weeks: .inf` before `days_after` is ever
+        # entered — the same one-number-takes-the-page-down defect
+        # `Index.build_end` and `Config._resolve` both carried. `round(round(x))`
+        # is `round(x)` for everything finite, so no dated cycle's proposal moves.
+        ends_on = days_after(builds_until, index.cooldown_weeks * 7)
     else:
         starts_on = window[0]
         builds_until = build_end(number, window, config)
@@ -2205,7 +2554,9 @@ def _proposed(index: Index, number: int, window: tuple[date, date] | None) -> Cy
     )
 
 
-def _bet_row(record: Record, number: int, by_id: dict[str, Record], rung: str = "") -> dict:
+def _bet_row(
+    record: Record, number: int, by_id: dict[str, Record], rung: str = ""
+) -> dict:
     """One row of the betting table: a bet, or one of the tasks that make it up.
 
     One shape for both, because they are the same row. A task's appetite is typed
@@ -2265,7 +2616,7 @@ def _bet_row(record: Record, number: int, by_id: dict[str, Record], rung: str = 
         # now means nobody has bet a size, which is the one thing a betting table
         # is for settling, so the placeholder says that in the template and needs
         # no value from here.
-        "assignees": ", ".join(record.assignees),
+        "developers": ", ".join(record.developers),
         "reviewers": ", ".join(record.reviewers),
         "rung": rung,
         # The row's classes, built here rather than by three conditionals in the
@@ -2283,7 +2634,58 @@ def _bet_row(record: Record, number: int, by_id: dict[str, Record], rung: str = 
         "cycle": (record.cycle if record.cycle is not None else "—") if rung == "" else "",
         "in_cycle": record.cycle == number,
         "carried": carried,
+        # A task can leave its pitch and be bet on its own — jcanton, 2026-10-12,
+        # betting `task-46ea60` into cycle 39 out of `pitch-370004`, which was
+        # bet in an earlier one. Nothing in the model is new: a task no pitch
+        # holds is already bettable, so this is a move and a tick staged as one
+        # gesture. Out to wherever the right-click menu's `Take out` files it
+        # (`out_to`, `model.py`), because "out of the pitch" is the same move
+        # on every page. Not on finished or dropped work, which nobody bets.
+        "own_bet": bool(rung) and record.status not in HISTORY,
+        "out_to": (out_to(record, by_id) or "") if rung else "",
+        "holder": by_id[record.parent].title if rung else "",
     }
+
+
+def _bet_query(index: Index, record_id: str, bet: str = "") -> dict:
+    """What the betting table's box asks one row about: the query language's data.
+
+    The same three things every other view ships on a row — `query_fields`, and
+    the `searchable` and `nameable` blobs a bare word reads — so `cycle:39` and
+    `developer:ann` mean on this box what they mean on the table's, the graph's
+    and the timeline's. jcanton, 2026-10-13: this box "doesn't know the query
+    language … while all other ones do".
+
+    **One difference, and it is the reason a task has no tick here.** A task
+    inside a pitch has no cycle of its own — it is part of the bet above it — so
+    here it answers `cycle:` with its bet's. Asked literally,
+    the box this page now opens with (`cycle:39`) drew every bet in the cycle and
+    not one of the tasks the room types appetites into under it. A task that
+    does carry a cycle (bet on its own, or stamped by hand) keeps its own.
+
+    `cycle_from` names the bet when the cycle was borrowed, because the browser
+    has to borrow it again: a tick nobody has saved yet moves the cycle of every
+    task under it, and the row has to know whose tick to read.
+    """
+    fields = query_fields(index, record_id)
+    borrowed = bool(bet) and not fields["cycle"]
+    if borrowed:
+        fields["cycle"] = query_fields(index, bet)["cycle"]
+    return {
+        "query": {
+            "fields": fields,
+            "search": index.search_blob[record_id],
+            "name": index.name_blob[record_id],
+            "cycle_from": bet if borrowed else "",
+        }
+    }
+
+
+# The two rungs that come first at a betting table — what to pick up, then what
+# is already running — and the two that are history rather than a decision,
+# which nobody bets a task out of its pitch from.
+FIRST = ("ready", "in_progress")
+HISTORY = ("done", "shelved")
 
 
 def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
@@ -2330,7 +2732,13 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
     # something — which would make the roster a report instead of a decision.
     people = []
     for login in sorted(listed, key=str.lower):
-        rate = proposed.availability.get(login, nominal)
+        # `Cycle.rate` and not the dict: the number in this box is the number
+        # the capacity beside it is computed from, and the two came from two
+        # readings — so an availability of `.inf` put "inf" in the box and
+        # "Infinity wk" beside it, which is not an editable value and not a
+        # week. The file's own text is not lost: `unusable_numbers` names the
+        # file, the cycle and the person on every page.
+        rate = proposed.rate(login, nominal)
         # Asked of the cycle rather than multiplied out here. It was
         # `rate * build_weeks`, which is `Cycle.capacity` written a second time —
         # and the cycles index already asks the cycle, so the two pages computed
@@ -2343,20 +2751,29 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
         mine = [
             index.spans[i].end
             for i, e in index.plan.items()
-            if index.counts_in(e, number)
-            and login in (e.assignees + ([e.owner] if e.owner else []))
-            and i in index.spans
+            if index.counts_in(e, number) and login in workers_on(e) and i in index.spans
         ]
         people.append(
             {
                 "login": login,
                 "rate": rate,
+                # The percent, worked out here and not as `(row.rate *
+                # 100)|round|int` in the template. Not because the value can
+                # still be infinite — `Cycle.rate` above sees to that — but
+                # because a template is the one place in this app where nothing
+                # CAN guard it: `|round` is Jinja's two-argument round, which
+                # passes `inf` straight through to `|int`, and the traceback that
+                # comes out of it names a filter rather than a field. Arithmetic
+                # on a plan number belongs where a guard can stand next to it.
+                #
+                # Not `_percent`, which clamps to 100 on purpose for a bar's
+                # width: an availability of 1.5 is somebody at 150%, unusual and
+                # not wrong, and this cell is a readout of what they typed.
+                "rate_read": round(rate * 100),
                 "capacity": capacity,
                 "held": held.get(login, 0.0),
-                "over": capacity and held.get(login, 0.0) > capacity,
-                "percent": min(100, round(100 * held.get(login, 0.0) / capacity))
-                if capacity
-                else 0,
+                "over": _over(held.get(login, 0.0), capacity),
+                "percent": _percent(held.get(login, 0.0), capacity),
                 "unsized": len(unsized.get(login, [])),
                 "until": max(mine).isoformat() if mine else "—",
             }
@@ -2379,7 +2796,7 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
         # The same two exclusions `load` makes, so this list explains that number
         # and not a different one: a parent is a rollup and charges nothing, and
         # work with nobody on it charges nobody.
-        if not index.children.get(i) and (index.plan[i].owner or index.plan[i].assignees)
+        if not index.children.get(i) and workers_on(index.plan[i])
     ]
 
     # What this cycle produced, which nothing above it can say. Every figure in
@@ -2437,7 +2854,15 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
     candidates = []
     # Ready first, then in progress, and by id inside each: the question at a
     # betting table is what to pick up, and what is already running is context.
-    order = ("ready", "in_progress")
+    # Then every other rung in the ladder's own order.
+    #
+    # Every bettable record is a row, whatever its status, and the search box is
+    # the only thing that hides one — jcanton, 2026-10-13, retiring the
+    # ready-or-in-progress shortlist and its Every status box: "now the default
+    # logic is the search engine pre-filled with cycle:nr". Rendered and hidden
+    # rather than left out, because this page is a form and a search that needed
+    # a reload would throw away every tick nobody has saved.
+    order = FIRST + tuple(status for status in STATUSES if status not in FIRST)
     for record_id, record in sorted(
         index.plan.items(),
         key=lambda kv: (order.index(kv[1].status) if kv[1].status in order else len(order), kv[0]),
@@ -2448,9 +2873,11 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
         # milestone and eleven of its own tasks on the table beside the five
         # pitches they belong to, and ticking any of them stamped a second cycle
         # onto one decision.
-        if record.status not in order or not is_bettable(record, index.plan):
+        if not is_bettable(record, index.plan):
             continue
-        candidates.append(_bet_row(record, number, index.plan))
+        candidates.append(
+            _bet_row(record, number, index.plan) | _bet_query(index, record_id)
+        )
         # And what is inside the bet, under it. The appetite the room argues
         # about is the pitch's, but the thing that has to change for it to be met
         # is a task's — and until now that meant leaving the meeting's own page
@@ -2462,23 +2889,8 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
         # table through the branch above instead, with a tick of its own: nothing
         # holds its bet, so there is no second decision to stamp.
         #
-        # Neither parked nor finished. A shelved task is not in the bet at all,
-        # and a done one is in it and cannot be changed by anybody in the room —
-        # its appetite is history, and no amount of re-sizing it makes the rest
-        # fit. What is left is exactly the work the meeting can move, which
-        # includes the `shaping` and `thinking` tasks nobody has sized: those are
-        # the rows the appetite column is here for.
-        #
-        # This is deliberately NOT the list the table's rollup counts. That
-        # number is what the bet has to hold, finished work included; this is
-        # what the room can do something about. Two questions, and the table
-        # answering both with one list would be the table answering neither.
-        kids = sorted(
-            child
-            for child in index.children.get(record_id, ())
-            if child in index.plan and index.plan[child].status not in ("shelved", "done")
-        )
-        for at, child in enumerate(kids):
+        kids = sorted(child for child in index.children.get(record_id, ()) if child in index.plan)
+        for child in kids:
             candidates.append(
                 _bet_row(
                     index.plan[child],
@@ -2488,11 +2900,12 @@ def _cycle_view(index: Index, number: int, links: Links = ROUTES) -> dict:
                     # is the whole of `connectors()` at one level deep — the only
                     # depth this table has, because a bet's contents are its
                     # tasks and a task holds nothing. The browser re-decides it
-                    # whenever the search hides a row, for the reason that
-                    # function exists: a `├─` over a row the filter removed
+                    # whenever the search or the box hides a row, for the reason
+                    # that function exists: a `├─` over a row the filter removed
                     # promises a sibling that is not there.
-                    rung="end" if at == len(kids) - 1 else "tee",
+                    rung="end" if child == kids[-1] else "tee",
                 )
+                | _bet_query(index, child, record_id)
             )
 
     return {
@@ -2544,11 +2957,22 @@ def render_cycle(
         statuses=STATUSES,
         priorities=PRIORITIES,
         combobox=_combobox_html(index, live=base_commit is not None),
+        # The query language's parser, for the betting table's box — the same
+        # script the control bar's `_FILTER_JS` carries, without the bar.
+        query_js=Markup(_QUERY_JS),
+        # Ungated, unlike the record page's and the table's: `#setup` draws its
+        # two date boxes whatever `base_commit` is — this page has no
+        # reading/editing toggle — so a reader has the boxes and would otherwise
+        # have no popup on them. The cycle page is not in the static export, so
+        # nothing carries these bytes to a memory stick either way.
+        calendar=_calendar_js(index),
     )
     return _page(
         f"openproj — cycle {number}",
         body,
-        _DETAIL_STYLE + _CYCLE_STYLE + _SUGGEST_STYLE,
+        # Last, because the calendar's cell rules win their ties on source order
+        # — see the ladder comment in `calendar.py`.
+        _DETAIL_STYLE + _CYCLE_STYLE + _SUGGEST_STYLE + _CALENDAR_STYLE,
         links,
         # `/cycle/37` is not `/cycles`, and one cycle is what the Cycles listing is
         # a listing of — so the item that got you here is the item that stays lit.
@@ -2556,6 +2980,7 @@ def render_cycle(
         # and not the word in the nav, so it stays on the screen.
         "cycles",
         index.unreadable,
+        index.unusable,
         # The betting table's `thead th` is already sticky; what it was sticking
         # to was the window, which meant the setup form and the two headings
         # above it scrolled away and took the nav and the footer with them.
@@ -2594,7 +3019,7 @@ def _cycle_totals(index: Index, number: int) -> dict:
     an appetite on charges nothing, so the sum is only over what the plan
     actually knows the weight of, and the count says how many records the sum
     could not include. Distinct records, not the per-person entries behind them:
-    one bet with two assignees is one thing nobody has sized, and it is on each
+    one bet with two developers is one thing nobody has sized, and it is on each
     of their rows on the cycle page for the same reason.
     """
     plan = index.plans.get(number)
@@ -2618,8 +3043,8 @@ def _cycle_totals(index: Index, number: int) -> dict:
         "bet": bet,
         "unsized": len(unsized),
         "capacity": capacity,
-        "percent": min(100, round(100 * bet / capacity)) if capacity else 0,
-        "over": bool(capacity) and bet > capacity,
+        "percent": _percent(bet, capacity),
+        "over": _over(bet, capacity),
     }
 
 
@@ -2643,15 +3068,22 @@ def render_cycles(index: Index, links: Links = STATIC, base_commit: str | None =
     decided = set(index.plans) | set(index.cycles)
     top = max(decided) if decided else 0
     ends = index.cycles.get(top)
+    # Asked once, because it now decides the create form, the calendar and the
+    # calendar's sheet rather than only the first — the same reason `render_table`
+    # gives for hoisting its own.
+    editable = base_commit is not None
     body = _compiled(_CYCLES).render(
         cycles=rows,
         links=links,
-        editable=base_commit is not None,
+        editable=editable,
         base_commit=base_commit or "",
         # Whether there is a page per cycle to link a card to. Only the server
         # serves one; `render_static` writes six files and no cycle is among
         # them, so on a rendered plan the card names its cycle and stops there.
-        per_cycle_page=links.cycle.startswith("/"),
+        # `served` and not `bool(links.cycle)`: the export's `cycle` is the
+        # non-empty `cycles.html#`, and would link every card to an anchor
+        # nothing on that page carries.
+        per_cycle_page=links.served,
         # The next cycle's betting table is the day the last one's cool-down
         # ends, and its review meeting is as far from it as the last one's was:
         # both are true far more often than not, and both are corrected on the
@@ -2680,14 +3112,21 @@ def render_cycles(index: Index, links: Links = STATIC, base_commit: str | None =
             else {},
         },
         roster=last.availability if last else {},
+        # Only the "Start a cycle" form has a date box and it is inside the
+        # template's `{% if editable %}`, so the listing a reader gets — and the
+        # `cycles.html` the static export writes — has none and is not asked to
+        # carry 60 KB of picker.
+        calendar=_calendar_js(index) if editable else Markup(""),
     )
     return _page(
         "openproj — cycles",
         body,
-        _DETAIL_STYLE + _CYCLE_STYLE,
+        # Last, for the tie-on-order reason in `calendar.py`'s ladder comment.
+        _DETAIL_STYLE + _CYCLE_STYLE + (_CALENDAR_STYLE if editable else ""),
         links,
         "cycles",
         index.unreadable,
+        index.unusable,
         # A card per cycle, and a plan two years old has enough of them to run off
         # the bottom of the window.
         fills=True,
@@ -2697,7 +3136,7 @@ def render_cycles(index: Index, links: Links = STATIC, base_commit: str | None =
 def _person_load(index: Index, logins: list[str]) -> dict:
     """What each person is on the hook for in weeks, against what they have.
 
-    Counts were the old answer — "1 as owner, 2 as assignee, 12 as reviewer" adds
+    Counts were the old answer — "1 as owner, 2 as developer, 12 as reviewer" adds
     a half-hour review to a six-week build and calls the sum a workload. The
     weeks come from `index.load`, the same function the cycle page bets with, so
     the two pages cannot come to different conclusions about the same person.
@@ -2737,8 +3176,8 @@ def _person_load(index: Index, logins: list[str]) -> dict:
             "held": held,
             "unsized": len(missing.get(login, [])),
             "capacity": capacity,
-            "over": bool(capacity) and held > capacity,
-            "percent": min(100, round(100 * held / capacity)) if capacity else 0,
+            "over": _over(held, capacity),
+            "percent": _percent(held, capacity),
             "elsewhere": elsewhere.get(login, 0.0),
         }
     return {"cycle": number, "recorded": plan is not None, "people": people}
@@ -2789,6 +3228,11 @@ def render_people(index: Index, links: Links = STATIC, editable: bool = False, m
         rows_for_person.sort(key=lambda r: (_ROLE_ORDER.index(r["role"]), r["title"]))
 
     load = _person_load(index, list(held))
+    # Where a name and a count lead: the Table, and Records in a plan that has
+    # switched the Table off. Records reads every filter these links carry
+    # (`_record_row` says why), so it lands on the same rows, and the title says
+    # which page that is rather than promising a table that is not there.
+    lands, where = (links.table, "in the table") if links.table else (links.records, "on Records")
     people = []
     # Case-folded, or every capitalised login sorts ahead of the lowercase ones and
     # "alphabetical" means ASCII to the page and nothing to the reader.
@@ -2824,7 +3268,7 @@ def render_people(index: Index, links: Links = STATIC, editable: bool = False, m
                 "tally": tally,
                 "link": {
                     "field": _ROLE_FILTER[opens][0],
-                    "says": f"Everything {login} {_ROLE_FILTER[opens][1]}, in the table",
+                    "says": f"Everything {login} {_ROLE_FILTER[opens][1]}, {where}",
                 }
                 if opens
                 else None,
@@ -2840,6 +3284,7 @@ def render_people(index: Index, links: Links = STATIC, editable: bool = False, m
     body = _compiled(_PEOPLE).render(
         people=people,
         links=links,
+        lands=lands,
         # Every icon, drawn once, for the picker. In `ICONS` order, which is the
         # sky, then the world, then the creatures: a list ordered by nothing is a
         # list a reader has to search rather than scan.
@@ -2867,4 +3312,7 @@ def render_people(index: Index, links: Links = STATIC, editable: bool = False, m
         load=load,
         filters=_FILTER_JS,
     )
-    return _page("openproj — people", body, _PEOPLE_STYLE, links, "people", index.unreadable)
+    return _page(
+        "openproj — people", body, _PEOPLE_STYLE, links, "people",
+        index.unreadable, index.unusable,
+    )

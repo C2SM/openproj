@@ -17,6 +17,33 @@ is this documentation.
 Issues and notes are records whose rung says `planned=False`: they are on
 Records and on their own pages, and never in the plan views.
 
+A plan says which views its nav shows. There are eight — `table`, `graph`,
+`timeline`, `cycles`, `deck`, `people`, `issues` and `notes`, the deck being one
+cycle's review with no place in the nav — and `views` in `config/defaults.yaml`
+lists the ones this plan shows, in the order its nav shows them after Records.
+Without the key a plan lists every one of them; `views: []` is a nav of Records
+alone. Records, every record page and Help, in the footer, are always there
+whatever the list says: Records is the landing and the home of Create, and every
+bar, node and cycle row links to a record. `deck` needs `cycles` to be listed.
+
+**A view left out is unlisted, not off.** It is gone from the nav and linked from
+nowhere — no slide button without the deck, no cycle number that leads to a cycle
+page without Cycles — and its address still answers, drawn with its own links so
+it works once you are on it: typing `/table` or `/people` gets the page. The Help
+page names the addresses of the unlisted ones. The exception is the Issues and
+Notes lists, which need their kind, switched by `kinds` beside it: `kinds: [note]`
+is a plan with notes and no issues, and there `/issues` answers 404 with a page
+naming the setting and the file, rather than a redirect that would change the
+page under a bookmark with nothing saying why. A list of a kind the plan has on is
+unlisted like any other view: icon4py's nav has no Notes, and `/notes` works. The
+four planned kinds are always on. `openproj render` writes every view that exists
+and links the listed ones. A switch never takes away a fact the schedule is
+computed from: with Cycles unlisted, the cycle windows and the rosters still
+schedule the work, and no API is switched, because the plan is on GitHub and a
+switch is focus rather than secrecy. A name that cannot be used — a typo, a
+duplicate, an always-on name, a view whose dependency is off — is left out and
+said, in the banner on every page and by `openproj check`.
+
 The pages render from one in-memory index, share one filter model, and keep
 their state in the query string — so every view is a shareable URL, and there
 are no saved views to manage. The index is rebuilt whole from a commit and
@@ -74,7 +101,10 @@ ships in the wheel. Since 0.43.0 the wheel carries `static/` and `seed/`, so `uv
 `render` and `demo` work without a checkout. `--auth dev` is for a local run only; a deployment
 runs `--auth github`, which refuses to start without a signing secret, an OAuth client, and the org
 whose membership decides who may write — `--org`, or `OPENPROJ_ORG`, with no default, because a
-default would be one team's. `deploy/RUNBOOK.md` has the rest.
+default would be one team's. A server inside a tailnet can run `--auth tailscale` instead, which
+asks the local tailscaled whose device each client address is and maps that through
+`OPENPROJ_TAILSCALE_USERS`; the README's section on serving a plan of your own has the conditions it
+needs. None of the three is a default. `deploy/RUNBOOK.md` has the rest.
 
 On Cloud Run the container clones the plan repo on boot and pushes on write, which is also why the
 running service is close to stateless — the durable data is the git remote, not the disk. It is
@@ -94,7 +124,7 @@ src/openproj/pusher.py     the deferred push: a commit lands locally, then goes 
 src/openproj/coedit.py     the co-editing rooms — one Y.Text per record, in memory
 src/openproj/web.py        the server: routes, auth, the write endpoints
 src/openproj/auth.py       sign-in: the OAuth dance, the session, who may write
-src/openproj/github.py     what the server asks GitHub — the App token, open PRs
+src/openproj/github.py     what the server asks GitHub — the App token, open PRs and issues
 src/openproj/vendor.py     static/ and docs/ on disk, read once and inlined
 src/openproj/bootstrap.py  openproj init — the config files with nothing invented, one commit
 src/openproj/cli.py        init / check / new / render / serve / schedule / demo

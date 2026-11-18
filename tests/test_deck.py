@@ -43,7 +43,7 @@ from openproj.model import (
     without_sections,
 )
 from openproj.render import ROUTES, STATIC, STATUSES, render_cycle, render_deck
-from openproj.render.deck import _deck_order
+from openproj.render.deck import _deck_order, _resolved
 from openproj.render.tokens import PRIORITY_GLYPH, STATUS_GLYPH
 
 TODAY = date(2026, 8, 17)
@@ -703,9 +703,23 @@ def test_the_deck_is_not_in_the_nav_and_lights_the_cycle_it_is_of(deck: str):
 def test_the_cycle_page_offers_the_deck_only_where_there_is_one(index: Index):
     """`links.deck` is empty in a static export for the reason `links.new` is:
     the export writes one file per view of the whole plan and has nowhere to put
-    a cycle number. A link to a file nobody wrote is worse than no link."""
-    assert "/deck/37" in render_cycle(index, 37, ROUTES, base_commit="deadbee")
-    assert "deck" not in re.findall(r'href="([^"]*)"', render_cycle(index, 37, STATIC))
+    a cycle number. A link to a file nobody wrote is worse than no link.
+
+    Asked of the link's words and not of its href. The href of a link whose guard
+    was dropped is the blank field plus the number — `href="37"` — and a check
+    that no href *was* "deck" passed with the guard gone.
+    """
+    from pages import elements
+
+    def offered(page: str) -> list[str]:
+        return [
+            one.attrs.get("href", "")
+            for one in elements(page)
+            if one.tag == "a" and one.text == "Review deck →"
+        ]
+
+    assert offered(render_cycle(index, 37, ROUTES, base_commit="deadbee")) == ["/deck/37"]
+    assert offered(render_cycle(index, 37, STATIC)) == []
 
 
 def test_no_slide_in_the_shipped_demo_is_a_heading_over_an_empty_page(demo_index: Index):
@@ -1508,3 +1522,289 @@ def test_an_image_attribute_that_is_not_a_size_never_reaches_the_page():
         # And the picture survives every one of them: a hostile attribute costs
         # the attribute, never the figure.
         assert carried["src"].endswith("0123456789abcdef.png"), hostile
+
+
+# --------------------------------------------------------------------------- #
+# Presenting, and walking the rail
+# --------------------------------------------------------------------------- #
+
+
+def test_nothing_the_app_draws_is_on_the_wall_when_the_deck_is_presented(
+    deck: str, tmp_path: Path
+):
+    """Presenting hides the app by naming what to hide, and a list like that is
+    only ever as complete as somebody's memory of the page.
+
+    Two things were missing from it, both reported by jcanton on 2026-09-21 from
+    a review he was giving: the shell's footer — `openproj 0.59.0 · plan 1d02102 ·
+    Report issue` — sitting under the slide, and the rail's drag handle, which is
+    a hairline in `--line` and reads on a black projection as a white vertical
+    line down the left. The rail itself WAS hidden, which is what made the second
+    one so hard to see coming: the column was gone and its handle was not.
+
+    Asked of Chrome after the mode is actually entered, and not of the
+    stylesheet, because the question is whether anything is painted. A rule that
+    resolves is the frozen column's edge all over again — and `#build` is drawn by
+    the shell, outside the markup this file has any say over, so a source test
+    here could only assert the selector is present rather than that it matches.
+
+    `requestFullscreen` is refused in a headless run, which is the point of the
+    mode being a class on the root and not a fullscreen API: everything asserted
+    below is CSS, so the refusal costs the browser chrome and nothing else.
+    """
+    from browser import chrome, measured_in
+
+    found = measured_in(
+        chrome(),
+        deck,
+        tmp_path / "presenting.html",
+        1400,
+        """
+        document.getElementById('present').click();
+        const painted = name => {
+          const el = document.querySelector(name);
+          if (!el) return null;
+          const box = el.getBoundingClientRect();
+          return {display: getComputedStyle(el).display, area: box.width * box.height};
+        };
+        return {
+          build: painted('#build'), grip: painted('.railgrip'), rail: painted('.rail'),
+          nav: painted('body > nav'), bar: painted('.deckbar'), zoom: painted('.zoomer'),
+          counter: painted('#counter'), showing: !!document.querySelector('.slide.showing'),
+        };
+        """,
+    )
+
+    # The mode really was entered, or every assertion below passes vacuously —
+    # this is the mutation test of the harness, inline.
+    assert found["showing"], "no slide is being presented, so nothing here is evidence"
+    assert found["counter"]["area"] > 0, "the presenter's place in the deck is furniture that stays"
+
+    for part in ("build", "grip", "rail", "nav", "bar", "zoom"):
+        assert found[part] is None or found[part]["display"] == "none", (part, found[part])
+        assert found[part] is None or found[part]["area"] == 0, (part, found[part])
+
+
+def test_a_phone_reads_the_deck_rather_than_projecting_it(tmp_path: Path):
+    """On a phone the slides are the record's own text at the page's size.
+
+    The fixed canvas is a 1280px slide scaled to its column, and a phone's column
+    is about 350px: measured on the demo at v0.70.0, every slide was drawn at a
+    quarter of its size with text about 4px tall, beside a rail of thumbnails
+    smaller still and a zoom readout whose "100%" had been squeezed out of its
+    button and over the `+`. So a phone leaves the canvas off, and with it the
+    rail and the zoom, which navigate and scale a drawing that is not there.
+
+    One progress point here is the demo's own, the one that ran its last word
+    off the sheet: every text run and `<code>` in a point was a flex item of its
+    own and none could wrap. Written into the deck rather than found in a
+    corpus, because the frozen corpus has no such point and the demo is free to
+    lose it. It is asked about by the sheet column's scroll width, because the
+    column clips and would otherwise say nothing.
+
+    And Present still projects: the canvas comes back for the projector, and
+    goes again when the presenter stops.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    pointed = Task(
+        id="task-0c1001",
+        kind="task",
+        title="Port the bed solver",
+        owner="ann",
+        person_weeks=4.0,
+        parent="pitch-0c0001",
+        status="in_progress",
+        start_date=TODAY,
+        reviewers=["bo"],
+        body="## Progress\n\n- [x] `ScanPrefixLowering`, block-local pass, green on "
+        "`embedded`\n",
+    )
+    other = [e for e in corpus() if e.id != "task-0c1001"]
+    config = Config(known_people=["ann", "bo", "cy"]).with_plans([plan_of()])
+    page = render_deck(build_index([*other, pointed], config, TODAY), 37, ROUTES)
+    script = """
+    const wrap = document.querySelector('.deckwrap');
+    const sheets = document.getElementById('sheets');
+    const drawn = sel => document.querySelector(sel).getClientRects().length > 0;
+    const heading = sheets.querySelectorAll('.slide')[1].querySelector('h2');
+    const reading = {
+      sized: wrap.classList.contains('sized'),
+      rail: drawn('#rail'), zoom: drawn('#zoomer'),
+      heading: Math.round(heading.getBoundingClientRect().height),
+      clipped: sheets.scrollWidth - sheets.clientWidth,
+    };
+    document.getElementById('present').click();
+    const projecting = wrap.classList.contains('sized');
+    document.getElementById('present').click();
+    return {...reading, projecting, after: wrap.classList.contains('sized')};
+    """
+    found = measured_on_a_phone(chrome(), {"deck": page}, tmp_path / "deck", script)["deck"]
+
+    assert not found["sized"], "a phone draws the deck as quarter-size canvases"
+    assert not found["rail"] and not found["zoom"], (
+        f"a phone draws the rail ({found['rail']}) or the zoom ({found['zoom']}) beside "
+        f"slides that are not scaled"
+    )
+    assert found["heading"] >= 24, (
+        f"a slide's heading is {found['heading']}px tall on a phone, which is not reading"
+    )
+    assert found["clipped"] <= 0, (
+        f"a slide runs {found['clipped']}px past the column on a phone, and the column "
+        f"clips it"
+    )
+    assert found["projecting"], "Present on a phone does not put the canvas back"
+    assert not found["after"], "leaving Present on a phone leaves the canvas on"
+
+
+def test_walking_the_rail_with_the_arrows_moves_the_slide_beside_it(deck: str, tmp_path: Path):
+    """The rail is navigation, and the keyboard half of it navigated nothing.
+
+    A click on a thumbnail has scrolled the slide column since the rail was
+    written; a bare arrow key moved the focus ring down the rail and left the
+    column exactly where it was — jcanton, 2026-09-21: "moving up and down with
+    the arrows does move the selection to other thumbnails but doesn't update the
+    larger view on the right". Alt with an arrow is the other gesture and still
+    reorders; only the bare one is asked about here.
+
+    Driven in a browser because the thumbnails are built at runtime by `railed()`
+    and appear in no rendered file, and because what is being asserted is a
+    scroll offset — which is a fact about layout and not about markup.
+    """
+    from browser import chrome, measured_in
+
+    found = measured_in(
+        chrome(),
+        deck,
+        tmp_path / "rail.html",
+        1400,
+        """
+        const thumbs = [...document.querySelectorAll('#thumbs > li')];
+        const sheets = document.getElementById('sheets');
+        thumbs[0].focus();
+        const before = sheets.scrollTop;
+        thumbs[0].dispatchEvent(new KeyboardEvent('keydown',
+          {key: 'ArrowDown', bubbles: true, cancelable: true}));
+        await new Promise(resolve => setTimeout(resolve, 50));
+        return {thumbs: thumbs.length, before, after: sheets.scrollTop,
+                moved: document.activeElement === thumbs[1]};
+        """,
+    )
+
+    assert found["thumbs"] > 1, "a rail of one thumbnail cannot be walked"
+    assert found["moved"], "the focus did not reach the next thumbnail"
+    assert found["after"] > found["before"], (
+        "the focus moved and the slide column did not, which is the defect: "
+        f"{found['before']} to {found['after']}"
+    )
+
+
+def test_a_wrapped_point_reaches_the_slide_whole_and_leaves_no_code_block():
+    """The medium the defect was seen in: a rendered slide.
+
+    `checklist_items` and `without_checklist` have their own tests in
+    `test_model.py`, and those are about strings. This one is about the sheet the
+    room looks at, and it asserts the two things a reviewer actually saw wrong on
+    `pitch-7c3d41`: a point cut off mid-clause, and a grey monospace box under the
+    list holding the halves that had been cut off it. The box is the part a string
+    test cannot see — six spaces of indent is an indented code block, so what was
+    left behind did not merely print twice, it printed as code.
+
+    The body is hard-wrapped at 80 columns because the plan is, and none of the
+    bodies written in this file were. That is the whole reason this shipped: a
+    corpus that does not contain the one string that matters proves nothing.
+    """
+    record = _one(
+        body=(
+            "## Progress\n"
+            "\n"
+            "- [x] Two-layer design agreed -- parallel coupling, no copies -- and\n"
+            "      implemented as #1436, based on main\n"
+            "- [ ] PR descriptions refreshed, then review and merge\n"
+        )
+    )
+    drawn = render_deck(_index_of(record), 37)
+    slide = _slides_on(_index_of(record))[0]
+
+    assert slide["points"] == [
+        {
+            "done": True,
+            "text": "Two-layer design agreed -- parallel coupling, no copies -- and "
+            "implemented as #1436, based on main",
+        },
+        {"done": False, "text": "PR descriptions refreshed, then review and merge"},
+    ]
+    # Nothing of the point is left in the prose below it, and the heading it
+    # emptied goes with it — which is what `without_checklist` already promised
+    # for a point written on one line.
+    assert not slide["doc"], slide["doc"]
+    assert "Progress" not in slide["doc"]
+    # And the one a string could not have told you: no code block anywhere on the
+    # deck. An indented block is what markdown-it draws as a `pre` element, and
+    # that box is what a reviewer photographed.
+    #
+    # **Parsed and not searched for**, which this assertion learned the hard way:
+    # it was `"<pre>" not in drawn`, and the stylesheet is inlined into every
+    # page — so the day a CSS comment in `styles.py` named the element it was
+    # describing, a test about a slide's content failed on prose about a
+    # selector. The question is whether the document contains a code block, and
+    # that is a question about an element. `elements` does not look inside
+    # `<style>`, because `html.parser` reads a stylesheet as text.
+    from pages import elements
+
+    assert "pre" not in {one.tag for one in elements(drawn)}
+
+
+def test_a_slide_that_already_carries_points_is_not_blank_paper():
+    """The fallback above is for a slide that would otherwise be a heading, a
+    chip and an id over nothing. A slide carrying ticked points and a pull
+    request is not that: it is the report, which is the one thing a review slide
+    is for — so printing the Solution under it prints the bet, which `_review`
+    says three times a review slide must not carry.
+
+    The question was already being asked, one branch BELOW the fallback, and used
+    only to decide whether to say "Nothing is written on this record". Asking it
+    after the fallback meant it could never reach a slide the fallback had
+    already filled. jcanton, 2026-09-21, looking at `pitch-7c3d41` on the
+    deployed deck: "the entire progress section missing" — its `## Progress` held
+    nothing but its points, so once they were lifted there was no section left to
+    tick and the bet was the only thing deciding what the sheet said.
+
+    A record whose `## Progress` holds only its points is the shape this is
+    about, so the body here is exactly that: no notes, no trailing prose, nothing
+    for `choosable` to offer once the points are gone.
+    """
+    record = _one(
+        body=(
+            "## Problem\nWhy this was bet.\n\n"
+            "## Solution\nWhat was going to happen.\n\n"
+            "## Progress\n- [x] the thing that happened\n- [ ] the thing that did not\n"
+        )
+    )
+    slide, chosen = _resolved(record)
+    assert not chosen and not slide.sections, (
+        "the premise: nothing is ticked, so the fallback is what decides this sheet"
+    )
+
+    drawn = _slides_on(_index_of(record))[0]
+
+    assert [point["text"] for point in drawn["points"]] == [
+        "the thing that happened",
+        "the thing that did not",
+    ]
+    assert "What was going to happen." not in drawn["said"], "the Solution is the bet"
+    assert not drawn["doc"], drawn["doc"]
+    # And not the other end of the chain either: something IS written here, and a
+    # slide saying otherwise over two points is a slide arguing with itself.
+    assert "Nothing is written on this record" not in drawn["said"]
+
+
+def test_a_slide_with_nothing_but_an_empty_box_still_falls_back_to_the_plan():
+    """The other side of the same line, and the reason the question is about words
+    rather than about points. `_TASK_TEMPLATE` ships `## Progress\\n\\n- [ ]` — a
+    box with nothing beside it — which counts, and is not something anybody can
+    stand up and read out. That slide is blank paper and still wants the plan."""
+    record = _one(body="## Solution\nWhat was going to happen.\n\n## Progress\n\n- [ ]\n")
+    drawn = _slides_on(_index_of(record))[0]
+
+    assert "What was going to happen." in drawn["said"]

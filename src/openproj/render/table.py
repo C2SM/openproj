@@ -7,6 +7,7 @@ from markupsafe import Markup
 from ..index import Index
 from ..model import KINDS as KIND_LADDER
 from ..model import PARENT_KINDS, required_at, unread_fields
+from .calendar import _CALENDAR_STYLE, _calendar_js
 from .controls import (
     _FILTER_JS,
     _NO_ASIDE,
@@ -14,11 +15,11 @@ from .controls import (
     _facets_html,
     _summary_html,
 )
-from .env import _compiled
+from .env import PHONE, _compiled
 from .pop import _POP_STYLE, _pop_js
 from .rows import _row
 from .shell import STATIC, Links, _page, _titles
-from .styles import _SCROLL_STYLE, _SUGGEST_STYLE, _TREE_STYLE
+from .styles import _CARD_STYLE, _SCROLL_STYLE, _SUGGEST_STYLE, _TREE_STYLE
 from .tokens import (
     _KIND_MODELS,
     DRAFT_MARKS,
@@ -182,9 +183,16 @@ _TABLE_SHOWS = {
 # nobody: a drag has no name written on it anywhere, and the grip beside an id is
 # 8px of dotted rule. The `+` row at the foot of the table says what it is by
 # being a control, so it is the one that needs no sentence.
+#
+# A phone has none of the three — no double-click, no Enter, and no id column for
+# a grip to be beside — so the cards are told what a thumb CAN do. Both sentences
+# ship and the stylesheet shows one, because which one is true changes when the
+# phone is turned and a sentence chosen once at load would then be the other's.
 _TABLE_HINT = Markup(
-    '<p class="hint">Double-click a cell, or press Enter on it, to edit it · '
-    "drag a row by the grip beside its id onto another to change parents.</p>"
+    '<p class="hint"><span class="for-desk">Double-click a cell, or press Enter on it, '
+    "to edit it · drag a row by the grip beside its id onto another to change "
+    'parents.</span><span class="for-thumb">Tap a title to open its record, which is '
+    "where it is edited.</span></p>"
 )
 
 # Every column the table draws, in the order it draws them, and whether it sorts.
@@ -200,7 +208,7 @@ _TABLE_COLUMNS = (
     ("priority", True),
     ("status", True),
     ("owner", True),
-    ("assignees", True),
+    ("developers", True),
     ("reviewers", True),
     ("cycle", True),
     ("size", True),
@@ -340,7 +348,7 @@ _TABLE = """
     the arrow keys — a screen reader hands them to the page inside a grid and
     keeps them for its own cursor inside a table — and on a rendered file there
     is no editor for them to reach. -#}
-<div class="table-scroll" data-fills><table id="rows"{% if editable %} role="grid"{%
+<div class="table-scroll carded" data-fills><table id="rows"{% if editable %} role="grid"{%
   endif %}><thead><tr>
   {#- A real button inside every sortable header, not a click handler on the cell:
       there is no way to tab to a table cell, so sorting was mouse-only. The
@@ -369,6 +377,9 @@ _TABLE = """
 {% endif %}
 <script id="payload" type="application/json">{{ payload|tojson }}</script>
 {% if editable %}{{ combobox }}{% endif %}
+{#- Empty unless the cells can be edited — the gate is at `calendar=` below,
+    beside the one `{{ pop }}` already has. -#}
+{{ calendar }}
 {{ filters }}
 {#- Above the script below, and it has to be: these are classic scripts sharing
     one global scope, and a function in a later block is not hoisted into an
@@ -539,13 +550,13 @@ const DATES = {{ dates|tojson }};
 // rollup rides on the row as `<key>_from` (`rows.py`), so the three places that
 // read one index by the key instead of naming the column. `reviewers` was the
 // only inheriting column for a while and all three spelled it out, which is why
-// adding `assignees` meant finding them; a third column that starts inheriting
+// adding `developers` meant finding them; a third column that starts inheriting
 // is now one entry here and one key on the row.
 //
 // WHICH rows carry a rollup is `rows.py`'s question and not this file's, and the
 // two fields do not answer it the same way — see the comment there. Everything
 // here draws whatever arrived.
-const INHERITS = ['assignees', 'reviewers'];
+const INHERITS = ['developers', 'reviewers'];
 
 // Whether the value in this cell was worked out rather than typed. It decides
 // one thing — the muted italic `.derived` — and it used to be `!editable && why`
@@ -676,7 +687,8 @@ function shown(row, key) {
   // The title is the way into the shaping doc; the id is the way to cite it.
   // A cell can be a link and still be editable. Making everything editable first
   // is what silently turned the PR column into plain text.
-  if (key === 'title') return `<a href="{{ links.record }}${esc(row.id)}">${esc(row.title)}</a>`;
+  if (key === 'title')
+    return prMarkOf(row.id) + `<a href="{{ links.record }}${esc(row.id)}">${esc(row.title)}</a>`;
   if (key === 'prs') return clamped((value || []).map(prLink), 'pull request', 'pull requests');
   // No kind chip here. `pitch-0c0001` already says pitch, in a prefix the model
   // guarantees agrees with the kind, so the chip was restating the first word of
@@ -759,7 +771,7 @@ function shown(row, key) {
   // the whole row grew to match, which is the defect the tags clamp was written
   // for. The owner is the name that matters and it has its own column; the rest
   // are one click away, where they always were.
-  if (key === 'assignees' || key === 'reviewers')
+  if (key === 'developers' || key === 'reviewers')
     return clamped((value || []).map(esc), 'person', 'people');
   // A date, short. `2026-07-14` is ten characters and two of them are the century;
   // on a laptop the two date columns were 22 characters of a fourteen-column
@@ -817,7 +829,7 @@ function shortDate(iso) {
 //
 // Four columns draw one value and a `+N`, and the only way to read the rest was
 // to click the badge — while hovering the cell answered a question nobody had
-// asked, "Double-click to edit assignees". So the answer to the question they did
+// asked, "Double-click to edit developers". So the answer to the question they did
 // ask goes first. The badge is untouched: this adds a way to *read* the hidden
 // values, it does not replace the way to reveal them.
 //
@@ -924,7 +936,7 @@ function cell(row, key, place) {
   // cell, which is what puts it in the fit's measurement of the column.
   const rungs = key === 'title' && place ? place.rungs.join(' ') : '';
   // Nothing to clamp is nothing to wrap. The four clamped columns wrapped
-  // unconditionally, so every row with no assignees, no reviewers, no PRs and no
+  // unconditionally, so every row with no developers, no reviewers, no PRs and no
   // tags carried four empty `<span class="clamped">`s — inert, and a lie to
   // anything that asks what a cell holds: a product row that reads as empty was
   // drawing four of them, which is how `test_a_products_row_is_empty_...` found
@@ -1063,6 +1075,18 @@ function cell(row, key, place) {
     ` class="${classes}"${tip ? ` title="${esc(tip)}"` : ''}>${body}</td>`;
 }
 
+// Whether GitHub disagrees with this row's status — see `askPullRequestStates`.
+// In FRONT of the title, and not beside the status chip it is about or the id:
+// both of those columns are sized to what they held before the answer arrived,
+// and each clipped the mark to an ellipsis. A title is cut at its end, so a mark
+// at its start is the one place a late arrival is always drawn — and the title
+// is frozen, so it is on screen however far the table is scrolled. Asked
+// through `typeof` because that script ships only to somebody who can write, and
+// a reader's table has neither the function nor the answer.
+function prMarkOf(id) {
+  return typeof PR_STATES === 'undefined' ? '' : prStateMark(PR_STATES[id]);
+}
+
 // `#1223`, not `kilnlab/kiln4py#1223`. Every reference in a plan is to the repository
 // the plan is about, so the owner and the name were seventeen rows of the same
 // eleven characters — the widest column on the page spent on the part that never
@@ -1125,7 +1149,13 @@ function rowHtml(place) {
     // a drop that did not take.
     row.id === WRITING ? 'writing' : '',
   ].filter(Boolean).join(' ');
-  return `<tr data-id="${esc(row.id)}"${classes ? ` class="${classes}"` : ''}>` +
+  // Every sentence on the row, for the one reader who cannot see the cells they
+  // hang on: a card draws four of the fifteen columns, and a problem is usually
+  // on one of the other eleven. The phone sheet draws this under the card.
+  const trouble = Object.values(MARKS[row.id] || {})
+    .flatMap(mark => mark.messages).join(' · ');
+  return `<tr data-id="${esc(row.id)}"${classes ? ` class="${classes}"` : ''}` +
+    `${trouble ? ` data-trouble="${esc(trouble)}"` : ''}>` +
     keys.map(key => cell(row, key, place)).join('') + '</tr>';
 }
 
@@ -1558,9 +1588,9 @@ popServes({
   // The re-read and not an `Object.assign` of the fields that were sent. Status
   // and owner are two of the things this page cannot work out the consequences
   // of: a status moves the problems, the predicates the facets filter by and the
-  // progress rollup of everything above it, an owner moves the `unowned` mark
-  // and the schedule that follows from staffing, and `parent` moves all of that
-  // plus the row's cycle and dates. `refreshRows` asks `/api/table.json` — the
+  // progress rollup of everything above it, an owner moves the problems the
+  // readiness rules raise about who answers and who reviews, and `parent`
+  // moves all of that plus the row's cycle and dates. `refreshRows` asks `/api/table.json` — the
   // very payload this page was rendered from — and regroups the problems and
   // resummarises inside itself, so `refreshProblems` beside it would be a second
   // read of a fact that has already arrived.
@@ -1595,8 +1625,9 @@ popServes({
 // `popAt` (`pop.py`) is where that is answered.
 tbody.addEventListener('contextmenu', event => {
   // The shift-through the design promises on all three views: the browser's own
-  // menu, and with it Inspect, Save as and Copy link address on a row.
-  if (event.shiftKey) return;
+  // menu, and with it Inspect, Save as and Copy link address on a row. And a
+  // finger held on a title, on a phone — see `theBrowsersMenu`.
+  if (theBrowsersMenu(event)) return;
   // Keyed off the ROW and not off `td[data-record]`, which only an editable cell
   // carries (`cellHtml`): a derived column — Progress, Blocked by — has no
   // `data-record` on it, so keying off the cell would give the menu to nine
@@ -1744,8 +1775,8 @@ function missingFor(row, status) {
 // above because `saveCells` now asks the same question of a whole selection
 // before it writes one answer across it, and the four ways a field can be unset
 // — absent, null, the empty string, the empty list — are not a list anybody
-// would write out twice and get right twice. An `assignees: []` that read as a
-// value would be a row silently exempted from a gate; an `assignees: []` that
+// would write out twice and get right twice. An `developers: []` that read as a
+// value would be a row silently exempted from a gate; an `developers: []` that
 // read as unset in one copy and as a value in the other would be a row the panel
 // asks about and then refuses to write.
 function holds(row, field) {
@@ -1797,7 +1828,7 @@ function askFor(cell, status, fields, commit, about) {
     // `data-type` and `data-suggest` are what `openEditor` writes on the box it
     // builds, for the same widget: `data-type` is not decoration — the widget
     // reads `dataset.type === 'list'` to complete the last comma-separated
-    // token, and without it picking a second assignee replaced the first.
+    // token, and without it picking a second developer replaced the first.
     const suggest = SUGGESTS[field];
     return `<label>${esc(label)}` +
       `<input type="${type}" data-field="${esc(field)}"` +
@@ -2307,7 +2338,7 @@ function rove(cell, focus) {
 // open box drawn from x=142.5, so 34.5px of its left end sat under a column
 // that is opaque by design, and
 // `elementFromPoint` at the box's own left edge answers the title's link rather
-// than the box. `owner` went under by 37.5px and `assignees` by 40.5, so it was
+// than the box. `owner` went under by 37.5px and `developers` by 40.5, so it was
 // never only the one column.
 //
 // Still true, and still this function's job, now that the open date box is wider
@@ -2410,7 +2441,7 @@ function openEditor(cell) {
     // `type` is what the browser draws, `data-type` is what `coerce` and the
     // suggestion widget read — the widget completes the last comma-separated
     // token on `dataset.type === 'list'`, and dropping it as a duplicate of
-    // `type` is how picking a second assignee came to replace the first.
+    // `type` is how picking a second developer came to replace the first.
     : `<input value="${esc(was)}" type="${type}"` +
       ` data-type="${esc(EDITABLE[field])}" aria-label="${named}"` +
       `${suggest ? ` data-suggest="${esc(suggest)}"` : ''} autocomplete="off">`);
@@ -2533,6 +2564,7 @@ function openEditor(cell) {
 // themselves — see `_new_row_fields` — so what a project has no box for here and
 // what the create form hides there are one answer to one question.
 const NEW_ROW = DATA.new_row || {};
+const NEW_RECORD = {{ links.new|tojson }};
 const DEFAULTS = DATA.defaults || {};
 const TEMPLATES = DATA.templates || {};
 // The check and the cross the draft row's two controls are drawn with, rendered
@@ -2667,8 +2699,15 @@ function adderHtml() {
     // than written out here, because the words are the same words `startMoving`
     // needs mid-drag, when the table must not be redrawn at all: one function
     // owns them, and a redraw and a pick-up leave this row saying the same thing.
+    //
+    // A card has no cells to type a new row into — the draft row is fifteen
+    // columns wide and a card draws four — so on a phone the same place opens
+    // the create form instead, and is named for what that makes. Both are drawn
+    // and the stylesheet shows one, for the reason the hint above the table
+    // carries two sentences: which is true changes when the phone is turned.
     return `<tr class="adder"><td${wide}>` +
       `<button type="button" id="add-row" class="add">+ New row</button>` +
+      `<a class="button thumb-add" href="${esc(NEW_RECORD)}">+ New record</a>` +
       `<button type="button" id="unparent" hidden></button>` +
       `<span class="hint" id="rootless" hidden></span>` +
       `</td></tr>`;
@@ -3001,6 +3040,13 @@ function refuses(childId, parentId) {
   return '';
 }
 
+// Where both ways out — the bar and the `+` row — file a row: the record the
+// server worked out for it, or nothing. Read and never walked here, because the
+// walk needs the kinds of rows this table may be filtering away. `landing` is
+// the same answer in the words the bar, the label and the announcement add.
+const outTo = childId => (DATA.rows[childId] || {}).out_to || null;
+const landing = row => row.out_to ? `, into ${titleOf(row.out_to)}` : '';
+
 // Why this row may not be dropped on that target, in words, or '' when it may.
 // The `+` row is the one target that is not a record: dropping on it means
 // belonging to nothing, which is only a move when there is something to leave.
@@ -3096,8 +3142,9 @@ const namedOf = id => {
 // rather than naming itself.
 function intoWords(target) {
   if (target.classList.contains('adder')) {
-    const parent = (DATA.rows[MOVING] || {}).parent;
-    return parent ? `→ out of ${titleOf(parent)}` : '';
+    const row = DATA.rows[MOVING] || {};
+    if (!row.parent) return '';
+    return `→ out of ${titleOf(row.parent)}` + landing(row);
   }
   return `→ into ${titleOf(target.dataset.id)}`;
 }
@@ -3132,7 +3179,12 @@ function sayMoveOut() {
   // does: this is a control somebody is about to press, and "Take task-0f1001
   // out of pitch-0f0001" makes them check two ids against a screen that draws
   // neither of them.
-  out.textContent = parent ? `Take ${titleOf(MOVING)} out of ${titleOf(parent)}` : '';
+  //
+  // And where it lands, because that is not nowhere: out of a pitch inside a
+  // project is into the project (`out_to`, `model.py`), and a bar that only said
+  // "out of" was a bar promising the top of the tree.
+  out.textContent = parent
+    ? `Take ${titleOf(MOVING)} out of ${titleOf(parent)}${landing(row)}` : '';
   rootless.hidden = !row || !!parent;
   rootless.textContent = row && !parent ? `${titleOf(MOVING)} is not inside anything` : '';
 }
@@ -3151,7 +3203,7 @@ function startMoving(id) {
   sayMoveOut();
   announce(`Moving ${titleOf(id)}. Drop it on ${holders(row.kind)}, or press Enter on one. ` +
            (row.parent
-             ? 'The row at the bottom takes it out of ' + titleOf(row.parent) + '. '
+             ? 'The row at the bottom takes it out of ' + titleOf(row.parent) + landing(row) + '. '
              : '') +
            'Escape leaves it where it is.');
 }
@@ -3449,7 +3501,7 @@ if (EDITABLE) {
     else if (pressed === 'unparent' && MOVING) {
       const child = MOVING;
       stopMoving();
-      reparent(child, null);
+      reparent(child, outTo(child));
     }
   });
 
@@ -3514,7 +3566,7 @@ if (EDITABLE) {
     // answer both handlers ask for, so the two cannot disagree about it.
     const why = whyNotOnto(child, over);
     if (why) { announce(why); return; }
-    reparent(child, over.classList.contains('adder') ? null : over.dataset.id);
+    reparent(child, over.classList.contains('adder') ? outTo(child) : over.dataset.id);
   });
 
   // Fires however the drag ended — dropped, cancelled with Escape, let go over
@@ -3738,6 +3790,10 @@ function trustworthy(stored) {
 let automatic = !Object.keys(WIDTHS).length;
 let dragging = false;
 const table = document.getElementById('rows');
+// `env.PHONE`, the query the card stylesheet is written under, so the fit and
+// the cards cannot disagree about which one is on the screen. Not `PHONE`, which
+// `_FILTER_JS` declares in the same global scope.
+const CARDS = matchMedia({{ phone|tojson }});
 const headers = [...table.querySelectorAll('th')];
 // The box the rows scroll in. It is what the table is fitted to, and what says
 // whether the frozen columns are holding anything back yet.
@@ -3764,7 +3820,7 @@ const SPARE_COLUMN = 'tags';
 // The four columns that hold a list, drawn as one item and a `+N`, and the four
 // the fit narrows first. One set, because it is one fact: a column may be made
 // narrower exactly when its overflow already has somewhere to go.
-const CLAMPED = new Set(['tags', 'prs', 'assignees', 'reviewers']);
+const CLAMPED = new Set(['tags', 'prs', 'developers', 'reviewers']);
 const SQUEEZABLE = new Set(['title', 'owner', 'progress']);
 // What the table gives up when it runs out of room, in the order it gives them
 // up. All four are lookups rather than answers — each is on the detail page and
@@ -3809,7 +3865,13 @@ const FLOOR = 110;      // narrower than this and a squeezed column is unreadabl
 //
 // So: the same fit, with the one column that holds prose allowed to keep enough
 // room to hold it. Nothing else about the layout moves.
-const TITLE_FLOOR = 250;
+//
+// 240 since 2026-10-12, ten under the 250 it was measured at: the ten pixels the
+// `developers` header needs on one line (`CLAMP_FLOORS`), on a table that had
+// less than ten to spare at 1460. jcanton's pick — a long title wraps a word
+// sooner when the table is tight, rather than a column going or a header
+// standing two lines tall.
+const TITLE_FLOOR = 240;
 // **A floor is a promise about the column, and 250 was also a promise about the
 // window.** It says "a title should not have to wrap", which is true of a laptop
 // and is not a thing a 390px phone can offer anything: at that viewport the table
@@ -3827,8 +3889,8 @@ const TITLE_FLOOR = 250;
 // saying something — and below it a title stops being a name and becomes an
 // ellipsis.
 //
-// It changes nothing a laptop sees: at 45% the share only falls under 250 below
-// about 556px of table room, which is a window under 600. Measured at 1400, where
+// It changes nothing a laptop sees: at 45% the share only falls under 240 below
+// about 533px of table room, which is a window under 600. Measured at 1400, where
 // this and every other resolved width are byte-identical to before.
 const titleFloor = room => Math.max(140, Math.min(TITLE_FLOOR, Math.round(room * 0.45)));
 // And the progress column is a BAR now, not a bar and a count, so it narrows
@@ -3851,13 +3913,26 @@ const PROGRESS_FLOOR = 78;
 // header that already holds a sort button and a drag handle, and the mis-click
 // that sorts the table when somebody meant to expand it is what those four
 // pixels of column buy.
+//
 const CLAMP_FLOOR = 116;
+// Except where a label is longer than the four used to be. `assignees` became
+// `developers` on 2026-10-12 and `DEVELOPERS` is ten pixels longer: measured the
+// same way, 124 wraps it and 125 holds it, and this is one over because that was
+// measured on a Mac and the suite's Chrome is on Linux. At 116 it wrapped in the
+// table as fitted at 1460, not only when squeezed.
+//
+// Its own floor, and not all four raised to it: the other three labels fit at
+// 116, and forty pixels of floor across four columns shed a whole column at
+// 1280 on the demo and at 1460 on jcanton's plan. The ten this one still costs
+// came out of `TITLE_FLOOR`, which was his choice over shedding progress, a
+// two-line header, or calling the column "Devs".
+const CLAMP_FLOORS = {developers: 126};
 // Which floor a column has, in one place: `minimumWidth` decides what the table
 // can be squeezed to and `fitted` does the squeezing, and two copies of this
 // question is how those two come to disagree about a single column.
 const floorFor = (key, room) => key === 'title' ? titleFloor(room)
   : key === 'progress' ? PROGRESS_FLOOR
-  : CLAMPED.has(key) ? CLAMP_FLOOR
+  : CLAMPED.has(key) ? CLAMP_FLOORS[key] ?? CLAMP_FLOOR
   : SQUEEZABLE.has(key) ? FLOOR : Infinity;
 
 // What each column would need with every cell on one line, so a column ends up
@@ -4201,7 +4276,7 @@ function stickyOffset() {
 //     was a smaller target in a 112px column beside two other things to hit,
 //     which is the mis-click written down as a decision.
 //
-// The two header shapes end up as one control: `assignees` and `reviewers` sort
+// The two header shapes end up as one control: `developers` and `reviewers` sort
 // and hold a button, `prs` and `tags` are bare text, and in both the label is at
 // the left of the cell and the `+` is at the right of it.
 const expanders = new Map();
@@ -4335,11 +4410,26 @@ for (const th of document.querySelectorAll('th[data-sort]')) {
 regroup(DATA.problems);
 summarise();
 draw();
+// And then, once the rows are on screen, whether GitHub disagrees with any of
+// them — a mark arriving a moment later is better than a table that waits.
+if (typeof askPullRequestStates === 'function') askPullRequestStates(() => draw());
 // After the first draw, because there is nothing to measure before the rows
 // exist. Stored widths win: they were set by hand, on purpose.
 // One name for "make the table the width of the room it is in", so the load, the
 // resize and the moment the real face lands cannot answer it differently.
 function refit() {
+  // **Cards have no columns to fit.** On a phone the rows are drawn as cards
+  // (`_CARD_STYLE`), and everything below writes widths onto the headers and
+  // the table: an inline `width` on a table that is now a block is a card list
+  // 1029px wide inside a 350px box, scrolling sideways again. So the fit stands
+  // down and takes back what it wrote, and the same query turning false — the
+  // phone turned, a window widened — hands the table back to it.
+  if (CARDS.matches) {
+    table.style.width = '';
+    table.style.tableLayout = '';
+    headers.forEach(th => { th.style.width = ''; });
+    return;
+  }
   if (automatic) fitWidths();
   else applyWidths(scaledWidths(scroller.clientWidth - chromeOverhead()) || WIDTHS);
   stickyOffset();
@@ -4366,6 +4456,7 @@ if (document.fonts) document.fonts.ready.then(refit);
 // in: a gap down the right of a widened page, and a table hanging off the edge
 // of a narrowed one.
 addEventListener('resize', refit);
+CARDS.addEventListener('change', refit);
 // The rule down the right of the frozen title column says "what is to the left
 // of this is being held still while the rest passes under it". At scrollLeft 0
 // nothing is passing under anything and it reads as a stray separator between
@@ -4382,6 +4473,7 @@ frozenEdge();
 _TABLE_STYLE = (
     _SCROLL_STYLE
     + _TREE_STYLE
+    + _CARD_STYLE
     + """
 th[data-sort] { cursor: pointer; user-select: none; }
 /* (0,1,1) over the shared block's bare `th` at (0,0,1): the sorted column keeps
@@ -4738,6 +4830,10 @@ th .grip:hover::before, th .grip.dragging::before { background: var(--accent); w
    ellipsise, so without this the title runs under the column beside it. */
 #rows tbody td[data-col="title"] > a { display: block; overflow: hidden;
                                        text-overflow: ellipsis; }
+/* GitHub's mark in front of a title, floated so the block link above sits beside
+   it and still ellipsises: inline, it is a line of its own over the title, and
+   every row that has one is two rows tall. */
+#rows tbody td[data-col="title"] > .ghmark { float: left; margin: .2em 6px 0 0; }
 /* EVERY cell, title included — jcanton, 2026-08-21: "I'd replace the newlines
    with ... and disappearing words (on all cells), titles included". A title is a
    sentence and used to wrap for that reason; the row it wraps in is three rows
@@ -5086,6 +5182,76 @@ tr.draft > td.draft-none {
    next to — so it lands in the bar, where the button that caused it is. */
 #draft-problems { margin: .25rem 0 0; padding-left: 1.1rem; color: var(--sev-blocker);
                   font-size: 12px; }
+/* The hint's two sentences, one per kind of hand — see `_TABLE_HINT`. */
+.hint .for-thumb { display: none; }
+/* The create form's door, which only a card list opens — see `adderHtml`. */
+#rows .thumb-add { display: none; }
+"""
+    # **The plan as cards.** `_CARD_STYLE` is the mechanism; this is what this
+    # table puts on a card. Under the title, one line — status, priority, owner,
+    # jcanton's choice of the three a reader scans a plan for — and a third line
+    # only on a row with something wrong with it. `#rows > tbody > tr > td[…]` is
+    # (1,1,3) and beats the mechanism's (0,1,4) on the id, so these three cells
+    # come back beside the title and the other eleven stay folded away.
+    + "@media "
+    + PHONE
+    + """ {
+  /* The title wraps. `#rows tbody td` (1,0,2) puts every cell on this table on
+     one line with an ellipsis — jcanton's call for the laptop's columns — and
+     the card's whole point is a title read to its end. The link is a block, so
+     letting IT wrap is enough: the cell's own `nowrap` and clip then have one
+     wrapped box inside them and nothing to cut. (1,1,4) over (1,0,2). */
+  #rows > tbody > tr > td[data-col="title"] > a { white-space: normal; }
+  #rows > tbody > tr > td[data-col="status"] { display: block; order: 1; }
+  #rows > tbody > tr > td[data-col="priority"] { display: block; order: 2; }
+  #rows > tbody > tr > td[data-col="owner"] { display: block; order: 3; color: var(--muted); }
+  /* The landing mark, and only the mark. "Saved here — not on GitHub yet" and
+     the parked commit's dot are drawn into the id cell (`landingMark`), which a
+     card folds away — so a save made from a phone said nothing about whether it
+     had reached GitHub, and a parked one said nothing at all. The cell comes
+     back last on the line while it holds one, with the id and the grip still
+     folded. (1,2,3) over the mechanism's (0,1,4) and the column's floor at
+     (1,1,1). */
+  #rows > tbody > tr > td[data-col="id"]:has(.unlanded, .stranded) {
+    display: block; order: 4; min-width: 0;
+  }
+  #rows > tbody > tr > td[data-col="id"] > :not(.unlanded, .stranded) { display: none; }
+  /* The tree's indent moves from the title cell to the card, so the line under
+     the title starts where the title does. (1,1,2) over the mechanism's own
+     padding at (0,2,3). */
+  #rows > tbody > tr.d1 { padding-left: calc(.5rem + 14px); }
+  #rows > tbody > tr.d2 { padding-left: calc(.5rem + 28px); }
+  #rows > tbody > tr.d3 { padding-left: calc(.5rem + 42px); }
+  /* The stub points at the title's first line, not at the middle of a card that
+     is two or three lines tall — `top: 50%` in `_TREE_STYLE` was measured
+     against a row exactly one line high. The card's top padding, the link's,
+     and half of a 15px line at 1.35: 8 + 3.2 + 10. (1,2,1) over (0,2,1). */
+  #rows .tree .tee::after, #rows .tree .end::after { top: 21px; }
+  #rows .tree .end::before { height: 21px; }
+  /* What is wrong, in words, under the line that shows it. On the laptop the
+     sentence is on the cell it is about, and on a card that cell is folded
+     away — which left an orange stripe down the card's edge saying something
+     was wrong and nothing on the screen saying what. Generated content because
+     the sentence is already on the row (`rowHtml` writes it), and a cell built
+     only to be shown here would be a sixteenth column on the laptop's table. */
+  #rows > tbody > tr[data-trouble]::after {
+    content: "\\26A0\\FE0E  " attr(data-trouble); order: 9; flex: 1 0 100%;
+    font-size: 13px; line-height: 1.35; color: var(--muted);
+  }
+  /* A row kept for context is dimmed as a card rather than as a patch behind
+     each chip — the mechanism takes the cells' grounds away. */
+  #rows > tbody > tr.context { background: var(--surface-2); }
+  /* The create control stays at the foot of the box. The cell's own `sticky`
+     is held inside a row that is now its own height, so it is the row that
+     sticks. */
+  #rows > tbody > tr.adder { position: sticky; bottom: 0; z-index: 2;
+                             background: var(--surface); }
+  #add-row { display: none; }
+  #rows .thumb-add { display: inline-flex; align-items: center; min-height: 40px;
+                     padding: 0 .9rem; }
+  .hint .for-desk { display: none; }
+  .hint .for-thumb { display: inline; }
+}
 """
 )
 
@@ -5197,6 +5363,13 @@ def render_table(
         ),
         filters=_FILTER_JS,
         combobox=_combobox_html(index, live=base_commit is not None),
+        # This page serves NO `input[type="date"]` in its markup at all — the
+        # date box is built by `openEditor` when a cell is opened, which is
+        # inside the `{% if editable %}` half. So the gate is `editable` and not
+        # "the document has a date field": a census of the rendered table finds
+        # none in either mode, and a rule written that way would have taken the
+        # calendar off the one page that makes date boxes for a living.
+        calendar=_calendar_js(index) if editable else Markup(""),
         # A function and not a constant, because the two things the menu's script
         # does not know for itself are where a record's page is — `/detail/` from
         # the server and `detail.html#` in the export — and what the write half is
@@ -5220,8 +5393,12 @@ def render_table(
         # stylesheet in common except the shell's, and the shell ships on all
         # twelve pages for a box three of them draw. `pop.py`'s own comment is
         # the argument.
-        _TABLE_STYLE + _SUGGEST_STYLE + _POP_STYLE,
+        # The calendar's sheet last, and only with the widget: its cell rules
+        # are written to win their ties on source order (see the ladder comment
+        # in `calendar.py`), so a sheet appended after them takes those ties.
+        _TABLE_STYLE + _SUGGEST_STYLE + _POP_STYLE + (_CALENDAR_STYLE if editable else ""),
         links,
         "table",
         index.unreadable,
+        index.unusable,
     )

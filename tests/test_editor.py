@@ -16,6 +16,7 @@ faked with an assertion that only looks like coverage.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -25,12 +26,14 @@ import pygit2
 import pytest
 from browser import _devtools, _evaluated, chrome, in_a_live_page, measured_in
 from fastapi.testclient import TestClient
-from pages import elements
+from pages import elements, tags
 from test_store import commit_directly
 from test_web import (
     ANN,
     DONE,
+    DONE_TITLE,
     OTHER,
+    OTHER_TITLE,
     PATH,
     PNG,
     SECRET,
@@ -44,6 +47,9 @@ from test_web import (
 )
 
 from openproj.auth import sign_session
+from openproj.render import preview_html
+from openproj.render.tokens import _over, _percent
+from openproj.vendor import ACE_FILES
 from openproj.web import MAX_ASSET_BYTES, SESSION_COOKIE, create_app
 
 # Computed by the scheduler, never typed. If one of these ever gains an input,
@@ -230,7 +236,7 @@ def test_the_second_editor_is_inlined_checksummed_and_named(client: TestClient):
         if line.strip()
     )
     note = (static / "VENDOR.md").read_text(encoding="utf-8")
-    for name in ("ace.js", "keybinding-vim.js"):
+    for name in ACE_FILES:
         assert name in sums, f"{name} ships in a page and is checksummed nowhere"
         digest = hashlib.sha256((static / name).read_bytes()).hexdigest()
         assert digest == sums[name].strip(), name
@@ -528,7 +534,7 @@ def test_the_facts_read_as_a_column_beside_the_document(page: str):
     The measure is on `.panes` and not on the article: since 2026-08-24 the
     article is the page's own width, so that the header above the panes is level
     with the nav in all three views instead of riding the split's extra body."""
-    assert page.count("<article") == 1
+    assert len([one for one in elements(page) if one.tag == "article"]) == 1
     assert '<aside class="facts">' in page
     assert page.index('<aside class="facts">') < page.index('<div class="main">')
     assert re.search(r"\.panes \{[^}]*width: var\(--measure", page, re.S)
@@ -594,7 +600,7 @@ def test_a_preview_cannot_be_used_to_smuggle_html(client: TestClient):
     """The body is written by signed-in members and rendered back to everybody, so
     a script tag in a shaping doc would run in every reader's browser."""
     response = client.post("/api/preview", json={"body": "<script>alert(1)</script>\n"})
-    assert "<script>" not in response.json()["html"]
+    assert "script" not in tags(response.json()["html"])
 
 
 def test_a_conflict_reaches_the_page_as_a_report_and_never_as_markers(
@@ -653,7 +659,7 @@ def test_the_graph_explains_its_mode_once_and_beside_the_button(client: TestClie
     page = client.get("/graph").text
 
     assert re.search(r'<p class="hint" id="panhint">', page)
-    assert "Double-click a node to open it" in page
+    assert "Click a node for its card, double-click to open it" in page
     assert "howto" not in page, "the second explanation is gone, not merely hidden"
     assert "PANHINT" not in page, "and the standing one is no longer swapped out"
     # What edit mode adds, said once, in the live region beside the button that
@@ -755,14 +761,11 @@ def test_a_betting_cell_saves_only_what_somebody_typed(client: TestClient):
     """The bet table's fields are inputs from the start, so blur is not evidence
     of a decision: the browser restores form values across a reload, autofills,
     and the people picker rewrites a field to add its separator. All three used to
-    reach git — one of them emptied an assignees list nobody had touched."""
+    reach git — one of them emptied an developers list nobody had touched."""
     page = client.get("/cycle/37").text
-    live = re.search(
-        r"for \(const input of document\.querySelectorAll\('#bets input\.live'\)\)"
-        r".*?\n\}",
-        page,
-        re.S,
-    ).group(0)
+    # A function now and not a loop over the page, because a refresh brings in
+    # rows the loop never saw and they have to be wired the same way.
+    live = re.search(r"function wireLive\(input\) \{.*?\n\}", page, re.S).group(0)
 
     assert "let edited = false;" in live
     assert "input.addEventListener('input', () => { edited = true; });" in live
@@ -780,7 +783,10 @@ def test_picking_a_suggestion_counts_as_typing(client: TestClient):
 
 
 _BETS_ONE_KEY = """
-const box = document.querySelector('#bets input.live[data-field="assignees"]');
+// Over an empty search: the page opens on `cycle:N`, and a box in a row the
+// prefill hid cannot be focused at all.
+BETFIND.value = ''; betSearch(true);
+const box = document.querySelector('#bets input.live[data-field="developers"]');
 const key = name => box.dispatchEvent(
   new KeyboardEvent('keydown', {key: name, bubbles: true, cancelable: true}));
 box.focus();
@@ -937,6 +943,248 @@ def test_capacity_moves_while_the_rate_is_being_typed(client: TestClient):
     assert "#setup input[type=date]" in page and "getElementById('stale')" in page
 
 
+# Every rate a person can actually type into that box, including the four the
+# arithmetic falls over on. It is a plain text input with no `type="number"` on
+# it, so `-1`, `1e-323`, `1e999` and a word are all reachable by typing them.
+TYPE_A_RATE = """
+  const row = document.querySelector('#roster tr');
+  // A known load, so the width expected of each rate is arithmetic here rather
+  // than a number copied off the page it is checking.
+  row.dataset.held = '1';
+  const rate = row.querySelector('input.rate');
+  const fill = row.querySelector('.bar > span');
+  // What a fill with no inline width does, measured once and not assumed: it is
+  // a block child of a 140px track and it fills it. That is the shape of the
+  // whole defect — an unusable width is not a narrow bar, it is no width.
+  fill.style.width = '';
+  const bare = Math.round(100 * fill.getBoundingClientRect().width
+                          / fill.parentNode.getBoundingClientRect().width);
+  const found = {};
+  for (const typed of ['1', '0.1', '-1', '0', '1e-323', '1e999', 'nonsense']) {
+    // A sentinel before each rate, so that every iteration is a question about
+    // what `recount` WROTE. CSSOM refuses a width it cannot use and leaves the
+    // last good one standing, so a run that took each rate as it came would
+    // report the previous rate's answer and pass or fail on the order of this
+    // list.
+    fill.style.width = '50%';
+    rate.value = typed;
+    rate.dispatchEvent(new Event('input', {bubbles: true}));
+    found[typed] = {
+      declared: fill.style.width,
+      // And the pixels, because a declaration is only a promise about them.
+      painted: Math.round(100 * fill.getBoundingClientRect().width
+                          / fill.parentNode.getBoundingClientRect().width),
+    };
+  }
+  return {found, bare, build: BUILD_WEEKS};
+"""
+
+
+def _as_a_number(typed: str) -> float:
+    """`Number.isFinite(x) ? x : 0`, which is what the script reads a rate box with.
+
+    It was `Number(value) || 0`, and `||` catches NaN and lets `Infinity` past —
+    so `nonsense` in the box read "0.0 wk" beside it and `1e999` read
+    "Infinity wk", two unusable inputs with two different answers. `Number.isFinite`
+    is the same question `Cycle.rate` (`model.py`) asks of the same value on the
+    server's side of the wire.
+    """
+    try:
+        got = float(typed)
+    except ValueError:
+        return 0.0
+    return got if math.isfinite(got) else 0.0
+
+
+def test_the_load_bar_is_the_same_width_in_the_browser_as_it_is_on_the_server(
+    client: TestClient, tmp_path: Path
+):
+    """The invariant is written in two languages — which copy is guarded?
+
+    `_percent` (`tokens.py`) bounds the ratio at both ends before it rounds it. `recount`
+    bounded only the top — `Math.min(100, Math.round(100 * held / capacity))` —
+    and assigned that straight into `style.width`. A rate of `-1` therefore wrote
+    `width: "-25%"`, which is not a width: CSSOM refuses it and leaves the last
+    good one standing, so the bar stopped moving and went on drawing a load
+    nobody holds while the server, off the same two numbers, answered
+    `_percent(1.0, -4.0)` = 0 on the next page load. `span.bar > span`
+    (`shell.py`) declares no width of its own, so an unusable one is not a narrow
+    bar — `bare` measures what it is instead, and it is the whole 140px track.
+
+    So the claim is not "the width is sensible", it is "the two copies answer the
+    same thing", and it is asked of the shipped script rather than of its text.
+    In Chrome and not the node shim, for two reasons that each decide it alone:
+    the shim's matcher splits a selector on whitespace, so `.bar > span` finds
+    nothing and answers null rather than throwing, and the consequence here is a
+    painted width, which no shim has.
+
+    `Math.round(Infinity)` is `Infinity` and `Math.round(NaN)` is `NaN`, and CSS
+    refuses both exactly as it refuses `-25%` — so the browser's copy was right
+    about those two only by accident.
+    """
+    page = client.get("/cycle/37").text
+    answer = measured_in(chrome(), page, tmp_path / "cycle.html", 1280, TYPE_A_RATE)
+    build = answer["build"]
+
+    assert answer["found"], "the roster drew no bars, so nothing was measured"
+    assert answer["bare"] == 100, (
+        "a fill with no width of its own no longer fills its track, so a refused "
+        "declaration is no longer the defect this test is about"
+    )
+    for typed, drawn in answer["found"].items():
+        wanted = _percent(1.0, _as_a_number(typed) * build)
+        assert drawn["declared"] == f"{wanted}%", (
+            f"a rate of {typed!r} declares {drawn['declared']} in the browser and "
+            f"{wanted}% on the next page load"
+        )
+        assert drawn["painted"] == wanted, (
+            f"a rate of {typed!r} declares {drawn['declared']} and paints "
+            f"{drawn['painted']}% of the track"
+        )
+    # The one a reader reaches by typing a single character, named rather than
+    # left to the loop: an empty bar, and not the width it happened to have.
+    assert answer["found"]["-1"] == {"declared": "0%", "painted": 0}
+
+
+# The capacity column and the save gate, asked of the one spelling that walked
+# through both of them. `Number('Infinity')` is a number, it is not NaN and it is
+# greater than zero — so it passed a gate written as `Number.isNaN(rate) || rate
+# <= 0`, and then `JSON.stringify` wrote it as `null`, which is exactly what it
+# writes for NaN. The server was therefore asked to refuse a blank about a box
+# holding a word, which is the failure the comment beside that gate is about,
+# arriving through the one spelling the fix for it did not cover.
+TYPE_INFINITY_AND_SAVE = """
+  const row = document.querySelector('#roster tr');
+  const rate = row.querySelector('input.rate');
+  const found = {};
+  for (const typed of ['Infinity', '-Infinity', 'nonsense', '0.5']) {
+    rate.value = typed;
+    rate.dispatchEvent(new Event('input', {bubbles: true}));
+    found[typed] = {capacity: row.querySelector('.capacity').textContent};
+  }
+  // And the gate, on the one that used to pass it. `saveSetup` is async and
+  // answers false before it reaches the network when a box is refused, so what
+  // comes back says whether the fetch was even attempted.
+  rate.value = 'Infinity';
+  const sent = [];
+  const real = window.fetch;
+  window.fetch = (...args) => { sent.push(args[0]); return real(...args); };
+  const answered = await saveSetup();
+  window.fetch = real;
+  return {
+    found,
+    refused: answered === false,
+    sent: sent.length,
+    // `announce` (shell.py) prefers the page's own visible message slot over the
+    // shell's hidden region — announcing into both would say everything twice —
+    // so the cycle page's is `#state` and the fallback is only for pages with
+    // none. Both are read, because which one a message lands in is the shell's
+    // decision and not this test's claim.
+    said: [...document.querySelectorAll('#state, [aria-live]')]
+      .map(one => one.textContent).join(' '),
+  };
+"""
+
+
+def test_a_rate_of_infinity_is_refused_by_name_rather_than_sent_as_a_blank(
+    client: TestClient, tmp_path: Path
+):
+    """Two halves of one spelling, and both were wrong in the same direction.
+
+    The capacity column read "Infinity wk" where the same box holding a word read
+    "0.0 wk" — `|| 0` catches NaN and lets `Infinity` past. And the save gate let
+    it through to `JSON.stringify`, which writes `Infinity` as `null`, so the
+    value the server was asked to name was gone by the time it was asked.
+
+    Asked in Chrome rather than of the script's text, because what is claimed is
+    what a person sees after typing: a column that says a number, and a refusal
+    that quotes what they typed.
+    """
+    page = client.get("/cycle/37").text
+
+    got = measured_in(chrome(), page, tmp_path / "rate-infinity.html", 1280, TYPE_INFINITY_AND_SAVE)
+
+    assert got["found"]["0.5"]["capacity"].endswith(" wk"), got["found"]
+    for typed in ("Infinity", "-Infinity", "nonsense"):
+        assert got["found"][typed]["capacity"] == got["found"]["nonsense"]["capacity"], (
+            f"a rate of {typed!r} reads {got['found'][typed]['capacity']!r} where a word "
+            f"reads {got['found']['nonsense']['capacity']!r} — two unusable inputs, two answers"
+        )
+    assert got["refused"] is True, "Infinity passed the gate"
+    assert got["sent"] == 0, "the refusal happened after the request rather than before it"
+    assert "Infinity" in got["said"], (
+        f"the refusal did not quote what was typed: {got['said']!r}"
+    )
+
+
+# The same rates, asked of the flag beside the bar rather than of the bar. The
+# row's ground and the "Over capacity" line under the table are the two things
+# this decides, and both come off one boolean on each side of the wire.
+TYPE_A_RATE_AND_READ_THE_FLAG = """
+  const row = document.querySelector('#roster tr');
+  row.dataset.held = '1';
+  const rate = row.querySelector('input.rate');
+  const found = {};
+  for (const typed of ['1', '0.1', '-1', '0', '1e-323', '1e999', 'nonsense']) {
+    rate.value = typed;
+    rate.dispatchEvent(new Event('input', {bubbles: true}));
+    const line = document.getElementById('over');
+    found[typed] = {
+      row: row.classList.contains('over'),
+      // The banner as well, because it is built from a second pass over the
+      // same condition and could be told something else by a copy of it.
+      named: !!line && !line.hidden && line.textContent.includes(row.dataset.login),
+    };
+  }
+  return {found, build: BUILD_WEEKS, login: row.dataset.login};
+"""
+
+
+def test_over_capacity_means_the_same_thing_in_the_browser_as_it_does_on_the_server(
+    client: TestClient, tmp_path: Path
+):
+    """The invariant is written in two languages — which copy is guarded? Again,
+    and two lines from the line that was fixed last time.
+
+    `recount` says `capacity > 0 && held > capacity`. The server said `capacity
+    and held > capacity`, in three places, and the two disagree on every negative
+    capacity. A rate box is a plain text input with no `type="number"` on it, so
+    `-1` is reachable by typing it and a hand-committed `availability: {someone:
+    -1}` puts it there without anybody typing at all: measured on a copy of the
+    frozen corpus, the served row came down as `<tr … class="over">` with that
+    person named under "Over capacity", and one character into the rate box took
+    both away. Commit 4e259a4 put the load BAR in step across the same wire — the
+    line above this one in `recount` — and left the flag.
+
+    Asked of the shipped script in Chrome, off the same rates the bar's test
+    uses, and compared against `_over` rather than against a number written here:
+    the claim is that the two copies answer the same thing, so restating either
+    of them in the test would be the test agreeing with itself.
+    """
+    page = client.get("/cycle/37").text
+    answer = measured_in(
+        chrome(), page, tmp_path / "cycle-flag.html", 1280, TYPE_A_RATE_AND_READ_THE_FLAG
+    )
+    build = answer["build"]
+
+    assert answer["found"], "the roster drew no rows, so nothing was measured"
+    for typed, drawn in answer["found"].items():
+        wanted = _over(1.0, _as_a_number(typed) * build)
+        assert drawn["row"] is wanted, (
+            f"a rate of {typed!r} marks the row {drawn['row']} in the browser and "
+            f"{wanted} on the next page load"
+        )
+        assert drawn["named"] is wanted, (
+            f"a rate of {typed!r} puts {answer['login']} under Over capacity "
+            f"{drawn['named']} in the browser and {wanted} on the next page load"
+        )
+    # The one a reader reaches by typing a single character, named rather than
+    # left to the loop: not over, because a capacity that is not a positive
+    # number of weeks is not a budget anybody can be over — and because the bar
+    # drawn beside it is empty, which is what `_percent(1.0, -4.0)` answers.
+    assert answer["found"]["-1"] == {"row": False, "named": False}
+
+
 def test_a_new_cycle_starts_from_the_last_one_s_roster(client: TestClient, repo_path: Path):
     """A team changes slowly and availability changes every cycle, so the people
     who worked the last one are a starting point to correct — which beats
@@ -1011,7 +1259,7 @@ def test_every_control_on_the_form_has_a_name(page: str):
     for control_id, word in named.items():
         assert control_id.startswith(f"{TASK}-"), control_id
         assert re.search(rf'<(?:input|select|textarea)[^>]*\bid="{control_id}"', page), word
-    for field in ("owner", "assignees", "reviewers", "priority", "cycle"):
+    for field in ("owner", "developers", "reviewers", "priority", "cycle"):
         assert named[f"{TASK}-{field}"] == LABELS[field], field
 
     # Status is the exception and has to be: its control is a group of radios, and
@@ -1035,7 +1283,7 @@ def test_a_derived_row_carries_no_label_because_it_carries_no_control(page: str)
 
     assert derived, "the page draws no derived fact"
     for row in derived:
-        assert "<label" not in row, row
+        assert "label" not in tags(row), row
 
 
 def test_the_detail_page_announces_a_save_it_only_used_to_draw(page: str):
@@ -1273,7 +1521,7 @@ def _without_the_library(page: str) -> str:
     """
     from openproj.render import _static_dir
 
-    for name in ("ace.js", "keybinding-vim.js"):
+    for name in ACE_FILES:
         body = (_static_dir() / name).read_text(encoding="utf-8")
         assert body in page, f"{name} is not inlined in the page this is cutting it from"
         page = page.replace(body, "")
@@ -1600,6 +1848,11 @@ def test_the_toolbar_is_the_one_in_the_screenshot_and_that_overrules_a_count(
     the view switcher. It is here rather than in a list of its own for the same
     reason Image is: this table is the bar, and a button drawn into the bar from
     somewhere else is a button this test cannot see.
+
+    **Eighteen, and the eighteenth is a group of its own.** Template sits between
+    the history pair and Bold because jcanton put it there on 2026-10-09 —
+    "between undo/redo and the Bold button" — when it stopped being a `<select>`
+    above the create form's toolbar and became a menu on every editor's.
     """
     page = client.get(f"/detail/{TASK}").text
     marks = re.search(r"const FORMATS = \[(.*?)\n\];", page, re.S).group(1)
@@ -1613,6 +1866,7 @@ def test_the_toolbar_is_the_one_in_the_screenshot_and_that_overrules_a_count(
     assert named == [
         "Undo",
         "Redo",
+        "Template",
         "Bold",
         "Italic",
         "Strikethrough",
@@ -1631,7 +1885,7 @@ def test_the_toolbar_is_the_one_in_the_screenshot_and_that_overrules_a_count(
     ]
     # Where the rules fall, and not merely how many there are: a separator in the
     # wrong place groups the buttons into a claim about them that is false.
-    assert [i for i, entry in enumerate(entries) if "group: true" in entry] == [2, 6, 12]
+    assert [i for i, entry in enumerate(entries) if "group: true" in entry] == [2, 3, 7, 13]
     assert "comment" not in marks.lower(), "a collaboration feature with nothing behind it"
     # And the two that are not marks say so in the table rather than being told
     # apart by their titles: `applyMark` never sees one, and neither does the
@@ -1857,7 +2111,9 @@ def test_the_drawing_button_opens_a_menu_and_a_press_says_what_was_pressed(
     # This asserted the opposite until then — `outsideMarks == 16`, "the menu is
     # page chrome, not a seventeenth FORMATS mark" — which was a real argument
     # about what the control IS and simply not an argument about where it goes.
-    assert got["marks"] == 17, "the drawings button is not in the toolbar at all"
+    # Eighteen since Template joined the bar on 2026-10-09; what this counts is
+    # that Drawings is one of the marks, not how many marks there are.
+    assert got["marks"] == 18, "the drawings button is not in the toolbar at all"
     assert got["beside"].startswith("Image"), (
         "the drawings button is in the bar but not beside the figure button: it "
         f"follows {got['beside']!r}"
@@ -2004,7 +2260,7 @@ def test_starting_a_cycle_asks_for_dates_and_nothing_else(client: TestClient):
 
     assert 'id="number"' in create and 'id="starts"' in create and 'id="reviews"' in create
     assert 'id="start"' in create
-    assert "<textarea" not in create, "no goal box here any more"
+    assert "textarea" not in tags(create), "no goal box here any more"
 
 
 # --- Tab, and the way back out of the box -----------------------------------
@@ -2383,15 +2639,26 @@ def test_the_new_marks_write_blocks_and_a_pasted_url_becomes_the_link_it_is(
     )
     assert "![" not in got["wrote"], "and it wrote markdown into the box instead"
     # Seventeen since 2026-08-26, when the drawings button moved out of
-    # `.editbar` and into this bar beside Image. The three rules and where they
-    # fall are the part this assertion is actually about, and neither moved: the
-    # new button joined the last group rather than starting one.
+    # `.editbar` and into this bar beside Image, and eighteen since 2026-10-09,
+    # when Template arrived as a group of its own between the history pair and
+    # Bold. Where the rules fall is the part this assertion is actually about.
+    #
+    # One row at 1200 and two at 1000, and the two is not a concession. The bar
+    # is drawn in the document's column, which beside the fields is the measure
+    # less 22.5rem: 664px at 1200 and 600 at 1000. Eighteen marks and the
+    # full-page toggle need 651. The one row this asserted at 1000 was bought by
+    # letting the bar run off the end of a column that is a scrollport, with the
+    # toggle 53px past its edge where nothing could press it —
+    # `test_every_button_on_the_toolbar_can_be_reached_at_a_window_that_is_not_wide`
+    # now measures against the column. The 97-character message beside the bar
+    # is the other half of the claim, and it holds at both: it goes on a line of
+    # its own and the marks keep whatever rows they had.
     assert got["bar"] == {
-        "buttons": 17,
-        "rules": 3,
-        "before": ["Bold", "Code", "Link"],
-        "rows": 1,
-    }, "the drawn toolbar is not the shot's four groups, on one row"
+        "buttons": 18,
+        "rules": 4,
+        "before": ["Template", "Bold", "Code", "Link"],
+        "rows": 1 if width >= 1200 else 2,
+    }, "the drawn toolbar is not the shot's groups, on the rows its column has"
 
     assert got["nestedOff"] == "  one\n  two", (
         "a nested numbered list was numbered a second time instead of being taken "
@@ -3964,6 +4231,85 @@ def test_the_two_panes_scroll_to_the_same_line(client: TestClient, tmp_path: Pat
     assert abs(got["settled"]["pane"] - got["blockOfEightyTwo"]) < 2
 
 
+# A list whose points are nothing like each other in height: the first wraps for
+# a screenful and the other eight are two words each, then enough paragraphs
+# below for both panes to scroll. The rendered side is the real renderer's, not a
+# stub's, because what is under test is which blocks it stamps.
+_LISTED_BODY = "\n".join(
+    ["1. " + ("alpha " * 400).strip()]
+    + [f"{n}. point {n}" for n in range(2, 10)]
+    + [""]
+    + [f"filler {n}\n" for n in range(1, 101)]
+)
+
+_LISTING = (
+    f"const LISTED_BODY = {json.dumps(_LISTED_BODY)};"
+    + "window.fetch = async () => ({ok: true, json: async () => ({html: "
+    + json.dumps(preview_html(_LISTED_BODY))
+    + "})});"
+    + """
+const area = document.querySelector('textarea[name=body]');
+const pane = document.getElementById('body-preview');
+const settle = ms => new Promise(go => setTimeout(go, ms));
+
+flipEditing();
+area.value = LISTED_BODY;
+area.dispatchEvent(new Event('input', {bubbles: true}));
+document.getElementById('view-both').click();
+await settle(500);
+
+// The source side's ground truth off the textarea itself, as the test above
+// does it: every line is one row except the first, so the box's own
+// scrollHeight says how many rows that one took.
+const style = getComputedStyle(area);
+const step = parseFloat(style.lineHeight);
+const padTop = parseFloat(style.paddingTop);
+const lines = LISTED_BODY.split('\\n').length;
+const rows = Math.round(
+  (area.scrollHeight - padTop - parseFloat(style.paddingBottom)) / step);
+const longRows = rows - (lines - 1);
+// Line 5 is the fifth point: the long one above it and three short ones.
+area.scrollTop = padTop + (longRows + 3) * step;
+area.dispatchEvent(new Event('scroll'));
+await settle(90);
+
+const five = [...pane.querySelectorAll('li')].find(li => li.textContent.trim() === 'point 5');
+return {longRows, whereIsFive: five.getBoundingClientRect().top - pane.getBoundingClientRect().top};
+"""
+)
+
+
+def test_a_long_list_scrolls_point_by_point(client: TestClient, tmp_path: Path):
+    """Each point of a list is a place the two panes meet, not only the list.
+
+    jcanton, 2026-09-24, on a record whose `## Problems` is nine numbered points:
+    the heading under the list was 180px lower in the preview than in the source.
+    The renderer stamped source lines on top-level blocks only, so the whole list
+    was one interval and the sync interpolated across it by line number — while
+    the points themselves wrap to different heights on the two sides, which is
+    what prose in a half-width box always does.
+
+    Here the fifth point is on line 5 and below a first point that is most of the
+    list. Interpolated across the list it is put four ninths of the way down, a
+    screenful from where it is drawn. Measured off two rects, so this is what a
+    reader sees and not what either side of the sync computed.
+    """
+    got = measured_in(
+        chrome(),
+        client.get(f"/detail/{TASK}{PLAIN}").text,
+        tmp_path / "listed.html",
+        1400,
+        _LISTING,
+        patience=1800,
+    )
+
+    assert got["longRows"] > 5, "the first point did not wrap, so no height here differs"
+    assert abs(got["whereIsFive"]) < 2, (
+        f"the fifth point is {got['whereIsFive']:.0f}px from the top of the pane after "
+        "the source was scrolled to it: the sync is interpolating across the list"
+    )
+
+
 _LIVE = (
     _STUB_PREVIEW
     + """
@@ -4110,13 +4456,17 @@ def test_a_view_change_tells_the_seat_layer_the_box_moved(client: TestClient):
     The count is asked of Chrome in
     `test_the_three_views_are_one_of_three_and_each_pane_scrolls_on_its_own`,
     which listens for the event through eight of them. This is the static half:
-    that the dispatch is in the one function every view change goes through, and
-    that the line that caused the defect is gone from the page altogether.
+    that the dispatch is in the one function every view change goes through —
+    `reshaped`, since the full-page toggle changes the box's size too and calls
+    the same list — and that the line that caused the defect is gone from the page
+    altogether.
     """
     page = client.get(f"/detail/{TASK}").text
     switching = re.search(r"function showView\(mode\) \{.*?\n\}", page, re.S).group(0)
+    reshaping = re.search(r"function reshaped\(\) \{.*?\n\}", page, re.S).group(0)
 
-    assert "dispatchEvent(new Event('openproj:editing'))" in switching
+    assert "reshaped();" in switching
+    assert "dispatchEvent(new Event('openproj:editing'))" in reshaping
     # The box is taken away by a class the seat layer can see, never behind its back.
     assert "BODY.hidden" not in page
     # And `drawSeats` is still listening for it, which is the other end of the
@@ -4374,8 +4724,8 @@ def test_a_session_never_takes_the_page_away_and_cancel_lands_on_the_landing(
 
 # The same question as `_LEAVING`, asked at the door Cancel is not: a bare
 # `showEditing(false)`, the call every door out of a session ends in. The
-# room's own save reloads nowadays — the test above pins that — so what this
-# drives is the shared ending itself, not a door invented for a test.
+# room's own save ends nothing nowadays — the test above pins that — so what
+# this drives is the shared ending itself, not a door invented for a test.
 _SAVED_IN_A_ROOM = (
     _STUB_PREVIEW
     + """
@@ -4427,14 +4777,21 @@ _SAVING_FROM_A_VIEW = """
   box.value = 'A paragraph typed in the split view.\\n';
   box.dispatchEvent(new Event('input', {bubbles: true}));
   await save();
-  return {view: VIEW, reloads: __reloads()};
+  const kept = {
+    view: VIEW, reloads: __reloads(), base: BASE.value,
+    editing: document.querySelector('article.record').classList.contains('editing'),
+    counter: document.getElementById('unsaved').textContent,
+  };
+  // And out of the session, which is when the read view under it is looked at.
+  chooseView('view');
+  return {kept, left: __reloads()};
 })()
 """
 
-# What the page does with the word the save before it left behind. Through `VIEW`
-# and `classList.contains`, which is what the page itself writes and reads: the
-# shim has no `click()` on an element and its `classList` is not iterable, and a
-# test that needs either is a test about the harness.
+# What the page does with the word a reload left behind. Through `VIEW` and
+# `classList.contains`, which is what the page itself writes and reads: the shim
+# has no `click()` on an element and its `classList` is not iterable, and a test
+# that needs either is a test about the harness.
 _WHERE_IT_LANDS = """
 (() => {
   const article = document.querySelector('article.record');
@@ -4444,49 +4801,307 @@ _WHERE_IT_LANDS = """
 """
 
 
-def test_saving_keeps_the_view_it_was_saved_from(client: TestClient):
-    """jcanton, 2026-08-25: "currently clicking save in the editor exits edit
-    mode and sends you back to preview, let's change that and stay in whatever
-    mode the user is in (edit or side-by-side)".
+def test_a_save_stays_where_it_was_made(client: TestClient):
+    """jcanton, 2026-09-24: *"`:w` with vim keys works and saves the record,
+    however it also removes the cursor from the editor and reloads the page,
+    effectively interrupting editing."*
 
-    The reload itself is not the thing to remove — the read view under the box is
-    HTML the server rendered at the commit the page loaded at, and a save that
-    does not reload leaves the document and the facts as they were. What the
-    reload threw away was the mode, and this drives both halves of carrying it
-    across: the save writes the word, and the page that comes up reads it.
+    Save used to end in `location.reload()`, with the view and the top line
+    carried across it and the caret, the focus and the undo history lost to it.
+    It commits in place now: the page's base moves to the commit the answer
+    names, the counter goes back to nothing, and the session and the view are
+    the ones the press was made in.
 
-    Driven rather than read off the source, because the two halves are in two
-    script blocks that never run in the same order they are written in, and a
-    grep for `keepView` would pass on a page where nothing calls it.
+    What the reload was FOR is paid on the way out instead: the read view under
+    the box is the server's rendering of the commit the page loaded at (jcanton,
+    2026-08-20: "it shows the un-edited text until I refresh"), so leaving the
+    session after a save reloads — and with nothing unsaved, that is the whole
+    of what it has to do.
 
     `chooseView` rather than a click on the segment: the node shim has no
-    `click()` on an element, and the segment is not what this is about —
-    `test_opening_a_session_moves_nothing_above_the_document` drives the buttons
-    in a real browser. What this needs is a live session in a named view, which
-    is what the function the button calls does.
+    `click()` on an element, and the segment is not what this is about.
     """
     from test_injection import run_js
 
     page = client.get(f"/detail/{TASK}{PLAIN}").text
-
     saving = run_js(
         page,
         _SAVING_FROM_A_VIEW,
         page=True,
-        replies=[{"status": 200, "json": {"commit": "0" * 40}}],
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "committed"}}],
     )
     assert not saving["errors"], saving["errors"]
-    assert saving["value"]["reloads"] == 1, (
-        f"the save did not reload, so this test drove nothing: {saving['value']}"
+    assert [call["method"] for call in saving["calls"]] == ["PATCH"], (
+        f"the save never went out, so this test drove nothing: {saving['calls']}"
     )
-    assert saving["tabbed"].get("openproj:resumed") == "both", (
-        "a save from the split view left nothing behind saying so, so the page "
-        f"it reloads into cannot come back to it: {saving['tabbed']}"
+    assert saving["value"]["kept"] == {
+        "view": "both",
+        "reloads": 0,
+        "base": "0" * 40,
+        "editing": True,
+        "counter": "Nothing changed yet",
+    }, f"the save did not land where it was made: {saving['value']['kept']}"
+    assert "openproj:resumed" not in saving["tabbed"], (
+        "a save that does not reload left a word for a reload in the tab, so the "
+        "next page this tab opens will open as an editor"
+    )
+    assert saving["value"]["left"] == 1, (
+        "leaving the session after a save did not reload, so the read view under "
+        "it is the body as it was before the save"
     )
 
-    # And the page that comes up. Not the same run — a reload is a new document
-    # with a new script, which is the whole reason this goes through the tab's
-    # own store rather than through a variable.
+
+# Saved, then typed some more, then left.
+_LEFT_WITH_MORE_TYPED = """
+(async () => {
+  chooseView('edit');
+  const box = document.querySelector('[name=body]');
+  box.value = 'The paragraph that was saved.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await save();
+  box.value = 'The paragraph that was saved.\\nAnd a line that was not.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  chooseView('view');
+  return {reloads: __reloads(), base: BASE.value};
+})()
+"""
+
+
+def test_leaving_with_unsaved_work_carries_it_across_the_reload(client: TestClient):
+    """The one way out that used to lose a reader to the editor. The read view is
+    behind the save, and a reload is the only thing that redraws all of it — the
+    diagrams' loader runs once, at load — but a draft forces a session on load,
+    so a plain reload would put somebody who asked to read straight back into
+    the editor.
+
+    So the draft is written NOW, on the commit just made — not on the draft
+    timer's next tick, which a reload would never reach — and a one-shot lands
+    the next page on the read view. The second half is that next page: the draft
+    back in the box, the session closed, and the bar saying there is work in it.
+    """
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    left = run_js(
+        page, _LEFT_WITH_MORE_TYPED, page=True,
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "committed"}}],
+    )
+    assert not left["errors"], left["errors"]
+    assert left["value"]["reloads"] == 1, "leaving after a save did not redraw the read view"
+    assert left["tabbed"].get("openproj:resumed") == "view", (
+        f"nothing says the next page is the read view, so the draft opens the editor: "
+        f"{left['tabbed']}"
+    )
+    draft = json.loads(left["stored"][f"openproj:draft:2:{TASK}"])
+    assert draft == {
+        "base": "0" * 40,
+        "text": "The paragraph that was saved.\nAnd a line that was not.\n",
+    }, f"the draft that goes across the reload is not the box on the new commit: {draft}"
+
+    landed = run_js(
+        page, _WHERE_IT_LANDS, page=True,
+        storage={f"openproj:draft:2:{TASK}": json.dumps(draft)},
+        session={"openproj:resumed": "view"},
+    )
+    assert not landed["errors"], landed["errors"]
+    assert landed["value"] == {"view": "view", "editing": False, "split": False}, (
+        f"the reload the reader left for did not land on the read view: {landed['value']}"
+    )
+
+
+def test_leaving_where_no_draft_can_be_kept_reloads_nothing(client: TestClient):
+    """A browser that keeps no drafts — a private window, a blocked store — would
+    lose the unsaved line to that reload. So there is no reload, and the page
+    says why the text under the box is older than the save it just made."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    got = run_js(
+        page, _LEFT_WITH_MORE_TYPED, page=True, storage="denied",
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "committed"}}],
+    )
+    assert not got["errors"], got["errors"]
+    assert got["value"]["reloads"] == 0, "a reload threw away writing that exists nowhere else"
+
+
+# Saved, then a FIELD changed, then left.
+_LEFT_WITH_A_FIELD_CHANGED = """
+(async () => {
+  chooseView('edit');
+  const box = document.querySelector('[name=body]');
+  box.value = 'Saved.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await save();
+  const tags = document.querySelector('[name=tags]');
+  tags.value = 'changed-after-the-save';
+  tags.dispatchEvent(new Event('input', {bubbles: true}));
+  chooseView('view');
+  return {reloads: __reloads(), said: document.getElementById('state').textContent};
+})()
+"""
+
+
+def test_leaving_with_a_field_changed_after_a_save_reloads_nothing(client: TestClient):
+    """Found in the second review. A draft is the body and nothing else, so a
+    reload after a changed title, status or tag throws the change away without a
+    word — the draft text equals the server's and nothing is restored. No reload,
+    and the page says why the text under the box is older than the save."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    got = run_js(
+        page, _LEFT_WITH_A_FIELD_CHANGED, page=True,
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "committed"}}],
+    )
+    assert not got["errors"], got["errors"]
+    assert got["value"]["reloads"] == 0, "a reload threw away a field nobody saved"
+    assert "before the last save" in got["value"]["said"], got["value"]
+
+
+# Saved into a merge, with a line typed while the request was in the air.
+_TYPED_WHILE_A_MERGE_WAS_IN_THE_AIR = """
+(async () => {
+  chooseView('both');
+  const box = document.querySelector('[name=body]');
+  const base = BASE.value;
+  box.value = 'Mine.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  const pressed = save();
+  box.value = 'Mine.\\nTyped while it was saving.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await pressed;
+  return {base, reloads: __reloads()};
+})()
+"""
+
+
+def test_a_line_typed_during_a_merged_save_crosses_the_reload(client: TestClient):
+    """The merge reloads, and a keystroke made while the save was in the air is
+    in no commit. It goes across as a draft on the base it was TYPED on — not on
+    the merge — so saving it again merges with the paragraph that landed instead
+    of writing over it."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    got = run_js(
+        page, _TYPED_WHILE_A_MERGE_WAS_IN_THE_AIR, page=True,
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "merged"}}],
+    )
+    assert not got["errors"], got["errors"]
+    assert got["value"]["reloads"] == 1, got["value"]
+    draft = json.loads(got["stored"].get(f"openproj:draft:2:{TASK}", "null") or "null")
+    assert draft == {
+        "base": got["value"]["base"],
+        "text": "Mine.\nTyped while it was saving.\n",
+    }, f"the line typed during the save did not cross the reload on its own base: {draft}"
+
+
+# Opened by a link that says `?edit`, saved, and left.
+_LEFT_A_LINKED_EDITOR = """
+(async () => {
+  const replaced = [];
+  history.replaceState = (state, title, url) => replaced.push(url);
+  const box = document.querySelector('[name=body]');
+  box.value = 'Saved.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await save();
+  chooseView('view');
+  return {reloads: __reloads(), replaced};
+})()
+"""
+
+
+def test_leaving_an_editor_a_link_opened_does_not_reload_back_into_it(client: TestClient):
+    """`?edit` beats every one-shot on load and a reload keeps the query string,
+    so leaving after a save would reload straight back into the editor. The flag
+    comes out of the address first; the rest of the query stays."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    got = run_js(
+        page, _LEFT_A_LINKED_EDITOR, page=True, here=f"/detail/{TASK}?edit&keep=1",
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "committed"}}],
+    )
+    assert not got["errors"], got["errors"]
+    assert got["value"]["reloads"] == 1, got["value"]
+    assert got["value"]["replaced"] == [f"/detail/{TASK}?keep=1"], got["value"]
+
+
+# A save the store had to merge: somebody else's paragraph is in the commit and
+# not in the box.
+_SAVED_INTO_A_MERGE = """
+(async () => {
+  chooseView('both');
+  const box = document.querySelector('[name=body]');
+  box.value = 'Mine.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await save();
+  return {reloads: __reloads()};
+})()
+"""
+
+
+def test_a_save_that_merged_reloads_to_show_what_it_merged(client: TestClient):
+    """Found in review of the save that stays put. A merged commit holds a
+    paragraph this page has never seen, and keeping the box as the baseline would
+    make the next save — against this very commit, so no conflict — write the
+    box verbatim and take that paragraph out of the file. The reload is what
+    brings it into the box, so a merge still reloads, into the same view."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    got = run_js(
+        page, _SAVED_INTO_A_MERGE, page=True,
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "merged"}}],
+    )
+    assert not got["errors"], got["errors"]
+    assert got["value"]["reloads"] == 1, (
+        "a merged save stayed in place, so somebody else's paragraph is in the file "
+        "and not in the box, and the next save deletes it"
+    )
+    assert got["tabbed"].get("openproj:resumed") == "both", got["tabbed"]
+
+
+# Saved, and the session left before the answer came back.
+_LEFT_BEFORE_THE_ANSWER = """
+(async () => {
+  chooseView('edit');
+  const box = document.querySelector('[name=body]');
+  box.value = 'Saved on the way out.\\n';
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  const pressed = save();
+  chooseView('view');
+  const before = __reloads();
+  await pressed;
+  return {before, after: __reloads()};
+})()
+"""
+
+
+def test_a_save_that_lands_after_the_session_was_left_still_redraws(client: TestClient):
+    """Save, then Escape before the answer: `freshen` ran on the way out while
+    there was nothing to freshen yet, and the read view on the screen is from
+    before the save — jcanton's report of 2026-08-20, by another road."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
+    got = run_js(
+        page, _LEFT_BEFORE_THE_ANSWER, page=True,
+        replies=[{"status": 200, "json": {"commit": "0" * 40, "outcome": "committed"}}],
+    )
+    assert not got["errors"], got["errors"]
+    assert got["value"] == {"before": 0, "after": 1}, got["value"]
+
+
+def test_a_reload_comes_back_into_the_view_it_left(client: TestClient):
+    """The shell's "the plan changed — reload" link reloads a page somebody may be
+    writing in, and `keepView` carries the session across it — the job that was
+    Save's until Save stopped reloading. The page that comes up reads the word
+    and spends it; the control is every load that did not come from a reload,
+    which lands on the page."""
+    from test_injection import run_js
+
+    page = client.get(f"/detail/{TASK}{PLAIN}").text
     landed = run_js(page, _WHERE_IT_LANDS, page=True, session={"openproj:resumed": "both"})
     assert not landed["errors"], landed["errors"]
     assert landed["value"] == {"view": "both", "editing": True, "split": True}, (
@@ -4497,12 +5112,9 @@ def test_saving_keeps_the_view_it_was_saved_from(client: TestClient):
         "opens will open as an editor"
     )
 
-    # The control, and it is what every load that did not just save gets: no
-    # word, no session, the landing. Without this the test above passes on a
-    # page that opens the split for everybody.
     ordinary = run_js(page, _WHERE_IT_LANDS, page=True)
     assert ordinary["value"] == {"view": "view", "editing": False, "split": False}, (
-        f"a page nobody saved from opened in a session: {ordinary['value']}"
+        f"a page nobody reloaded into opened in a session: {ordinary['value']}"
     )
 
 
@@ -4513,7 +5125,7 @@ def test_a_link_beats_the_view_a_save_left_behind_and_still_spends_it(
 
     `?view` is somebody handing you a way of looking at this document and it wins
     — that rule is older than this key. What the rule cannot be allowed to do is
-    leave the word in the tab: a save whose landing was overruled by a link would
+    leave the word in the tab: a reload whose landing was overruled by a link would
     otherwise open an editor over the NEXT record this tab visits, which is the
     sticky-at-load behaviour the load branch is written to avoid.
     """
@@ -4536,33 +5148,30 @@ def test_a_link_beats_the_view_a_save_left_behind_and_still_spends_it(
     )
 
 
-def test_the_room_s_own_save_ends_the_session_by_leaving_the_page():
-    """How a room's save ends the session, read out of the product.
+def test_the_room_s_own_save_lands_in_place_and_leaves_nobody():
+    """How a room's save ends, read out of the product.
 
     It was `showEditing(false)` — the door that had no `showView` and was the
-    reason the surface stayed up — and it is a reload now, for a defect one layer
-    further out: the read view under the editor is HTML the server rendered at the
-    commit the page LOADED at, so closing the editor onto it showed the body as it
-    was until somebody refreshed (jcanton, 2026-08-20). A reload takes the surface
-    down on its way past, which is the same ending the path without a room has
-    always had.
-
-    The claim below — that ending a session by any door leaves the surface — is
-    unchanged and still worth driving: Cancel and the view toggle are doors too.
-
-    Since 2026-08-25 the reload is no longer how the session ENDS: `keepView`
-    carries the mode across it, so a save from the split view comes back into the
-    split (`test_saving_keeps_the_view_it_was_saved_from`). What this test says is
-    narrower than its name and always was — the branch reloads, and it does not
-    grow a fourth copy of leaving the surface — and both are still true.
+    reason the surface stayed up — then a reload, for a defect one layer further
+    out: the read view under the editor is HTML the server rendered at the
+    commit the page LOADED at (jcanton, 2026-08-20). The reload threw away the
+    caret, the focus and the undo history of the tab that pressed Save (jcanton,
+    2026-09-24, on `:w`), so the branch now reloads nobody and grows no copy of
+    leaving the surface: it hands the fields the press sent to `savedHere`, and
+    the read view is redrawn on the way out of the session instead
+    (`test_a_save_stays_where_it_was_made`).
     """
     from openproj.render import _COEDIT
 
     saved = re.search(r"if \(message\.t === 'saved'\) \{.*?\n    \}", str(_COEDIT), re.S)
     assert saved, "the room's `saved` branch is not where this test thinks it is"
-    assert "location.reload()" in saved.group(0), (
-        "a room's save no longer ends by leaving the page, so the read view under "
-        "the editor is whatever the server rendered before the save"
+    assert "location.reload()" not in saved.group(0), (
+        "a room's save reloads the page again, and takes the caret and the undo "
+        "history of whoever pressed it"
+    )
+    assert "savedHere(sent)" in saved.group(0), (
+        "the fields the press sent are not recorded as committed, so the counter "
+        "goes on counting them after the save"
     )
     assert "showView" not in saved.group(0), (
         "the `saved` branch has grown its own copy of leaving the surface — that "
@@ -4577,9 +5186,9 @@ def test_ending_a_session_leaves_the_surface_by_every_door(client: TestClient, t
     Three copies of `showView(null)` existed — `flipEditing`, the issue page's
     toggle, the note page's — and a fourth door had none: a Save in a room ended
     the session with a bare `showEditing(false)` and did not reload, leaving the
-    reader inside the full-page surface of the day. (It reloads now, for a
-    different defect — see the test above — so the door driven here is the one
-    Cancel and the view toggle use.) The surface itself is gone since
+    reader inside the full-page surface of the day. (It ends nothing now — see
+    the test above — so the door driven here is the one Cancel and the view
+    toggle use.) The surface itself is gone since
     2026-08-24, which retires the trap structurally; what this still pins is
     that the one `openproj:session` listener answers a door no click opened —
     end a session any way at all, and the page lands on the landing with its
@@ -5889,6 +6498,9 @@ _VIM_ON = r"""
     // image button, and a sweep that asserts every `.mark` writes markdown
     // would report it inert.
     if (button.classList.contains('draw')) continue;
+    // And the template menu, for the same reason: a press opens it, and only a
+    // choice from it writes. What a choice writes is asserted where the menu is.
+    if (button.classList.contains('tpl')) continue;
     // Undo and redo write no markdown at all — they move a stack. Excluded here
     // rather than asserted as "wrote something", which they would pass by taking
     // back the mark before them and would therefore say nothing.
@@ -5976,9 +6588,9 @@ def test_the_toolbar_and_the_keymap_do_not_cancel_each_other(client: TestClient,
 
     inert = [title for title, wrote in got["marks"] if not wrote]
     assert inert == [], f"these toolbar buttons do nothing with vim on: {inert}"
-    # Thirteen: the seventeen in the shot, less Image, less Drawings — neither
-    # of which writes markdown — less the two history buttons, which are not
-    # marks at all and are asserted where the stack they move is.
+    # Thirteen: the eighteen on the bar, less Image, Drawings and Template —
+    # none of which writes markdown when pressed — less the two history buttons,
+    # which are not marks at all and are asserted where the stack they move is.
     assert len(got["marks"]) == 13, got["marks"]
 
     # The record, asserted rather than described: this is the call that would have
@@ -6184,9 +6796,10 @@ def _with_a_long_body(page: str, lines: int = 400) -> str:
     )
 
 
-# And the tab as a save leaves it. A reload is a new document with a new script,
-# so the only way to ask what the page does with what the save wrote down is to
-# write it down and open the page — which is exactly what the product does.
+# And the tab as a reload leaves it. A reload is a new document with a new
+# script, so the only way to ask what the page does with what `keepView` wrote
+# down is to write it down and open the page — which is exactly what the product
+# does.
 def _as_if_a_save_had_just_reloaded(page: str, line: int | None) -> str:
     seed = "<script>sessionStorage.setItem('openproj:resumed', 'edit');"
     if line is not None:
@@ -6208,7 +6821,7 @@ _KEEPS_THE_LINE = r"""
   // given its document; a cached column of zeroes would make this a test about
   // the cache.
   sourcePoints = null;
-  // The call the two save paths make, and the whole of what this half is about.
+  // The call the reload link makes, and the whole of what this half is about.
   keepView();
   return {
     wrote: sessionStorage.getItem('openproj:resumed-at'),
@@ -6236,20 +6849,20 @@ _LANDED_WHERE_IT_LEFT = r"""
 """
 
 
-def test_a_save_comes_back_to_the_line_it_was_saved_from(client: TestClient, tmp_path: Path):
+def test_a_reload_comes_back_to_the_line_it_left_from(client: TestClient, tmp_path: Path):
     """jcanton, 2026-09-18: *"for some reason clicking save on editing a record
     resets the scroll to the top line of the editor box (while I'd prefer if it
     didn't)"*.
 
-    Save reloads — the read view under the box, the history and the base are all
-    the server's rendering of the commit the page loaded at — and a reload is a
-    new document with a new editor in it, scrolled where a new editor starts. The
-    view already crossed that gap in `openproj:resumed`; this is the other half
-    of "stay where you are", and it crosses the same way.
+    Save reloaded then, and a reload is a new document with a new editor in it,
+    scrolled where a new editor starts. Save no longer reloads
+    (`test_a_save_stays_where_it_was_made`); the plan-changed banner's reload
+    link still does, and it carries the view in `openproj:resumed` and the line
+    beside it. This is that second half, and it crosses the same way.
 
     Both halves, in two runs, because a reload is two page loads and a test that
     did it in one would be a test about a variable. The write is `keepView()`,
-    the call every save path makes; the read is a page opened with the tab in the
+    the call the reload link makes; the read is a page opened with the tab in the
     state that call leaves it in.
 
     **A line and not a pixel**, which is what the second assertion is really
@@ -6686,9 +7299,10 @@ def test_the_banners_reload_lands_back_in_the_view_it_was_pressed_from(
 
     `href=""` is the current address without its fragment, so it keeps `?edit`
     and `?both` for somebody who arrived by link. A session opened by pressing
-    Write is in no address at all: the mode lives in the page, and Save already
-    knows that — it calls `keepView()` before the reload IT needs, which puts the
-    mode in `sessionStorage` for `RESUMING` to pick up on the way back.
+    Write is in no address at all: the mode lives in the page, and Save knew that
+    — it called `keepView()` before the reload it needed then, which puts the
+    mode in `sessionStorage` for `RESUMING` to pick up on the way back. (Save
+    reloads only after a merge now; `test_a_save_stays_where_it_was_made`.)
 
     The banner's reload is the other reload on this page and it did not, so
     pressing it over an open editor closed the editor.
@@ -6849,6 +7463,50 @@ def test_colon_w_presses_save_and_says_so_when_there_is_nothing_to_press(
         f"{got['said']!r}"
     )
 
+
+
+# The other way into vim: the page is built with the default keymap and vim is
+# chosen in the status bar while it is open, through the surface's own
+# `setKeymap` — which is what that control calls.
+_WRITE_AFTER_CHOOSING_VIM = r"""
+  flipEditing();
+  await new Promise(r => setTimeout(r, 300));
+  const editor = SURFACE.editor;
+  SURFACE.setKeymap('vim');
+  const Vim = ace.require('ace/keyboard/vim').CodeMirror.Vim;
+  let presses = 0;
+  document.getElementById('save').addEventListener('click', event => {
+    presses++;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+  }, true);
+  Vim.handleEx(editor.state.cm, 'w');
+  return {handler: String(editor.getKeyboardHandler().$id), presses};
+"""
+
+
+def test_colon_w_presses_save_when_vim_is_chosen_in_the_status_bar(
+    client: TestClient, tmp_path: Path
+):
+    """Found on 2026-09-24 while checking `:w` for the save that stays put: the
+    two ways into vim each carried their own list of what this page changes about
+    it, and the status bar's had two of the three. Choosing vim there gave `j`,
+    `k` and the clipboard, and `:w` went on logging "not implemented" until the
+    next reload."""
+    page = client.get(f"/detail/{TASK}?editor=ace").text
+    got = measured_in(
+        chrome(),
+        page,
+        tmp_path / "vim-chosen.html",
+        1400,
+        _WRITE_AFTER_CHOOSING_VIM,
+        query="?editor=ace",
+        patience=6800,
+    )
+    assert got["handler"] == "ace/keyboard/vim", "the keymap did not come on"
+    assert got["presses"] == 1, (
+        "`:w` in a keymap chosen from the status bar did not reach Save"
+    )
 
 _STICKY_EDITOR = r"""
   return {search: location.search, editor: EDITOR.editor,
@@ -7022,31 +7680,31 @@ const rows = element => {
   const box = element.getBoundingClientRect();
   return Math.round(box.height / parseFloat(getComputedStyle(area).lineHeight));
 };
-const state = () => ({
-  rows: rows(area),
-  factsWhole: Math.round(facts.getBoundingClientRect().height) >= facts.scrollHeight - 1,
-  // **Can the reader get the facts on screen?** Asked by scrolling whatever
-  // actually scrolls and looking, rather than by arithmetic against a box named
-  // here. Which box that is now depends on the width: side by side the facts
-  // column scrolls inside itself, stacked it is `.panes` that scrolls, and the
-  // document scrolls in neither. Two rewrites of this line have already named
-  // the wrong one — it was `document.documentElement` when the page stopped
-  // scrolling, then `.pagefill` when the frame stopped scrolling — so it names
-  // none and walks up to the first ancestor with travel in it.
-  factsReachable: (() => {
-    let box = facts.parentElement;
-    for (; box; box = box.parentElement) {
-      const how = getComputedStyle(box).overflowY;
-      if ((how === 'auto' || how === 'scroll') && box.scrollHeight > box.clientHeight) break;
-    }
-    box = box || document.scrollingElement;
-    const was = box.scrollTop;
-    box.scrollTop = box.scrollHeight;
-    const reached = facts.getBoundingClientRect().bottom <= innerHeight + 1;
-    box.scrollTop = was;
-    return reached;
-  })(),
-});
+// **Stacked, the facts are a share of the height and scroll inside it.** They
+// used to be a row as tall as all of their fields, with the writing box pushed
+// below the window onto its floor, and you reached it by scrolling past every
+// field. jcanton, 2026-09-25: the editor "can become too short".
+const state = () => {
+  const box = area.getBoundingClientRect();
+  const panes = document.querySelector('.panes').getBoundingClientRect();
+  const shelf = facts.getBoundingClientRect();
+  // The last field, scrolled to, has to come into sight inside the facts' own
+  // box. That is what makes a list longer than its share still usable.
+  const last = [...facts.querySelectorAll('dd')].pop() || facts.lastElementChild;
+  const was = facts.scrollTop;
+  facts.scrollTop = facts.scrollHeight;
+  const end = last.getBoundingClientRect();
+  const reached = end.bottom <= facts.getBoundingClientRect().bottom + 1
+    && end.bottom <= innerHeight + 1;
+  facts.scrollTop = was;
+  return {
+    rows: rows(area),
+    inView: box.top >= 0 && box.bottom <= innerHeight + 1,
+    factsShare: shelf.height / panes.height,
+    factsScroll: facts.scrollHeight > facts.clientHeight + 1,
+    factsReachable: reached,
+  };
+};
 
 // The create form is always editing; the record page opens a session here.
 if (typeof flipEditing === 'function') flipEditing();
@@ -7088,12 +7746,16 @@ def test_the_writing_views_are_usable_at_a_window_that_is_not_wide(
 
     Under the old full-page grid this was where the writing box measured 50px —
     a `height: 100%` box in an `auto` track, under six hundred pixels of
-    metadata. The surface is gone; what holds the box open now is the one
-    `--writing` height it has at every width, and what keeps the facts usable
-    is that they are ordinary page content the page scrolls to. The article
-    must stay in the page's own flow (`position: relative`) and must not force
-    a sideways scrollbar — the split's grown width has `max-width: 100%` to
-    answer to.
+    metadata. Then the facts were a row as tall as every field they hold, and
+    the box sat below the window on its floor. jcanton, 2026-09-25: stacked, the
+    editor "can become too short", so the fields should take a share and scroll.
+    They take at most 30% of the panes and scroll inside it, and the box is on
+    screen with the rest. The article must stay in the page's own flow
+    (`position: relative`) and must not force a sideways scrollbar — the split's
+    grown width has `max-width: 100%` to answer to.
+
+    `factsScroll` is the guard on the share. A form with few enough fields to fit
+    in 30% would pass that assertion by never being asked it.
 
     Asked of Chrome and not of `tests/cascade.py`, because the stacked layout
     lives behind a container query, which that engine skips by construction.
@@ -7107,10 +7769,16 @@ def test_the_writing_views_are_usable_at_a_window_that_is_not_wide(
         assert got[view]["rows"] >= 12, (
             f"the {view} view gives the document {got[view]['rows']} lines at a 900px window"
         )
-        assert got[view]["factsWhole"], (
-            "the facts grew a scrollbar of their own: fifteen fields in a box a few lines tall"
+        assert got[view]["inView"], (
+            f"the {view} view's writing box is not on screen at a 900px window"
         )
-        assert got[view]["factsReachable"], "and there is no way to scroll down to them"
+        assert got[view]["factsScroll"], (
+            "the fields fit in their share, so this says nothing about a share"
+        )
+        assert got[view]["factsShare"] <= 0.31, (
+            f"the fields take {got[view]['factsShare']:.0%} of the panes, over their 30%"
+        )
+        assert got[view]["factsReachable"], "and the last field cannot be scrolled into view"
     assert got["paneRows"] >= 12, "the rendered half of the split is not readable either"
     if where == "new":
         assert got["read"]["paneRows"] >= 12, "the create form's preview is not readable"
@@ -7119,35 +7787,40 @@ def test_the_writing_views_are_usable_at_a_window_that_is_not_wide(
 
 
 _TEMPLATE_SWAP = """
-const picker = document.getElementById('template');
+const kind = document.getElementById('kind');
 const numbers = () => document.querySelectorAll('.lineno').length;
 const bar = document.getElementById('statusbar');
 const said = () => bar.textContent.replace(/\\s+/g, ' ').trim();
 const state = () => ({length: SURFACE.text().length, numbers: numbers(), said: said()});
 const choose = async name => {
-  picker.value = name;
-  picker.dispatchEvent(new Event('change', {bubbles: true}));
+  kind.value = name;
+  kind.dispatchEvent(new Event('change', {bubbles: true}));
   await new Promise(go => setTimeout(go, 250));
   return state();
 };
 const out = {start: state()};
-out.blank = await choose('blank');
+out.blank = await choose('note');
 out.project = await choose('project');
 return out;
 """
 
 
-def test_choosing_a_template_leaves_the_numbers_and_the_length_telling_the_truth(
+def test_switching_kind_leaves_the_numbers_and_the_length_telling_the_truth(
     client: TestClient, tmp_path: Path
 ):
-    """The picker replaces the whole document through `apply`, which fires no
-    `input` — and the gutter and the status bar are both drawn off one.
+    """Switching kind on an untouched create form replaces the whole document
+    through `apply`, which fires no `input` — and the gutter and the status bar
+    are both drawn off one.
 
-    Measured before this: choosing `blank` on the create form emptied the box and
-    left twenty-one line numbers painted down the side of an empty textarea, with
-    `21 Lines — Length: 661` underneath it. Both values had resolved correctly
-    once, for a document that no longer existed, which is why nothing in the
-    suite noticed: every assertion about either was made at load.
+    Measured before this: choosing `blank` from the template picker that used to
+    sit above the toolbar emptied the box and left twenty-one line numbers
+    painted down the side of an empty textarea, with `21 Lines — Length: 661`
+    underneath it. Both values had resolved correctly once, for a document that
+    no longer existed, which is why nothing in the suite noticed: every assertion
+    about either was made at load. The picker is the toolbar's Template menu now,
+    and that writes as a person does; the kind switch is the page's own write
+    that is left, and a note is a kind with no template, so switching to one
+    empties the box exactly as `blank` did.
 
     This is the same hazard `reflect()` names in `_COEDIT` — the page changing
     the text without typing it — and it is answered the same way, with one
@@ -7160,7 +7833,7 @@ def test_choosing_a_template_leaves_the_numbers_and_the_length_telling_the_truth
     assert got["start"]["numbers"] > 1 and got["start"]["length"] > 0, (
         "the create form did not open on a template, so there is nothing to swap away from"
     )
-    assert got["blank"]["length"] == 0, "the picker did not empty the box"
+    assert got["blank"]["length"] == 0, "switching to a kind with no template did not empty the box"
     assert got["blank"]["numbers"] == 1, (
         f"an empty box has {got['blank']['numbers']} line numbers beside it"
     )
@@ -7178,6 +7851,180 @@ def test_choosing_a_template_leaves_the_numbers_and_the_length_telling_the_truth
         "the gutter and the status bar do not agree on how long the document is"
     )
     assert f"Length: {got['project']['length']:,}" in got["project"]["said"]
+
+
+_TEMPLATE_MENU = r"""
+const wait = ms => new Promise(go => setTimeout(go, ms));
+if (!document.querySelector('article.record.editing')) { flipEditing(); await wait(200); }
+const button = document.getElementById('template');
+if (!button) return {missing: true};
+const menu = () => document.querySelector('.tplmenu');
+const pick = async label => {
+  button.click();
+  [...menu().querySelectorAll('button')].find(one => one.textContent === label).click();
+  await wait(150);
+  return SURFACE.text();
+};
+const before = SURFACE.text();
+
+button.click();
+const art = button.querySelector('svg').getBoundingClientRect();
+const opened = {
+  items: [...menu().querySelectorAll('[role=menuitem]')].map(one => one.textContent),
+  expanded: button.getAttribute('aria-expanded'),
+  focused: document.activeElement === menu().querySelector('button'),
+  wrote: SURFACE.text() !== before,
+  drawn: [Math.round(art.width), Math.round(art.height)],
+  named: button.getAttribute('aria-label'),
+  // Beside the history pair and before Bold, with a rule either side of it.
+  between: [button.previousElementSibling.className,
+            button.nextElementSibling.className,
+            button.nextElementSibling.nextElementSibling.title.split('  ')[0]],
+};
+menu().dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+const escaped = {hidden: menu().hidden, focusBack: document.activeElement === button};
+
+const out = {opened, escaped, before};
+if (CREATING) {
+  // Untouched: the box is the kind's own template, so a choice replaces it.
+  out.replaced = await pick('Pitch');
+  // Typed into: a choice goes on the end, and a kind switch leaves it alone.
+  SURFACE.splice(SURFACE.text().length, SURFACE.text().length, 'mine');
+  await wait(50);
+  out.appended = await pick('Task');
+  const kind = document.getElementById('kind');
+  kind.value = 'project';
+  kind.dispatchEvent(new Event('change', {bubbles: true}));
+  await wait(150);
+  out.kept = SURFACE.text();
+} else {
+  out.appended = await pick('Task');
+  out.said = document.getElementById('state').textContent;
+  [...document.querySelectorAll('#marks .hist')].find(one => one.title.startsWith('Undo'))
+    .dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+  await wait(150);
+  out.undone = SURFACE.text();
+}
+return out;
+"""
+
+
+@pytest.mark.parametrize("surface", ["", PLAIN])
+@pytest.mark.parametrize("where", ["detail", "new"])
+def test_a_template_goes_on_the_end_of_a_document_and_over_an_untouched_one(
+    client: TestClient, tmp_path: Path, where: str, surface: str
+):
+    """jcanton, 2026-10-09: "we can move the template selector as a button on top
+    of the editor, between undo/redo and the Bold button, and have it present also
+    in the /detail/editing page. in those where the body already contains text
+    the template can be added at the bottom".
+
+    So one control on both pages, and what it does depends on the box and not on
+    the page. A box that is empty or still one of the templates word for word is
+    nobody's writing, and a choice replaces it — which is what the create form's
+    picker always did. Anything else is somebody's, and the template goes on the
+    end after one blank line, so its first heading is a heading and not the tail
+    of the last paragraph.
+
+    A person's edit, and asserted as one: one press of Undo takes it back out.
+    Written under `apply` — the page's own write — it would have reached the box
+    with nothing on the stack Undo reaches, and in a room it would never have
+    reached anybody else. Both surfaces, because `splice` is two implementations.
+    """
+    from openproj.render import TEMPLATES
+
+    page = client.get(f"/detail/{TASK}{surface}" if where == "detail" else f"/new{surface}")
+    got = measured_in(
+        chrome(),
+        page.text,
+        tmp_path / f"tplmenu-{where}{surface and '-plain'}.html",
+        1400,
+        _TEMPLATE_MENU,
+        query=surface,
+        patience=3000,
+    )
+
+    assert not got.get("missing"), f"there is no Template button on the {where} page"
+    opened = got["opened"]
+    assert opened["named"] == "Template"
+    assert opened["between"] == ["sep", "sep", "Bold"], opened["between"]
+    assert opened["drawn"] == [13, 13], "the page the button wears was laid out at no size"
+    assert {"Pitch", "Task"} <= set(opened["items"]), opened["items"]
+    assert len(opened["items"]) == len(set(opened["items"])), opened["items"]
+    assert opened["expanded"] == "true" and opened["focused"], (
+        "the menu opened somewhere the keyboard was not taken to"
+    )
+    assert not opened["wrote"], "pressing the button wrote something before anything was chosen"
+    assert got["escaped"] == {"hidden": True, "focusBack": True}
+
+    if where == "new":
+        assert got["before"] == TEMPLATES["task"], "the create form did not open on its template"
+        assert got["replaced"] == TEMPLATES["pitch"], (
+            "a template chosen over an untouched one was added to it rather than put in its place"
+        )
+        assert got["appended"] == TEMPLATES["pitch"] + "mine\n\n" + TEMPLATES["task"], (
+            f"a template chosen over typed text did not go on the end: {got['appended']!r}"
+        )
+        assert got["kept"] == got["appended"], "switching kind threw away what was typed"
+    else:
+        assert got["before"].strip(), "the record has no body, so nothing here is about one"
+        assert got["appended"] == got["before"].rstrip() + "\n\n" + TEMPLATES["task"], (
+            f"the template did not go on the end of the document: {got['appended']!r}"
+        )
+        assert "added at the end" in got["said"], f"and nothing said so: {got['said']!r}"
+        assert got["undone"] == got["before"], (
+            "one press of Undo did not take the template back out"
+        )
+
+
+_THE_BOX_REACHES_THE_FOOT = r"""
+const wait = ms => new Promise(go => setTimeout(go, ms));
+if (!document.querySelector('article.record.editing')) { flipEditing(); await wait(200); }
+// Against the footer and not against the filling box: the defect WAS the box,
+// which came out as short as its content and ended exactly where the strip did —
+// so a gap measured to it reads 0 with the bug in place. The footer is pinned to
+// the window by the shell whatever the box does.
+const foot = document.querySelector('footer').getBoundingClientRect();
+const strip = document.getElementById('statusbar').getBoundingClientRect();
+const fields = document.querySelector('.panes > .facts dl').getBoundingClientRect();
+return {
+  gap: Math.round(foot.top - strip.bottom),
+  writing: Math.round(document.querySelector('.bodywrap').getBoundingClientRect().height),
+  short: Math.round(foot.top - fields.bottom),
+};
+"""
+
+
+@pytest.mark.parametrize("where", ["detail", "new"])
+def test_the_writing_box_reaches_the_foot_of_the_window_when_the_fields_do_not(
+    client: TestClient, tmp_path: Path, where: str
+):
+    """jcanton, 2026-10-09, with a screenshot of the create form for a task at a
+    1360px window: "the editor text box in /new doesn't go all the way to the
+    bottom of the page". It stopped 150px short, where the fields beside it did.
+
+    Not the create form's own defect. The shell's filling box carried a
+    `max-height` and no `height`, so the record page's column was as tall as its
+    content up to the window: a pitch's seventeen fields reached the ceiling and
+    took the box with them, and a task's eleven and a note's five did not. A
+    stored note's edit view stopped 750px short.
+
+    `short` is the guard that the fields really do end above the foot: a window
+    the fields fill says nothing about whether the box was ever sized by them.
+    """
+    page = client.get(f"/detail/{TASK}{PLAIN}" if where == "detail" else f"/new{PLAIN}&kind=note")
+    got = measured_in(
+        chrome(), page.text, tmp_path / f"foot-{where}.html", 1440, _THE_BOX_REACHES_THE_FOOT,
+        # Tall, so a stored task's fields — eleven, and their hints — end well
+        # above the foot rather than only just: see `short`.
+        height=1800,
+    )
+
+    assert got["short"] > 200, f"the fields reach the window's foot, so this asks nothing: {got}"
+    assert 0 <= got["gap"] <= 4, (
+        f"the writing box and its status strip stop {got['gap']}px above the footer: {got}"
+    )
+    assert got["writing"] > 1200, f"and the box is not the window's height: {got}"
 
 
 _HISTORY_WITH_NO_ROOM = r"""
@@ -7542,16 +8389,27 @@ const marks = document.getElementById('marks');
 // 2026-08-24 the article is the page's width and everything fits inside it by
 // construction, which would make `past` below the same negative number at every
 // window — a measurement that has stopped asking anything.
-const surface = document.querySelector('article.record .panes');
+//
+// And the column is `.main`, not `.panes`. `.panes` holds the fields as well, so
+// beside them it is 22.5rem wider than anything the bar is drawn in, and a bar
+// running off the end of `.main` — a scrollport, which clips it — measured as
+// comfortably inside. The full-page toggle sat 53px past `.main`'s edge at 1000px
+// for a fortnight under this test, unpressable, and `past` said -267. Measured to
+// the edge of what `.main` paints, `clientWidth`, so a scrollbar is outside it.
+const column = document.querySelector('article.record .panes > .main');
 const buttons = [...marks.querySelectorAll('button.mark')];
-const edge = surface.getBoundingClientRect().right;
+// The toggle is in the bar and not in `#marks`, so it is not one of the buttons
+// counted below; it is the LAST thing on the row, which makes it the first thing
+// a row that is too long pushes out of reach.
+const reach = [...buttons, document.getElementById('editor-size')].filter(Boolean);
+const edge = column.getBoundingClientRect().left + column.clientWidth;
 return {
   width: innerWidth,
   buttons: buttons.length,
   rows: new Set(buttons.map(b => Math.round(b.getBoundingClientRect().top))).size,
-  // How far the rightmost button reaches past the surface it is drawn on.
-  // Negative is inside.
-  past: Math.round(Math.max(...buttons.map(b => b.getBoundingClientRect().right)) - edge),
+  // How far the rightmost control reaches past the column it is drawn in.
+  // Zero is flush; negative is inside.
+  past: Math.round(Math.max(...reach.map(b => b.getBoundingClientRect().right)) - edge),
   // And whether the toolbar is what pushes the page sideways. Compared against
   // the same page's own width rather than against a fixed number: at 390px this
   // application already overflows from the nav shell alone, on every page,
@@ -7564,7 +8422,7 @@ return {
 
 
 @pytest.mark.parametrize("where", ["detail", "note"])
-@pytest.mark.parametrize("width", [500, 1000])
+@pytest.mark.parametrize("width", [500, 1000, 1200])
 def test_every_button_on_the_toolbar_can_be_reached_at_a_window_that_is_not_wide(
     client: TestClient, tmp_path: Path, where: str, width: int
 ):
@@ -7578,21 +8436,24 @@ def test_every_button_on_the_toolbar_can_be_reached_at_a_window_that_is_not_wide
     `article.record`, and the document scrolled sideways to 581px to hold them.
     Four of sixteen controls off the surface, on every page that has an editor.
 
+    **And then the same thing at 1000px, which a window-width query could not
+    see.** The fix for 500 was `@media (max-width: 40rem)`, but the column the bar
+    is drawn in is 600px at a 1000px window — the measure, less the fields beside
+    it — so the query never fired there, and the full-page toggle at the end of
+    the row sat 53px past the column's edge. This test measured against `.panes`,
+    which includes the fields, and passed. The marks take `flex: 1 1 0%` now and
+    wrap inside the room the toggle leaves them, so the row is whatever the
+    column holds and the toggle is always on it.
+
     Two things this asks that a stylesheet cannot answer, and one it must not.
     Where a button ENDS UP is layout, and `tests/cascade.py` skips at-rule
     bodies, so it resolves the wide page and cannot see this one at all. And the
-    comparison is button-right against article-right and never
+    comparison is control-right against column-right and never
     `scrollWidth <= innerWidth`: at 390px every page in this application already
     overflows from the nav shell, with no editor on it, so a test written that
     way would be measuring something else and failing for a reason it did not
-    name.
-
-    A media query and not a container query, proved in the days when the note
-    and issue pages shipped a stylesheet with no `container-type` in it — a
-    container query was patched in and measured byte-identical to no fix at all
-    there. Both parametrised URLs now draw the one merged surface, so the
-    parametrisation survives as reading against creating rather than page
-    against page.
+    name. Both parametrised URLs draw the one merged surface, so the
+    parametrisation is reading against creating rather than page against page.
     """
     page = (
         client.get(f"/detail/{TASK}").text
@@ -7608,26 +8469,25 @@ def test_every_button_on_the_toolbar_can_be_reached_at_a_window_that_is_not_wide
         patience=4800,
     )
 
-    # Seventeen on the record page and sixteen on the create form, which is the
-    # drawings button and its own gate: it joined `FORMATS` on 2026-08-26 and
-    # `attachEditing` withholds it while creating, because nothing is stored yet
-    # for a drawing to be embedded in. The two numbers here are the only place
-    # that gate is asserted against a page actually rendered at a width.
-    expected = 17 if where == "detail" else 16
-    assert got["width"] == width and got["buttons"] == expected, got
-    assert got["past"] < 0, (
-        f"at {width}px the toolbar reaches {got['past']}px past the edge of the surface "
-        f"it is drawn on, so the buttons on the end cannot be pressed: {got['flex']}"
+    # Eighteen on both since 2026-10-09. The create form had sixteen: no
+    # Template, which was a `<select>` above its bar, and no Drawings, which was
+    # withheld there on the grounds that nothing was stored yet for a drawing to
+    # belong to — never what a drawing needs, since it is minted with an id of its
+    # own. jcanton: the create page "is missing the drawings button".
+    assert got["width"] == width and got["buttons"] == 18, got
+    assert got["past"] <= 0, (
+        f"at {width}px the toolbar reaches {got['past']}px past the edge of the column "
+        f"it is drawn in, so the controls on the end cannot be pressed: {got['flex']}"
     )
     assert got["scrollW"] == width, (
         f"the toolbar is pushing the whole page sideways at {width}px: "
         f"{got['scrollW']} against a {width}px window"
     )
-    if width >= 1000:
-        # And the row it has been on since the marks shipped. `flex: none` is
-        # what keeps it there when there IS room: the bar shares a flex line with
-        # a status message up to 97 characters long, and without it the marks
-        # shrink and wrap with the break falling inside a group.
+    if width >= 1200:
+        # And one row where the column holds one: 664px at the default measure,
+        # against the 651 eighteen marks and the toggle need. 1000 is not that
+        # width — its column is 600 — and asserting a row there is what kept the
+        # toggle out of reach.
         assert got["rows"] == 1, (
             f"the toolbar wrapped at {width}px, where it fits: {got['rows']} rows"
         )
@@ -8863,175 +9723,152 @@ _COMPLETING_A_PULL_REQUEST = r"""
   const key = code => !!editor.keyBinding.onCommandKey(
     {preventDefault() {}, stopPropagation() {}}, 0, code);
   const line = () => SURFACE.text().split('\n').pop();
+  const typing = async text => { editor.insert(text);
+    await new Promise(r => setTimeout(r, 250)); return shown(); };
+  const taking = async () => { const took = key(13);
+    await new Promise(r => setTimeout(r, 250)); return {took, line: line(), list: shown()}; };
 
   editor.focus();
   editor.navigateFileEnd();
   // A word with no slash and no hash in it: prose, and nothing to complete.
-  editor.insert('\nSee griddle');
-  await new Promise(r => setTimeout(r, 250));
-  const overProse = shown();
+  const overProse = await typing('\nSee griddle');
+  // A heading is a hash with nothing to search for.
+  editor.insert('\n');
+  const overHeading = await typing('##');
+  // And the rest is typed on that line, the heading taken back off it.
+  editor.remove('left'); editor.remove('left');
 
-  // The repository, half typed. Both what is in it: the bare `org/repo#`, which
-  // is the half nobody remembers, and the reference already cited in the plan.
-  for (let i = 0; i < 7; i++) editor.remove('left');
-  editor.insert('griddle/');
-  await new Promise(r => setTimeout(r, 250));
-  const onRepo = shown();
+  // Half the name and a hash: the repository, with the number left to type.
+  const onRepo = await typing('griddle#');
+  const tookRepo = await taking();
+  const numbered = await typing('1877');
+  const tookRef = await taking();
 
-  // Taking the bare one leaves the number to be typed, so the popup stays.
-  const tookRepo = key(13);
-  await new Promise(r => setTimeout(r, 250));
-  const afterRepo = {line: line(), list: shown()};
+  // The half of a name and a number, which is the whole ask.
+  const other = await typing(' and kiln4py#1403');
+  const tookOther = await taking();
 
-  editor.insert('1877');
-  await new Promise(r => setTimeout(r, 250));
-  const narrowed = shown();
-  const tookRef = key(13);
-  await new Promise(r => setTimeout(r, 250));
-  const afterRef = {line: line(), list: shown()};
-
-  // And the other repository, reached from the half of the name that is not the
-  // organisation — the list matches on the whole reference.
-  editor.insert(' and kiln4py#');
-  await new Promise(r => setTimeout(r, 250));
-  const other = shown();
-  return {overProse, onRepo, tookRepo, afterRepo, narrowed, tookRef, afterRef, other};
+  // A link pasted from the browser is the reference it names.
+  const pasted = await typing(' and https://github.com/griddle/griddle/pull/12/files');
+  const tookPasted = await taking();
+  return {overProse, overHeading, onRepo, tookRepo, numbered, tookRef, other, tookOther,
+          pasted, tookPasted};
 """
 
 
-def test_the_second_editor_completes_a_pull_request_in_the_body(client: TestClient, tmp_path: Path):
-    """jcanton, 2026-08-25, asked whether the autofill reaches pull requests from
-    the two repositories this plan is about — "ideally both in the PRs field as
-    well as in the body".
+@pytest.fixture
+def naming_client(tmp_path: Path):
+    """The corpus, with the two repositories this plan says its work happens in."""
+    path = tmp_path / "named.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    seeded = dict(SEED)
+    seeded["config/defaults.yaml"] += "repositories: [kilnlab/kiln4py, griddle/griddle]\n"
+    commit_directly(path, seeded, "seed the corpus")
+    with TestClient(create_app(path, auth="dev", secret=SECRET)) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        yield client
 
-    The field has completed them since `_suggestions` was written. The body
-    completed nothing, although `_pr_refs` has rendered `org/repo#123` in prose
-    as a link for just as long: the notation was readable and unwritable.
 
-    **What it offers is what the plan already cites**, and that is the whole
-    answer to "does it work for kiln4py and griddle". There is no live lookup —
-    every page here is inlined and reaches no network, which is the rule
-    `static/VENDOR.md` exists for — so a repository is offered once some record
-    names a pull request in it, and the bare `org/repo#` for each of those comes
-    with it. The two references below are put in through the write path rather
-    than by editing a fixture, because the write path is what a person uses.
+def test_the_second_editor_completes_a_pull_request_in_the_body(
+    naming_client: TestClient, tmp_path: Path
+):
+    """jcanton, 2026-11-11: "`icon4py PRnr`" — half the name of a repository the
+    plan lists, and a number, is a whole reference.
 
-    `overProse` is the assertion this feature could most easily be wrong in the
-    annoying direction: a trigger that fired on any word would put a popup over
-    everybody's writing, and nothing but somebody complaining would say so.
+    The body completes the shape `_pr_refs` renders. What it offers comes from the
+    plan's `repositories:` and nothing the corpus cites: a reference one record
+    names belongs to that record far more often than to the next one. The page is
+    a file here, so `/api/prs` answers nothing and every row below is written from
+    what was typed — which is the point of the number half: a merged pull request
+    is never in the open list and is cited just as often.
+
+    `overProse` and `overHeading` are the two this could most easily get wrong in
+    the annoying direction — a popup over somebody's writing, with Enter taking
+    the first row on the way to a new line.
     """
-    for record, refs in (
-        (OTHER, ["kilnlab/kiln4py#1403"]),
-        (DONE, ["griddle/griddle#1877", "kilnlab/kiln4py#1521"]),
-    ):
-        written = client.patch(
-            f"/api/record/{record}",
-            json={
-                "base_commit": head(client),
-                "fields": {"prs": refs},
-                "body": None,
-            },
-        )
-        assert written.status_code == 200, written.text
-
     got = measured_in(
         chrome(),
-        client.get(f"/detail/{TASK}?editor=ace").text,
+        naming_client.get(f"/detail/{TASK}?editor=ace").text,
         tmp_path / "prs.html",
         1400,
         _COMPLETING_A_PULL_REQUEST,
         query="?editor=ace",
-        patience=6800,
+        patience=8000,
     )
 
-    assert got["overProse"] is None, (
-        f"a word with no slash and no hash in it opened a popup: {got['overProse']}"
+    assert got["overProse"] is None, f"prose opened a popup: {got['overProse']}"
+    assert got["overHeading"] is None, f"a heading opened a popup: {got['overHeading']}"
+    assert got["onRepo"] == ["griddle/griddle#"], got["onRepo"]
+    assert got["tookRepo"]["took"] and got["tookRepo"]["line"] == "griddle/griddle#", (
+        got["tookRepo"]
     )
-    assert got["onRepo"] == ["griddle/griddle#", "griddle/griddle#1877"], got["onRepo"]
-    assert got["tookRepo"] and got["afterRepo"]["line"] == "See griddle/griddle#", (
-        f"taking the bare repository wrote something else: {got['afterRepo']}"
+    assert got["numbered"] == ["griddle/griddle#1877"], got["numbered"]
+    assert got["tookRef"] == {"took": True, "line": "griddle/griddle#1877", "list": None}, (
+        got["tookRef"]
     )
-    assert got["afterRepo"]["list"], (
-        "the popup closed on half a reference, so the number it left to be typed "
-        "has to be remembered rather than chosen"
+    assert got["other"] == ["kilnlab/kiln4py#1403"], got["other"]
+    assert got["tookOther"]["line"].endswith(" and kilnlab/kiln4py#1403"), got["tookOther"]
+    assert got["pasted"] == ["griddle/griddle#12"], got["pasted"]
+    assert got["tookPasted"]["line"].endswith(" and griddle/griddle#12"), (
+        f"the link was not replaced by the reference it names: {got['tookPasted']}"
     )
-    assert got["narrowed"] == ["griddle/griddle#1877"], got["narrowed"]
-    assert got["tookRef"] and got["afterRef"] == {
-        "line": "See griddle/griddle#1877",
-        "list": None,
-    }, got["afterRef"]
-    # The bare `org/repo#` leads, because `kiln4py#` is a substring of it too —
-    # and it is the entry that is worth the most when the number is the part
-    # nobody has memorised.
-    assert got["other"] == [
-        "kilnlab/kiln4py#",
-        "kilnlab/kiln4py#1521",
-        "kilnlab/kiln4py#1403",
-    ], f"the other repository's references are not offered: {got['other']}"
 
 
-_WIDENING = """
+_REFERENCES = """
 (async () => {
-  const values = () => SUGGEST.prs.map(one => one.value);
-  const before = values();
+  const before = {prs: SUGGEST.prs.map(one => one.value), repos: SUGGEST.repos};
   widenPullRequests();
   // The fetch and its three `.then`s are microtasks; the shim's clock is not
   // involved, so draining the queue is what waiting means here.
   for (let i = 0; i < 30; i++) await Promise.resolve();
-  const after = values();
-  // And asking again asks nothing: one page, one call.
   widenPullRequests();
   for (let i = 0; i < 30; i++) await Promise.resolve();
-  return {before, after, again: values(),
-          labels: Object.fromEntries(SUGGEST.prs.map(one => [one.value, one.label])),
-          live: SUGGEST.live};
+  const asked = q => referencesFor(q)
+    .map(one => (one.label ? one.value + ' ' + one.label : one.value));
+  const queries = ['', 'kiln4py 1521', 'kiln 15', 'griddle', 'carry', '#1877', '1877', '#1', '#',
+    'https://github.com/kilnlab/kiln4py/pull/77/files', 'https://github.com/acme/widgets/issues/3',
+    'acme/widgets#3', 'acme/widgets', 'kilnlab/kiln4py#'];
+  return {before, live: SUGGEST.live, open: OPEN_REFS.length,
+          said: Object.fromEntries(queries.map(q => [q, asked(q)]))};
 })()
 """
 
 
-def test_the_page_widens_its_pull_requests_with_what_is_open_now(client: TestClient):
-    """jcanton, 2026-08-25: "would it be possible to have a page connect to the
-    network to get the actual list of PRs from the repos?"
+def test_a_reference_is_completed_from_the_plans_repositories(naming_client: TestClient):
+    """jcanton, 2026-11-11, on a box that worked "in a middle-ground kind of way
+    that is not intuitive": it offered references other records already cite,
+    a pasted URL did not match the `C2SM/icon4py#` it suggested, and a knowledge
+    base page somebody had put in `prs:` came back as a suggestion.
 
-    The page still connects to nothing but this server — `/api/prs` is
-    same-origin and the server is what talks to GitHub. What this asserts is the
-    fold: the list the corpus gave the page grows, in place, so a popup opened
-    before the answer landed reads the wider list on the next keystroke without
-    being handed it.
-
-    **Order is the argument.** A reference some record already cites is one this
-    plan has a reason to mention again, so it keeps its place and only gains the
-    title it never had; everything else is appended, and the filter runs over the
-    whole list. And a bare `owner/repo#` is put at the front for a repository the
-    corpus has never cited, because that is the half nobody has memorised.
-
-    One call per page: the second ask returns without touching the network, which
-    the single scripted reply is what proves — a second fetch would find none.
+    So the vocabulary is the plan's `repositories:`, a word of digits is the
+    number, every other word has to find the repository or an open title, and a
+    GitHub link is the reference it names. A repository not listed is offered
+    only when it is typed in full. `/api/prs` widens it with titles, once per
+    page — the single scripted reply is what proves the second ask asks nothing.
     """
     from test_injection import run_js
 
-    cited = client.patch(
+    cited = naming_client.patch(
         f"/api/record/{TASK}",
         json={
-            "base_commit": head(client),
-            "fields": {"prs": ["kilnlab/kiln4py#1403"]},
+            "base_commit": head(naming_client),
+            "fields": {"prs": ["kilnlab/kiln4py#1403", "https://example.org/a/page"]},
             "body": None,
         },
     )
     assert cited.status_code == 200, cited.text
 
     got = run_js(
-        client.get(f"/detail/{TASK}{PLAIN}").text,
-        _WIDENING,
+        naming_client.get(f"/detail/{TASK}{PLAIN}").text,
+        _REFERENCES,
         page=True,
         replies=[
             {
                 "status": 200,
                 "json": {
                     "prs": [
-                        {"value": "kilnlab/kiln4py#1403", "label": "The one already cited"},
-                        {"value": "kilnlab/kiln4py#1521", "label": "Open and never mentioned"},
-                        {"value": "griddle/griddle#1877", "label": "In a repository nobody cited"},
+                        {"value": "kilnlab/kiln4py#1521", "label": "PR · Halo exchange"},
+                        {"value": "griddle/griddle#1877", "label": "issue · Scan carry"},
                     ],
                     "stale": False,
                 },
@@ -9040,24 +9877,43 @@ def test_the_page_widens_its_pull_requests_with_what_is_open_now(client: TestCli
     )
     assert not got["errors"], got["errors"]
     answer = got["value"]
+    said = answer["said"]
 
     assert answer["live"] is True, "the served page does not know it has a server"
-    assert "kilnlab/kiln4py#1403" in answer["before"], "the corpus's own list is missing"
-    assert "kilnlab/kiln4py#1521" not in answer["before"], (
-        "this test cannot show a widening: the corpus already had the open one"
+    assert answer["before"] == {
+        "prs": ["kilnlab/kiln4py#", "griddle/griddle#"],
+        "repos": ["kilnlab/kiln4py", "griddle/griddle"],
+    }, f"something the corpus cites is offered: {answer['before']}"
+    assert answer["open"] == 2, "asking twice folded the same list in twice"
+    assert said[""] == [
+        "kilnlab/kiln4py# pull request or issue",
+        "griddle/griddle# pull request or issue",
+        "kilnlab/kiln4py#1521 PR · Halo exchange",
+        "griddle/griddle#1877 issue · Scan carry",
+    ], said[""]
+    assert said["kiln4py 1521"] == ["kilnlab/kiln4py#1521 PR · Halo exchange"]
+    # A number nothing is known about is written all the same: merged work is
+    # cited as often as open work, and it is never in the open list.
+    assert said["kiln 15"] == ["kilnlab/kiln4py#15", "kilnlab/kiln4py#1521 PR · Halo exchange"]
+    assert said["griddle"] == [
+        "griddle/griddle# pull request or issue",
+        "griddle/griddle#1877 issue · Scan carry",
+    ]
+    assert said["carry"] == ["griddle/griddle#1877 issue · Scan carry"]
+    numbered = ["kilnlab/kiln4py#1877", "griddle/griddle#1877 issue · Scan carry"]
+    assert said["#1877"] == numbered and said["1877"] == numbered, said
+    # Too little to search for: a lone `#1` is prose, and `#` a heading.
+    assert said["#1"] == said["#"] == []
+    assert said["https://github.com/kilnlab/kiln4py/pull/77/files"] == ["kilnlab/kiln4py#77"]
+    assert said["https://github.com/acme/widgets/issues/3"] == ["acme/widgets#3"]
+    assert said["acme/widgets#3"] == ["acme/widgets#3"], (
+        "a repository not listed, typed in full, is refused"
     )
-    for value in ("kilnlab/kiln4py#1403", "kilnlab/kiln4py#1521", "griddle/griddle#1877"):
-        assert value in answer["after"], f"{value} is not offered: {answer['after']}"
-    # The cited one keeps its place at the front and gains the title it never had.
-    assert answer["after"].index("kilnlab/kiln4py#1403") < answer["after"].index(
-        "kilnlab/kiln4py#1521"
-    ), answer["after"]
-    assert answer["labels"]["kilnlab/kiln4py#1403"] == "The one already cited"
-    # And the repository nobody cited is offered bare, so the number can be typed.
-    assert "griddle/griddle#" in answer["after"], answer["after"]
-    assert answer["labels"]["griddle/griddle#"] == "any pull request"
-    assert answer["again"] == answer["after"], (
-        "asking twice asked GitHub twice, or folded the same list in again"
+    assert said["acme/widgets"] == [], (
+        "a repository not listed is offered before it is typed in full"
+    )
+    assert said["kilnlab/kiln4py#"] == ["kilnlab/kiln4py#1521 PR · Halo exchange"], (
+        "the half reference already in the box is offered again, so Enter does nothing"
     )
 
 
@@ -9338,6 +10194,30 @@ def _until(call, expression: str, seconds: float = 20) -> object:
             return value
         time.sleep(0.25)
     raise AssertionError(f"never became true within {seconds}s: {expression}")
+
+
+SAVED = (
+    "/^drawings\\/draw-[0-9a-f]{6}\\.png saved$/"
+    ".test(document.getElementById('draw-said').textContent)"
+)
+
+
+def _saved_and_closed(call, seconds: float = 20) -> None:
+    """Save, wait for the popup's own bar to say it landed, then Close. Save
+    leaves the drawing open since jcanton asked for it to on 2026-10-20, so the
+    tests that drove a save and waited for the popup to vanish now wait for the
+    sentence instead — and Close straight after a save must close outright,
+    with no unsaved-strokes question, or the save did not reset the baseline."""
+    _evaluated(call, "document.getElementById('draw-save').click()")
+    try:
+        _until(call, SAVED, seconds=seconds)
+    except AssertionError:
+        said = _evaluated(call, "document.getElementById('draw-said').textContent")
+        raise AssertionError(f"the save did not land: {said!r}") from None
+    _evaluated(call, "document.getElementById('draw-close').click()")
+    assert _until(call, "!document.querySelector('.drawpopup')"), (
+        "Close straight after a save did not close the popup"
+    )
 
 
 def _png_text_chunks(data: bytes) -> dict[bytes, bytes]:
@@ -9655,6 +10535,232 @@ def test_the_drawing_popup_takes_the_whole_page_and_remembers_that_it_did(
         )
 
 
+# The record editor's full-page toggle, pressed, measured, and left by Escape.
+#
+# Escape is dispatched at the element a keystroke really arrives at — Ace's own
+# hidden input, or the plain box — and not at the page's listener, because which
+# element that listener was on is exactly the defect this caught on Ace.
+_WHOLE_PAGE = """
+if (typeof flipEditing === 'function') flipEditing();
+const segment = document.getElementById('view-edit');
+if (segment.getAttribute('aria-pressed') !== 'true') segment.click();
+await new Promise(go => setTimeout(go, 150));
+const article = document.querySelector('article.record');
+const toggle = document.getElementById('editor-size');
+const drawn = el => !!el && el.getClientRects().length > 0;
+const into = SURFACE.el.matches('textarea') ? SURFACE.el : SURFACE.el.querySelector('textarea');
+const escape = async () => {
+  into.focus();
+  into.dispatchEvent(
+    new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+  await new Promise(go => setTimeout(go, 150));
+};
+const state = () => {
+  const box = article.getBoundingClientRect();
+  const writing = SURFACE.el.getBoundingClientRect();
+  const foot = document.getElementById('statusbar').getBoundingClientRect();
+  const nav = document.querySelector('nav');
+  // What is on top where the nav is drawn, which is the question an overlay
+  // answers or does not: a class and a `position` can both be right while the
+  // box paints under the page it was meant to cover.
+  const navBox = nav.getBoundingClientRect();
+  const over = document.elementFromPoint(navBox.left + 4, navBox.top + navBox.height / 2);
+  return {
+    whole: article.classList.contains('whole-page'),
+    view: VIEW,
+    position: getComputedStyle(article).position,
+    covers: [box.left, box.top, box.width, box.height].map(Math.round).join(' ')
+      === [0, 0, innerWidth, innerHeight].join(' '),
+    overNav: !!over && article.contains(over),
+    says: toggle.getAttribute('aria-label'),
+    titled: toggle.title,
+    words: toggle.textContent.trim(),
+    drawings: toggle.querySelectorAll('svg path').length,
+    marks: drawn(document.getElementById('marks')),
+    save: drawn(document.querySelector('.toolrow')),
+    title: drawn(article.querySelector('h1')),
+    facts: drawn(article.querySelector('.facts')),
+    grip: drawn(document.getElementById('grip')),
+    rows: Math.round(writing.height / 20),
+    writingFits: writing.top >= 0 && foot.bottom <= innerHeight + 1,
+    inert: ['nav', 'footer'].map(name => document.querySelector(name).inert),
+    scrolls: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+  };
+};
+const out = {before: state()};
+toggle.click();
+await new Promise(go => setTimeout(go, 150));
+out.whole = state();
+out.focused = into === document.activeElement;
+await escape();
+out.firstEscape = state();
+// The create form has no read view for a second press to land on.
+if (LANDING) await escape();
+out.secondEscape = state();
+// And the read view takes it off on its own, since the bar it lives in is gone.
+if (typeof flipEditing === 'function') flipEditing();
+if (segment.getAttribute('aria-pressed') !== 'true') segment.click();
+await new Promise(go => setTimeout(go, 150));
+toggle.click();
+await new Promise(go => setTimeout(go, 150));
+document.getElementById('view-both').click();
+await new Promise(go => setTimeout(go, 200));
+out.split = state();
+document.getElementById('preview').click();
+await new Promise(go => setTimeout(go, 150));
+out.read = state();
+return out;
+"""
+
+
+@pytest.mark.parametrize("surface", ["", PLAIN])
+@pytest.mark.parametrize("where", ["detail", "new"])
+def test_the_editor_takes_the_whole_page_and_escape_gives_it_back(
+    client: TestClient, tmp_path: Path, where: str, surface: str
+):
+    """jcanton, 2026-09-25: "can we add a full screen button similar to that of
+    the excalidraw drawing pane? next to the other editor buttons on the bar with
+    bold etc. the buttons bar stays visible in full screen". Asked, and answered:
+    the Save row stays too, it is not remembered, and the create form has it.
+
+    Full page as the drawing's is, and asked of the pixels the way that test asks:
+    the article covers the window and is what is hit where the nav was drawn, the
+    two bars and the writing box are drawn and fit, and the title, the fields and
+    the width grip are not. The nav and the footer are behind an opaque box, so
+    they leave the tab order with it.
+
+    **Escape is two presses, and the second is the regression.** The first leaves
+    full page and stays in the session. The second leaves the session, which on
+    Ace it never did: the page listened for the editor's Escape on the hidden
+    textarea while Ace dispatched it on its host, so Ace opened the Tab hatch and
+    stayed in `edit`. Two surfaces, because one of them passed with that defect in
+    place. The create form has no read view to land on, so its second press is not
+    asked about.
+
+    Leaving for the read view takes it off without a press — the bar it lives in
+    is not drawn there — and the split keeps it.
+    """
+    path = f"/detail/{TASK}{surface}" if where == "detail" else f"/new{surface}"
+    got = measured_in(
+        chrome(), client.get(path).text, tmp_path / f"whole-{where}.html", 1200,
+        _WHOLE_PAGE, height=800, patience=3000,
+    )
+
+    before = got["before"]
+    assert not before["whole"] and before["position"] == "relative", (
+        f"the editor opened at full page, which is the surface taken out on 2026-08-24: {before}"
+    )
+    assert before["marks"] and before["title"] and not before["inert"][0]
+    assert before["words"] == "" and before["drawings"] == 4, (
+        f"the toggle is not the drawing's four brackets and no words: {before}"
+    )
+    assert before["says"] == "Full page" and before["titled"] == "Full page"
+
+    whole = got["whole"]
+    assert whole["whole"] and whole["covers"], f"full page does not cover the window: {whole}"
+    assert whole["overNav"], "the box is drawn under the nav it was meant to cover"
+    assert whole["marks"], "the formatting bar went with the page; it was asked to stay"
+    assert whole["save"], "the Save row went, and with it the only sign of what is unsaved"
+    assert not whole["title"] and not whole["facts"], (
+        f"the header or the fields are still drawn at full page: {whole}"
+    )
+    assert not whole["grip"], "the width grip is drawn over a box whose width it cannot set"
+    assert whole["writingFits"] and whole["rows"] >= 25, (
+        f"the writing box does not fill the window below the bars: {whole}"
+    )
+    assert whole["scrolls"] == 0, f"the document scrolls {whole['scrolls']}px at full page"
+    assert whole["inert"] == [True, True], "the nav or the footer is still in the tab order"
+    assert whole["says"] == "Smaller" and whole["drawings"] == 4
+    assert got["focused"], "the toggle kept the keyboard; the press was made to write"
+
+    first = got["firstEscape"]
+    assert not first["whole"] and first["view"] == "edit", (
+        f"the first Escape did not give the page back, or left the session with it: {first}"
+    )
+    assert first["inert"] == [False, False] and first["says"] == "Full page"
+    if where == "detail":
+        assert got["secondEscape"]["view"] == "view", (
+            f"the second Escape did not leave the session on {surface or 'Ace'}: "
+            f"{got['secondEscape']}"
+        )
+
+    assert got["split"]["whole"] and got["split"]["view"] == "both", (
+        f"the split view dropped full page: {got['split']}"
+    )
+    assert not got["read"]["whole"] and got["read"]["inert"] == [False, False], (
+        f"the read view kept full page, with no bar to leave it by: {got['read']}"
+    )
+
+
+_WHOLE_PAGE_UNDER_VIM = """
+flipEditing();
+await new Promise(go => setTimeout(go, 300));
+const keymap = [...document.querySelectorAll('#statusbar button')]
+  .find(b => b.textContent.startsWith('Keymap'));
+keymap.click();
+await new Promise(go => setTimeout(go, 150));
+const toggle = document.getElementById('editor-size');
+toggle.click();
+await new Promise(go => setTimeout(go, 150));
+const input = SURFACE.el.querySelector('textarea');
+const state = () => ({
+  keymap: EDITOR.keymap,
+  whole: document.querySelector('article.record').classList.contains('whole-page'),
+  view: VIEW,
+});
+input.focus();
+for (let at = 0; at < 3; at++) {
+  input.dispatchEvent(new KeyboardEvent('keydown',
+    {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true}));
+  await new Promise(go => setTimeout(go, 80));
+}
+const escaped = state();
+toggle.click();
+await new Promise(go => setTimeout(go, 150));
+return {escaped, pressed: state()};
+"""
+
+
+def test_escape_under_vim_leaves_neither_full_page_nor_the_session(
+    client: TestClient, tmp_path: Path
+):
+    """Vim owns Escape. Its insert mode takes the key before the page sees it; its
+    normal mode does not, and Escape pressed in normal mode is a reflex — it
+    cancels a half-typed command or just makes sure. With the page answering
+    those, every reflex press threw a vim writer out of full page and then out of
+    the session: `test_a_vim_yank_reaches_the_system_clipboard` found itself on
+    the read view, yanking nothing, the first time the page's Escape reached Ace.
+
+    Three presses, because the first puts vim in normal mode and the next two are
+    the ones a normal-mode hand makes. The button is how full page ends here, and
+    it still does.
+    """
+    got = measured_in(
+        chrome(), client.get(f"/detail/{TASK}").text, tmp_path / "whole-vim.html", 1200,
+        _WHOLE_PAGE_UNDER_VIM, height=800, patience=2500,
+    )
+    assert got["escaped"]["keymap"] == "vim", f"vim never came on: {got}"
+    assert got["escaped"]["whole"] and got["escaped"]["view"] == "edit", (
+        f"Escape under vim left full page or the session: {got['escaped']}"
+    )
+    assert not got["pressed"]["whole"], "and the button no longer gives the page back"
+
+
+def test_the_full_page_toggle_is_on_the_record_editor_and_not_the_slide_editor(
+    client: TestClient,
+):
+    """"Only on the /details page", and then yes to the create form too. The slide
+    editor at `?view=slide` is the same address and a different editor, and it has
+    no toggle: its markup is its own and carries none."""
+
+    def toggles(path: str) -> list:
+        return [e for e in elements(client.get(path).text) if e.attrs.get("id") == "editor-size"]
+
+    assert len(toggles(f"/detail/{TASK}")) == 1
+    assert len(toggles("/new")) == 1
+    assert toggles(f"/detail/{TASK}?view=slide") == []
+
+
 def test_a_drawing_is_created_reopened_and_a_resave_touches_no_markdown(
     live_server: str,  # noqa: F811 — a fixture, shadowing its own import by design
     tmp_path: Path,
@@ -9693,10 +10799,7 @@ def test_a_drawing_is_created_reopened_and_a_resave_touches_no_markdown(
         original_body = _evaluated(call, "SURFACE.text()")
         assert "drawings/draw-" not in original_body, "the body already named a drawing"
 
-        _evaluated(call, "document.getElementById('draw-save').click()")
-        assert _until(call, "!document.querySelector('.drawpopup')"), (
-            "the popup did not close itself after a successful save"
-        )
+        _saved_and_closed(call)
         after_create = _evaluated(call, "SURFACE.text()")
         match = re.search(r"draw-[0-9a-f]{6}", after_create)
         assert match, f"no drawing id landed in the body: {after_create!r}"
@@ -9790,6 +10893,127 @@ def test_a_drawing_is_created_reopened_and_a_resave_touches_no_markdown(
         assert not [line for line in said if "Content Security Policy" in line], said
 
 
+def test_save_keeps_the_drawing_open_and_saving_again_rewrites_the_same_file(
+    live_server: str,  # noqa: F811 — a fixture, shadowing its own import by design
+    tmp_path: Path,
+):
+    """jcanton, 2026-10-20: "clicking 'save' on an excalidraw drawing closes the
+    drawing and goes back to the record. can we only make it save instead?"
+
+    Save is a checkpoint now, and staying open is the easy half. The four
+    things that come with it are what this walks, each of which the old
+    close-on-save made unreachable:
+
+    1. a double press on a NEW drawing posts once — two POSTs would be two
+       files and two embeds spliced at the caret;
+    2. "saved" is said inside the popup, where it can be seen, and not only in
+       `#state`, which is under the overlay;
+    3. a second save from the same popup rewrites the file the first one made —
+       a PUT, splicing nothing — rather than minting a second drawing;
+    4. "saved" goes away at the next stroke, the keyboard goes back into the
+       drawing, and Close straight after a save asks nothing, because what was
+       saved is the new baseline.
+    """
+    url = f"{live_server}/detail/{TASK}?both"
+    with _devtools(chrome(), url, tmp_path / "profile", DRAWING_WINDOW) as (call, said):
+        time.sleep(2)
+        _evaluated(call, "document.getElementById('drawing').click()")
+        _evaluated(call, "document.querySelector('.drawmenu button').click()")
+        _until(call, "!!document.querySelector('.drawpopup .excalidraw')")
+        _evaluated(call, "document.querySelector('[data-testid=\"toolbar-rectangle\"]').click()")
+        _drag(call, *FIRST_SHAPE)
+        time.sleep(0.2)
+        original_body = _evaluated(call, "SURFACE.text()")
+
+        _evaluated(
+            call,
+            "document.getElementById('draw-save').click();"
+            "document.getElementById('draw-save').click();",
+        )
+        _until(call, SAVED)
+        stayed = _evaluated(
+            call,
+            """
+        (() => {
+          const line = document.getElementById('draw-said');
+          const box = line.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          return {
+            open: !!document.querySelector('.drawpopup .excalidraw'),
+            seen: box.width > 0 && hit === line,
+            saveUsable: !document.getElementById('draw-save').disabled,
+            label: document.querySelector('.drawpopup').getAttribute('aria-label'),
+          };
+        })()
+        """,
+        )
+        body = _evaluated(call, "SURFACE.text()")
+        embeds = re.findall(r"drawings/(draw-[0-9a-f]{6})\.png", body)
+        assert len(embeds) == 1, f"one double-pressed Save spliced {len(embeds)} embeds: {body!r}"
+        drawing_id = embeds[0]
+        assert body == f"![](drawings/{drawing_id}.png){original_body}", body
+        assert stayed == {
+            "open": True,
+            "seen": True,
+            "saveUsable": True,
+            "label": f"Editing {drawing_id}",
+        }, stayed
+
+        _evaluated(call, "document.querySelector('[data-testid=\"toolbar-ellipse\"]').click()")
+        _drag(call, *SECOND_SHAPE)
+        assert _until(call, "document.getElementById('draw-said').textContent === ''"), (
+            "the popup went on saying 'saved' over a stroke that was not"
+        )
+
+        # Pressed for real this time, not with `.click()`: only a trusted press
+        # puts the keyboard on Save, and handing it back to the drawing is the
+        # point of saving mid-drawing. It is also what found `api.focusContainer`
+        # did not exist — every `.click()` left focus where it already was.
+        x, y = _evaluated(
+            call,
+            "(() => { const b = document.getElementById('draw-save').getBoundingClientRect();"
+            " return [b.left + b.width / 2, b.top + b.height / 2]; })()",
+        )
+        for kind, buttons in (("mousePressed", 1), ("mouseReleased", 0)):
+            call(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": kind,
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "buttons": buttons,
+                    "clickCount": 1,
+                },
+            )
+        _until(call, SAVED)
+        assert _evaluated(
+            call, "!!(document.activeElement && document.activeElement.closest('.excalidraw'))"
+        ), "a save left the keyboard on Save rather than handing it back to the drawing"
+        assert _evaluated(call, "SURFACE.text()") == body, (
+            "the second save from the same popup touched the markdown — it minted a "
+            "new drawing instead of rewriting the one the first save made"
+        )
+        round_trip = _evaluated(
+            call,
+            f"""
+        (async () => {{
+          const blob = await (await fetch('/drawings/{drawing_id}.png')).blob();
+          const loaded = await EXCALIDRAW.loadSceneOrLibraryFromBlob(blob, null, null);
+          return loaded.data.elements.map(e => e.type);
+        }})()
+        """,
+        )
+        assert round_trip == ["rectangle", "ellipse"], round_trip
+
+        _evaluated(call, "document.getElementById('draw-close').click()")
+        assert _evaluated(call, "!document.querySelector('.drawpopup')"), (
+            "Close straight after a save asked about unsaved strokes — the save "
+            "did not become the baseline"
+        )
+        assert not [line for line in said if "Content Security Policy" in line], said
+
+
 def test_a_stale_save_is_refused_and_the_popup_keeps_the_work(
     live_server: str,  # noqa: F811 — a fixture, shadowing its own import by design
     tmp_path: Path,
@@ -9814,8 +11038,7 @@ def test_a_stale_save_is_refused_and_the_popup_keeps_the_work(
         _evaluated(call, "document.querySelector('[data-testid=\"toolbar-rectangle\"]').click()")
         _drag(call, *FIRST_SHAPE)
         time.sleep(0.2)
-        _evaluated(call, "document.getElementById('draw-save').click()")
-        assert _until(call, "!document.querySelector('.drawpopup')")
+        _saved_and_closed(call)
 
         body = _evaluated(call, "SURFACE.text()")
         drawing_id = re.search(r"draw-[0-9a-f]{6}", body).group(0)
@@ -9921,10 +11144,7 @@ def test_closing_unsaved_strokes_asks_first_and_keep_drawing_preserves_them(
         )
         assert backed_out == {"popupThere": True, "asking": False, "saveHidden": False}, backed_out
 
-        _evaluated(call, "document.getElementById('draw-save').click()")
-        assert _until(call, "!document.querySelector('.drawpopup')"), (
-            "keep drawing left the popup unable to save cleanly afterward"
-        )
+        _saved_and_closed(call)
         body = _evaluated(call, "SURFACE.text()")
         match = re.search(r"draw-[0-9a-f]{6}", body)
         assert match, f"no drawing id landed in the body: {body!r}"
@@ -10294,19 +11514,9 @@ def test_a_dropped_image_is_resized_and_saved_into_the_drawing(
         )
 
         # And the round trip, through the seam a person presses.
-        _evaluated(call, "document.getElementById('draw-save').click()")
-        try:
-            _until(call, "!document.querySelector('.drawpopup')", seconds=30)
-        except AssertionError:
-            # The popup staying open IS the refusal on this page, and the
-            # sentence it refused with is in the commit bar — read out here
-            # rather than left for somebody to go and find after a bare "the
-            # popup did not close". `MAX_DRAWING_BYTES` is the one this would
-            # most likely be.
-            said_so = _evaluated(call, "document.getElementById('upload').textContent")
-            raise AssertionError(
-                f"the save of the dropped {kind} was refused: {said_so!r}"
-            ) from None
+        # A refusal is read out by the helper rather than left for somebody to
+        # go and find; `MAX_DRAWING_BYTES` is the one this would most likely be.
+        _saved_and_closed(call, seconds=30)
         body = _evaluated(call, "SURFACE.text()")
         match = re.search(r"draw-[0-9a-f]{6}", body)
         assert match, f"no drawing id landed in the body: {body[:120]!r}"
@@ -10370,8 +11580,7 @@ def test_resaving_a_drawing_refreshes_the_picture_beside_the_writing(
         _evaluated(call, "document.querySelector('[data-testid=\"toolbar-rectangle\"]').click()")
         _drag(call, *FIRST_SHAPE)
         time.sleep(0.2)
-        _evaluated(call, "document.getElementById('draw-save').click()")
-        _until(call, "!document.querySelector('.drawpopup')")
+        _saved_and_closed(call)
 
         # The preview has to have DRAWN the picture before anything can be said
         # about it changing — `complete` alone is true for an image that failed,
@@ -10388,8 +11597,7 @@ def test_resaving_a_drawing_refreshes_the_picture_beside_the_writing(
         _evaluated(call, "document.querySelector('[data-testid=\"toolbar-ellipse\"]').click()")
         _drag(call, *SECOND_SHAPE)
         time.sleep(0.2)
-        _evaluated(call, "document.getElementById('draw-save').click()")
-        _until(call, "!document.querySelector('.drawpopup')")
+        _saved_and_closed(call)
 
         # The body is untouched, which is the whole reason this bug existed: if
         # a re-save ever starts splicing, the preview refreshes for a different
@@ -10457,6 +11665,181 @@ _VIM_WALKS = r"""
   out.screenAfterJ = editor.session.documentToScreenPosition(after.row, after.column).row;
   return out;
 """
+
+
+# A document with one of everything the editor colours, a Python fence in the
+# middle, and markdown after it — the line that says the fence CLOSED.
+_COLOURED_DOC = "\n".join([
+    "# A heading",
+    "- [ ] a point with `code` and **bold** and a [link](https://example.com)",
+    "```python",
+    "def go(units=1):",
+    "    return Quantity(MAX_N, units=units).run()",
+    "```",
+    "**after the fence**",
+    "<!-- a comment -->",
+])
+
+_COLOURED = (
+    f"const DOC = {json.dumps(_COLOURED_DOC)};"
+    + r"""
+  flipEditing();
+  await new Promise(r => setTimeout(r, 300));
+  const editor = SURFACE.editor;
+  editor.session.setValue(DOC);
+  editor.renderer.$loop._flush();
+  await new Promise(r => setTimeout(r, 200));
+  const rows = [];
+  for (let row = 0; row < editor.session.getLength(); row++) {
+    rows.push(editor.session.getTokens(row)
+      .filter(token => token.value.trim())
+      .map(token => [token.type, token.value.trim()]));
+  }
+  // What a role resolves to on this page, off an element of our own, so the
+  // comparison is between two computed colours and not between two spellings.
+  const role = name => {
+    const probe = document.createElement('span');
+    probe.style.color = `var(${name})`;
+    document.body.append(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  };
+  const drawn = selector => {
+    const found = document.querySelector('.ace_editor ' + selector);
+    return found ? getComputedStyle(found).color : null;
+  };
+  return {
+    rows,
+    drawn: {heading: drawn('.ace_heading'), list: drawn('.ace_list'),
+            code: drawn('.ace_md-code'), type: drawn('.ace_support.ace_type'),
+            keyword: drawn('.ace_keyword'), fence: drawn('.ace_md-fence')},
+    roles: {heading: role('--code-function'), list: role('--code-name'),
+            code: role('--code-string'), type: role('--code-type'),
+            keyword: role('--code-keyword'), fence: role('--muted')},
+  };
+"""
+)
+
+
+def test_the_editor_colours_a_document_and_the_python_in_it(client: TestClient, tmp_path: Path):
+    """jcanton, 2026-09-24, beside the same record in LazyVim: the editor pane drew
+    a shaping document in one colour. It has a markdown mode now, and the three
+    fence languages the plan uses come from Ace's own modes.
+
+    Asked two ways, because each misses what the other catches. The TOKENS say
+    what the tokenizer decided — including the line after the fence, which is
+    markdown again only if the closing fence was seen, and the four Python shapes
+    the preview's `_PythonShapes` draws too. The COLOURS say whether Ace's own
+    TextMate theme, injected into the head in hex, lost the cascade to the roles:
+    a token with the right name drawn in `rgb(12, 7, 255)` is the defect a reader
+    sees and a token list cannot.
+    """
+    page = client.get(f"/detail/{TASK}?editor=ace").text
+    got = measured_in(
+        chrome(), page, tmp_path / "coloured.html", 1400, _COLOURED,
+        query="?editor=ace", patience=4800,
+    )
+    rows = [dict((value, kind) for kind, value in row) for row in got["rows"]]
+    assert rows[0] == {"# A heading": "heading"}, rows[0]
+    assert rows[1]["-"] == "list" and rows[1]["[ ]"] == "list", rows[1]
+    assert rows[1]["`code`"] == "md-code" and rows[1]["**bold**"] == "md-bold", rows[1]
+    assert rows[1]["link"] == "md-link-text" and rows[1]["https://example.com"] == "md-url"
+    assert rows[2] == {"```python": "md-fence"}, "the fence did not open a Python block"
+    assert rows[3]["def"] == "keyword" and rows[3]["units"] == "variable.parameter", rows[3]
+    shapes = rows[4]
+    assert shapes["Quantity"] == "support.type", f"CapWords is a type: {shapes}"
+    assert shapes["MAX_N"] == "constant.other", f"ALL_CAPS is a constant: {shapes}"
+    # `units=units`: the name before `=` is the argument, the one after it is a
+    # plain name and stays ink — both, in that order.
+    pairs = got["rows"][4]
+    assert pairs.index(["variable.parameter", "units"]) < pairs.index(["identifier", "units"]), (
+        f"a keyword argument and the name it is given: {pairs}"
+    )
+    assert shapes["run"] == "entity.name.function", f"a call: {shapes}"
+    assert rows[5] == {"```": "md-fence"}, rows[5]
+    assert rows[6] == {"**after the fence**": "md-bold"}, (
+        "the line after the closing fence is still Python, so the fence never closed"
+    )
+    assert rows[7] == {"<!-- a comment -->": "md-comment"}, rows[7]
+
+    for name, colour in got["drawn"].items():
+        assert colour == got["roles"][name], (
+            f"the editor draws a {name} in {colour} and its role is {got['roles'][name]}: "
+            "Ace's own theme won the cascade"
+        )
+
+
+# One of each thing the editor colours outside a fence, in source.
+_WORN_DOC = "\n".join([
+    "# A heading",
+    "- a point with `code`, **bold**, *italic* and a [link](https://example.com)",
+    "> a quote",
+    "",
+    "~~gone~~",
+])
+
+_WORN = (
+    f"const DOC = {json.dumps(_WORN_DOC)}; const HTML = {json.dumps(preview_html(_WORN_DOC))};"
+    + r"""
+  flipEditing();
+  await new Promise(r => setTimeout(r, 300));
+  const editor = SURFACE.editor;
+  editor.session.setValue(DOC);
+  editor.renderer.$loop._flush();
+  await new Promise(r => setTimeout(r, 200));
+  // The same document rendered by the preview's own renderer, put where the
+  // two rendered surfaces draw a body: the read view and the preview pane.
+  const boxes = {read: document.querySelector('.doc.read'),
+                 preview: document.getElementById('body-preview')};
+  for (const box of Object.values(boxes)) box.innerHTML = HTML;
+  const PAIRS = {heading: ['.ace_heading', 'h1, h2, h3'], list: ['.ace_list', 'li', '::marker'],
+                 code: ['.ace_md-code', 'code'], bold: ['.ace_md-bold', 'strong'],
+                 italic: ['.ace_md-italic', 'em'], link: ['.ace_md-link-text', 'a'],
+                 quote: ['.ace_md-quote', 'blockquote'], strike: ['.ace_md-strike', 's, del']};
+  const colour = (found, pseudo) => found ? getComputedStyle(found, pseudo || null).color : null;
+  const out = {ink: colour(boxes.read), editor: {}};
+  for (const [name, [token]] of Object.entries(PAIRS))
+    out.editor[name] = colour(document.querySelector('.ace_editor ' + token));
+  for (const [where, box] of Object.entries(boxes)) {
+    out[where] = {};
+    for (const [name, [, element, pseudo]] of Object.entries(PAIRS))
+      out[where][name] = colour(box.querySelector(element), pseudo);
+  }
+  return out;
+"""
+)
+
+
+def test_the_preview_draws_a_body_in_the_colours_the_editor_does(
+    client: TestClient, tmp_path: Path
+):
+    """jcanton, 2026-09-25: "now the editor colours syntax nicely, and the preview
+    does but only in the code blocks. can the preview use the same colours as the
+    editor?"
+
+    Asked as the claim he made, and not as "the preview resolves the right role".
+    Each rendered element is compared with the Ace token for the same markdown, in
+    the same page, so a role renamed on one side fails here. A preview that agrees
+    with the editor by both being ink passes that comparison too, so the heading
+    must also differ from the body's own ink. `.doc.read` and `#body-preview` are
+    both asked, because they are two elements and the rule has to name both.
+    """
+    page = client.get(f"/detail/{TASK}?editor=ace").text
+    got = measured_in(
+        chrome(), page, tmp_path / "worn.html", 1400, _WORN, query="?editor=ace", patience=4800
+    )
+    assert got["editor"]["heading"] != got["ink"], (
+        f"the editor draws a heading in the body's own ink, {got['ink']}, so agreeing "
+        "with it proves nothing"
+    )
+    for where in ("read", "preview"):
+        for name, drawn in got["editor"].items():
+            assert drawn, f"the editor drew no {name} token, so there is nothing to agree with"
+            assert got[where][name] == drawn, (
+                f"the {where} view draws a {name} in {got[where][name]} and the editor "
+                f"draws it in {drawn}"
+            )
 
 
 def test_j_and_k_walk_the_screen_line_under_vim(client: TestClient, tmp_path: Path):
@@ -10592,3 +11975,467 @@ def test_a_vim_yank_reaches_the_system_clipboard(client: TestClient, tmp_path: P
         f"deleting a line wrote to the clipboard as well: {got['afterDelete']}"
     )
     assert "beta" not in got["text"], "the delete did not happen, so it proves nothing"
+
+
+# --------------------------------------------------------------------------- #
+# The slide editor's commit bar — the record page's, not a third spelling
+# --------------------------------------------------------------------------- #
+
+_SLIDE_COMMIT_BAR = r"""
+const row = document.querySelector('.slideedit .toolrow');
+const bar = document.getElementById('commitbar');
+const unsaved = document.getElementById('unsaved');
+const save = document.getElementById('save');
+const reset = document.getElementById('reset');
+const heading = document.querySelector('.slideedit h1');
+const line = box => Math.round(box.getBoundingClientRect().top);
+const opened = {
+  said: unsaved.textContent, resetOff: reset.disabled, amber: bar.classList.contains('dirty'),
+};
+// One thing changed, through the control a person would use.
+document.getElementById('skip').click();
+await new Promise(resolve => setTimeout(resolve, 50));
+return {
+  inRow: !!(row && row.contains(bar) && row.contains(save) && row.contains(reset)),
+  // The bar and the switcher on one line, which is what `.toolrow` is for.
+  level: line(bar) === line(document.getElementById('views')),
+  // And the heading under both of them, not between them.
+  headingUnder: line(heading) > line(bar),
+  opened,
+  typed: {
+    said: unsaved.textContent, resetOff: reset.disabled,
+    amber: bar.classList.contains('dirty'),
+  },
+};
+"""
+
+
+def test_the_slide_editor_commits_in_the_bar_every_other_editor_commits_in(
+    client: TestClient, tmp_path: Path
+):
+    """One control, one spelling. This page had Save and Reset in a bare
+    `<p class="editbar">` on a row of their own under the meta line, with a hint
+    beside them and nothing that said whether anything was unsaved — a third
+    shape for a bar the record page and the cycle page had already settled on.
+    jcanton, 2026-09-21: "in this editor is a [save][reset] bar and buttons. not
+    uniform with the other views ... make the slide editing view conform to the
+    edit/side-by-side views in all aspects".
+
+    So the assertions are the record page's own facts about that bar: it is in
+    the `.toolrow` beside the view switcher, it is level with it, the heading is
+    below both, it counts what is unsaved, it goes amber when there is something
+    to lose, and Reset is dead until there is something to undo.
+
+    The count is driven rather than read: `#unsaved` says "Nothing changed yet"
+    in the markup, so a test that only looked at the rendered page would pass
+    with `dirty()` never wired to anything at all — which is precisely the state
+    this page was in, because `dirty()` existed and only `beforeunload` called it.
+    """
+    got = measured_in(
+        chrome(),
+        client.get(f"/detail/{TASK}?view=slide").text,
+        tmp_path / "slide-bar.html",
+        1400,
+        _SLIDE_COMMIT_BAR,
+        patience=3000,
+    )
+
+    assert got["inRow"], "Save, Reset and the count are not in the row the switcher is in"
+    assert got["level"], "the commit bar is not on the switcher's line"
+    assert got["headingUnder"], "the record's name is above the controls rather than below them"
+
+    assert got["opened"]["said"] == "Nothing changed yet"
+    assert got["opened"]["resetOff"], "Reset was live over nothing to undo"
+    assert not got["opened"]["amber"], "the bar warned about unsaved work before anything was typed"
+
+    assert got["typed"]["said"] == "1 unsaved change", got["typed"]["said"]
+    assert not got["typed"]["resetOff"], "Reset stayed dead over a change it could undo"
+    assert got["typed"]["amber"], "the bar did not say that closing the tab would lose something"
+
+
+_THE_EDITOR_ON_A_PHONE = """
+const rest = ms => new Promise(done => setTimeout(done, ms));
+for (let i = 0; i < 40 && !document.querySelector('#marks button'); i++) await rest(50);
+const rowsOf = box => new Set([...box.children]
+  .filter(el => el.getClientRects().length)
+  .map(el => Math.round(el.getBoundingClientRect().top))).size;
+const marks = document.getElementById('marks');
+const bar = document.querySelector('.statusbar');
+const wobbles = [...document.querySelectorAll('body *')].filter(el =>
+  /(auto|scroll)/.test(getComputedStyle(el).overflowX) && !el.closest('pre, .ace_editor')
+  && el.scrollWidth > el.clientWidth + 1).map(el => el.tagName + '.' + el.className);
+const drawing = document.getElementById('drawing');
+let menu = null;
+if (drawing) {
+  // Parked at the right edge of the screen first, which is where it sat when the
+  // menu ran off it: the toolbar's own layout moves the button with every
+  // change to the marks, and the claim is about any place it can be pressed.
+  drawing.style.position = 'fixed';
+  drawing.style.right = '0';
+  drawing.click();
+  await rest(50);
+  const box = document.querySelector('.drawmenu:not([hidden])');
+  menu = box ? {left: Math.round(box.getBoundingClientRect().left),
+                right: Math.round(box.getBoundingClientRect().right)} : 'did not open';
+}
+return {
+  viewport: document.documentElement.clientWidth,
+  scrollWidth: document.documentElement.scrollWidth,
+  toolbarRows: rowsOf(marks),
+  statusRows: rowsOf(bar),
+  wobbles, menu,
+};
+"""
+
+
+def test_the_editor_gives_a_phone_its_height_and_stays_on_the_screen(page: str, tmp_path: Path):
+    """Writing on a phone, measured at 390px in Write mode on 2026-10-08.
+
+    - The toolbar ran to three rows, the third holding a single `—`: sixteen
+      30px buttons and three group separators at 350px. On a phone the
+      separators go, and the marks fit on two rows.
+    - The status strip wrapped onto a second line to fit "Keymap: default", a
+      setting for keys a phone has no keyboard for. On a phone that picker goes.
+    - The "review waived" checkbox was drawn `width: 100%`, and the fields box
+      scrolled sideways by 7px with nothing to scroll to.
+    - The Drawings menu was hung from its button's left edge and ran to 392 on a
+      390px screen, so the page grew a sideways scroll to reach it.
+    """
+    from browser import chrome, measured_on_a_phone
+
+    got = measured_on_a_phone(
+        chrome(), {"editor": page}, tmp_path / "editor", _THE_EDITOR_ON_A_PHONE, query="?edit"
+    )["editor"]
+
+    assert got["viewport"] == 390, got
+    assert got["toolbarRows"] <= 2, f"the toolbar runs to {got['toolbarRows']} rows on a phone"
+    assert got["statusRows"] == 1, f"the status strip wraps to {got['statusRows']} lines"
+    assert not got["wobbles"], f"a box scrolls sideways in Write on a phone: {got['wobbles']}"
+    assert isinstance(got["menu"], dict), f"the Drawings menu: {got['menu']}"
+    assert got["menu"]["right"] <= got["viewport"], (
+        f"the Drawings menu runs to {got['menu']['right']} on a {got['viewport']}px phone"
+    )
+    assert got["scrollWidth"] <= got["viewport"], "the page scrolls sideways in Write"
+
+
+_WRITE_ON_A_PHONE = """
+const rest = ms => new Promise(done => setTimeout(done, ms));
+for (let i = 0; i < 40 && !document.getElementById('view-edit'); i++) await rest(50);
+const article = document.querySelector('article.record');
+const drawn = sel => {
+  const el = document.querySelector(sel);
+  return !!el && el.getClientRects().length > 0;
+};
+const offered = {both: drawn('#view-both'), slide: drawn('.editbar .slide-view')};
+document.getElementById('view-edit').click();
+// Whichever writing box is drawn: Ace hides the textarea it replaces, and the
+// textarea comes first in the document.
+const shownBox = () => [...document.querySelectorAll('.ace_editor, textarea.body-field')]
+  .find(el => el.getClientRects().length > 0 && el.getBoundingClientRect().height > 0);
+for (let i = 0; i < 40 && !shownBox(); i++) await rest(50);
+await rest(300);
+const box = shownBox();
+const strip = document.querySelector('.statusbar').getBoundingClientRect();
+const writing = {whole: article.classList.contains('whole-page'),
+                 top: Math.round(box.getBoundingClientRect().top),
+                 height: Math.round(box.getBoundingClientRect().height),
+                 strip: Math.round(strip.bottom), window: innerHeight};
+showView('both');
+await rest(100);
+return {offered, writing, splitIs: VIEW};
+"""
+
+
+@pytest.mark.parametrize(
+    "size", [(390, 844), (844, 390), (390, 420)], ids=["upright", "turned", "keyboard-up"]
+)
+def test_a_phone_writes_over_the_whole_window(page: str, tmp_path: Path, size: tuple[int, int]):
+    """Write on a phone opens the full-page editor — jcanton, 2026-10-08.
+
+    With the keyboard up (390x420), or with the phone turned (844x390), the
+    page layout left Ace somewhere between 8 and 116px under the title and the
+    fields: no visible line to type on. So on a phone, Write opens over the
+    whole window. The box has to fill the window and the status strip has to
+    stay on it.
+
+    Measuring that found two layout bugs inside full page. The folded fields'
+    `auto 1fr` grid outranked full page's own grid, which left the box at a
+    256px floor with half a 844px phone empty under it. And that floor, written
+    for the stacked layout, pushed the strip off a 420px window.
+
+    Side by side is not offered on a phone (two 163px slivers), and asking for
+    it anyway gets Write. The slide editor stays desktop-only.
+    """
+    from browser import measured_on_a_phone
+
+    width, height = size
+    got = measured_on_a_phone(
+        chrome(), {"record": page}, tmp_path / "w", _WRITE_ON_A_PHONE, width=width, height=height
+    )["record"]
+
+    assert got["offered"] == {"both": False, "slide": False}, (
+        f"a phone offers views it cannot use: {got['offered']}"
+    )
+    w = got["writing"]
+    assert w["whole"], f"Write on a {width}x{height} phone stayed in the page layout"
+    assert w["strip"] <= w["window"], (
+        f"the status strip ends at {w['strip']} on a {w['window']}px window"
+    )
+    assert w["height"] >= w["window"] - w["top"] - 60, (
+        f"the box is {w['height']}px from {w['top']} on a {w['window']}px window: "
+        f"it does not fill what full page gives it"
+    )
+    assert got["splitIs"] == "edit", f"side by side on a phone became {got['splitIs']!r}"
+
+
+def test_a_laptop_and_the_create_form_keep_the_page_layout(
+    page: str, client: TestClient, tmp_path: Path
+):
+    """Full page by default is a phone's. A laptop's Write stays in the page —
+    jcanton took the full-page surface out on 2026-08-24 for exactly that — and
+    the create form stays in the page on a phone too, because full page hides
+    the title box a new record is nothing without."""
+    from browser import measured_on_a_phone
+
+    laptop = measured_in(chrome(), page, tmp_path / "laptop.html", 1280, _WRITE_ON_A_PHONE)
+    assert laptop["writing"]["whole"] is False, "Write on a laptop opened over the whole window"
+    assert laptop["offered"]["both"] is True, "a laptop lost side by side"
+
+    form = client.get("/new?kind=task").text
+    script = (
+        "const rest = ms => new Promise(done => setTimeout(done, ms)); await rest(500);"
+        "return {whole: document.querySelector('article.record').classList.contains('whole-page'),"
+        " title: document.querySelector('input.title-field').getClientRects().length > 0};"
+    )
+    got = measured_on_a_phone(chrome(), {"new": form}, tmp_path / "n", script)["new"]
+    assert got == {"whole": False, "title": True}, f"the create form on a phone: {got}"
+
+
+def test_a_finger_drags_the_ball_along_the_hill(page: str, tmp_path: Path):
+    """Dragging the hill by touch moved nothing: the browser took the gesture to
+    pan with, sent `pointercancel`, and the ball went back. Tapping a stop
+    worked; dragging did not. A real touch, through DevTools, from the ball to
+    another stop, and the status it lands on is the one saved."""
+    where = tmp_path / "hill.html"
+    where.write_text(page)
+    with _devtools(chrome(), "about:blank", tmp_path / "profile") as (call, _said):
+        call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True},
+        )
+        call("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 1})
+        call("Page.enable")
+        call("Page.navigate", {"url": where.as_uri() + "?edit"})
+        time.sleep(1.5)
+        # Out of full page and into the folded fields, where the hill is.
+        where_to = _evaluated(
+            call,
+            """(async () => {
+              const rest = ms => new Promise(done => setTimeout(done, ms));
+              const article = document.querySelector('article.record');
+              if (article.classList.contains('whole-page')) {
+                document.getElementById('editor-size').click();
+              }
+              for (const fold of document.querySelectorAll('.factsfold')) fold.open = true;
+              await rest(200);
+              const hill = document.querySelector('.hill-control');
+              hill.scrollIntoView({block: 'center'});
+              await rest(200);
+              const value = document.querySelector('[name=status]:checked, input[name=status]');
+              const stops = [...hill.querySelectorAll('label, .hill-stop')]
+                .map(one => [one.getBoundingClientRect(), one.querySelector('input')])
+                .filter(([box, input]) => box.width > 0 && input);
+              const here = stops.find(([, input]) => input.checked) || stops[0];
+              const gap = one => Math.abs(one[0].left - here[0].left);
+              const there = stops.reduce((far, one) => gap(one) > gap(far) ? one : far);
+              const mid = box => [Math.round(box.left + box.width / 2),
+                                  Math.round(box.top + box.height / 2)];
+              return {from: mid(here[0]), to: mid(there[0]),
+                      was: here[1].value, wants: there[1].value};
+            })()""",
+        )
+        assert where_to and where_to["was"] != where_to["wants"], where_to
+        (x0, y0), (x1, y1) = where_to["from"], where_to["to"]
+        def touch(kind: str, points: list[dict]) -> None:
+            call("Input.dispatchTouchEvent", {"type": kind, "touchPoints": points})
+
+        touch("touchStart", [{"x": x0, "y": y0}])
+        for step in range(1, 11):
+            x = x0 + (x1 - x0) * step / 10
+            y = y0 + (y1 - y0) * step / 10
+            touch("touchMove", [{"x": x, "y": y}])
+            time.sleep(0.02)
+        touch("touchEnd", [])
+        time.sleep(0.3)
+        now = _evaluated(
+            call,
+            "(() => { const on = document.querySelector('.hill-control input:checked');"
+            " return on ? on.value : null; })()",
+        )
+
+    assert now == where_to["wants"], (
+        f"a finger dragged the ball from {where_to['was']} to {where_to['wants']} and the hill "
+        f"says {now}"
+    )
+
+
+def test_blockers_are_edited_by_their_titles_and_saved_as_their_ids(
+    live_server: str,  # noqa: F811 — a fixture, shadowing its own import by design
+    tmp_path: Path,
+):
+    """jcanton, 2026-10-20: "when editing dependencies of a record (in the
+    blocked-by field) it shows record ids but not titles … when going in editing
+    view I see [task-c4d934, pitch-4a7250, pitch-bdb8d1] and it's not
+    immediately obvious which one that is."
+
+    Driven in Chrome with trusted presses, because every claim here is about the
+    keyboard and the pointer: the box is the table's and the card's as well, and
+    the table commits on blur — so a × that took the focus off the box would
+    commit a half-made edit there. Each blocker is a chip wearing its title, the
+    id on hover; × takes one away and leaves the keyboard in the box; Backspace in
+    the empty box marks the last chip and a second Backspace removes it, so a held
+    key clearing what was typed does not run on into the references; a title
+    typed and picked adds one; and Save writes ids, not titles.
+
+    And folded, as the card is (jcanton, the same day: "renders as plain text
+    until you click on the field for editing it"): while editing, the field is a
+    line of titles until it is pressed, and leaving it folds it again; while
+    reading, there are no chips at all, only the linked titles the page always had.
+    """
+    with httpx.Client(base_url=live_server) as client:
+        assert save(client, TASK, {"depends_on": [OTHER, DONE]}).status_code == 200
+    box = "document.querySelector('input[name=depends_on]')"
+    chips = f"[...{box}.parentNode.querySelectorAll('.ref')]"
+    folded = f"{box}.parentNode.querySelector('.refsays')"
+    lines = f"[...{folded}.querySelectorAll('.refline')].map(one => one.textContent)"
+    shown = "(one => !!one && one.getClientRects().length > 0)"
+    seen = f"""({{value: {box}.value,
+        words: {chips}.map(one => one.querySelector('span').textContent),
+        marked: {chips}.filter(one => one.classList.contains('on')).length,
+        here: document.activeElement === {box}}})"""
+
+    def key(call, name: str, code: int) -> None:
+        for kind in ("rawKeyDown", "keyUp"):
+            call(
+                "Input.dispatchKeyEvent",
+                {"type": kind, "key": name, "code": name, "windowsVirtualKeyCode": code},
+            )
+        time.sleep(0.2)
+
+    url = f"{live_server}/detail/{TASK}"
+    with _devtools(chrome(), url, tmp_path / "profile", DRAWING_WINDOW) as (call, said):
+        time.sleep(2)
+        _until(call, f"!!{box}")
+        reading = _evaluated(
+            call,
+            f"({{chips: {shown}({box}.parentNode.querySelector('.refs')),"
+            f" line: {shown}({folded}), box: {shown}({box}),"
+            f" links: [...{box}.parentNode.querySelectorAll('.read .refline a')]"
+            f".map(one => one.textContent)}})",
+        )
+        assert reading == {
+            "chips": False,
+            "line": False,
+            "box": False,
+            "links": [OTHER_TITLE, DONE_TITLE],
+        }, f"a record being read draws its blockers as {reading}, not one link to a line"
+
+        _evaluated(call, "flipEditing()")
+        time.sleep(0.5)
+        _evaluated(call, f"{folded}.scrollIntoView({{block: 'center'}})")
+        time.sleep(0.3)
+        closed = _evaluated(
+            call,
+            f"({{line: {shown}({folded}), says: {lines},"
+            f" chips: {shown}({box}.parentNode.querySelector('.refs')), box: {shown}({box})}})",
+        )
+        # One title to a line, as the record being read draws it: jcanton, "one
+        # line per blocker … instead of comma-separated".
+        assert closed == {
+            "line": True,
+            "says": [OTHER_TITLE, DONE_TITLE],
+            "chips": False,
+            "box": False,
+        }, f"Blocked by, while editing and before it is pressed, is {closed}"
+        _evaluated(call, f"{folded}.click()")
+        time.sleep(0.3)
+        opened = _evaluated(call, seen)
+        assert opened["value"] == f"{OTHER}, {DONE}", opened
+        assert opened["words"] == [OTHER_TITLE, DONE_TITLE], (
+            f"Blocked by opens on {opened['words']}, not on the titles of what it holds"
+        )
+        assert opened["here"], "pressing the folded line did not put the keyboard in the box"
+        hover = _evaluated(call, f"{chips}.map(one => one.title)")
+        assert hover == [f"{OTHER_TITLE} — {OTHER}", f"{DONE_TITLE} — {DONE}"], hover
+        # Painted, and not merely in the DOM: the first chip is what the browser
+        # finds at its own centre.
+        assert _evaluated(
+            call,
+            f"""(() => {{ const chip = {chips}[0], at = chip.getBoundingClientRect();
+              const hit = document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2);
+              return at.width > 0 && !!hit && chip.contains(hit); }})()""",
+        ), "the first chip is not what the browser draws where it says it is"
+
+        x, y = _evaluated(
+            call,
+            f"(() => {{ const b = {chips}[0].querySelector('button').getBoundingClientRect();"
+            " return [b.left + b.width / 2, b.top + b.height / 2]; })()",
+        )
+        for kind, buttons in (("mousePressed", 1), ("mouseReleased", 0)):
+            call(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": kind,
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "buttons": buttons,
+                    "clickCount": 1,
+                },
+            )
+        time.sleep(0.3)
+        crossed = _evaluated(call, seen)
+        assert crossed == {"value": DONE, "words": [DONE_TITLE], "marked": 0, "here": True}, (
+            f"× left {crossed}: the reference has to go and the keyboard has to stay"
+        )
+
+        key(call, "Backspace", 8)
+        marked = _evaluated(call, seen)
+        assert (marked["value"], marked["marked"]) == (DONE, 1), (
+            f"the first Backspace in an empty box should mark the last chip, not remove it: "
+            f"{marked}"
+        )
+        key(call, "Backspace", 8)
+        emptied = _evaluated(call, seen)
+        assert (emptied["value"], emptied["words"]) == ("", []), emptied
+
+        for letter in "Downgrade numpy":
+            call("Input.insertText", {"text": letter})
+        time.sleep(0.3)
+        offered = _evaluated(
+            call,
+            "[...document.querySelectorAll('ul.suggest:not([hidden]) li')]"
+            ".map(li => li.dataset.value)",
+        )
+        assert offered and offered[0] == OTHER, offered
+        key(call, "Enter", 13)
+        picked = _evaluated(call, seen)
+        assert (picked["value"], picked["words"]) == (OTHER, [OTHER_TITLE]), picked
+
+        # Leaving the box folds the field, and the line says what it holds now.
+        _evaluated(call, f"{box}.blur()")
+        time.sleep(0.3)
+        left = _evaluated(call, f"({{line: {shown}({folded}), says: {lines}}})")
+        assert left == {"line": True, "says": [OTHER_TITLE]}, left
+
+        _evaluated(call, "document.getElementById('save').click()")
+
+        def stored() -> list[str]:
+            plan = httpx.get(f"{live_server}/api/index.json").json()["plan"]
+            return plan[TASK].get("depends_on", [])
+
+        deadline = time.monotonic() + 20
+        while stored() != [OTHER] and time.monotonic() < deadline:
+            time.sleep(0.25)
+        assert stored() == [OTHER], f"Save wrote {stored()}, not the one blocker left in the box"
+        assert not [line for line in said if "TypeError" in line or "ReferenceError" in line], said

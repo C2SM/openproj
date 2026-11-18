@@ -29,11 +29,11 @@ with the search box above it. It is how you get back to the thing you were writi
 PM work happens in the tabs, which are the same records seen several ways: **Table** is the one
 people live in, **Graph** is the dependency diagram, where dependencies are drawn and removed in a
 mode of its own, **Timeline** the derived Gantt, **Cycles** one page per cycle with its bets and
-its capacity, **People** who is on what and who is full, and **Help**, which is the four documents
-under `docs/`, drawn on one page inside the app. Every filter is in the URL, so a view is a link,
-and a field can be asked for more than one value at a time — two statuses means either of them.
-Pointing at a row, a node or a bar opens the same card in all three: what the record is, who is on
-it, when it runs, and its shaping document under a rule.
+its capacity, and **People** who is on what and who is full. **Help**, in the footer of every page
+beside Report issue, is the four documents under `docs/`, drawn on one page inside the app. Every
+filter is in the URL, so a view is a link, and a field can be asked for more than one value at a
+time — two statuses means either of them. Pointing at a row, a node or a bar opens the same card in
+all three: what the record is, who is on it, when it runs, and its shaping document under a rule.
 
 The search box is a small language, and it is the same language on the server and in the browser:
 bare words match a record's fields — its id, title, tags, PR references and the people named on it,
@@ -123,6 +123,21 @@ uv run openproj serve --repo plan.git --auth dev
 `--auth github --org kilnlab`, and the org has no default: `serve` refuses to start without one,
 because that membership is the whole of the write gate, and the org is a fact about a team rather
 than about the tool. `OPENPROJ_ORG` in the environment is the other way to say it.
+
+`--auth` has no default either: `serve` refuses to start until the flag or `OPENPROJ_AUTH` says how
+people are known. It used to default to `dev`, which made a bare `openproj serve` a server anybody
+who reached the port could write to.
+
+Inside a tailnet there is a third way, with no password and no GitHub. `--auth tailscale` asks the
+Tailscale daemon on the same machine whose device the client's address is, and
+`OPENPROJ_TAILSCALE_USERS` — `you@example.com=you,them@example.com=them` — says which plan login each
+tailnet login writes as; the tailnet login is also the address on that person's commits. Anybody
+else reads: a device on the LAN, a device of somebody not on the list. Because the address is the
+identity, the server has to see the real one — run it on the loopback behind a proxy on the same
+machine, since uvicorn believes `X-Forwarded-For` from 127.0.0.1 and from nothing else, and never
+with `OPENPROJ_FORWARDED_ALLOW_IPS=*`, which `serve` refuses in this mode. It needs read access to
+tailscaled's socket, `OPENPROJ_TAILSCALE_SOCKET` (default `/var/run/tailscale/tailscaled.sock`), and
+no more: `whois` is in the half of the daemon's API a process that is not root may use.
 
 Putting it on Cloud Run reads the deployment from the plan rather than from here. `init` writes
 `deploy/openproj.env` into the plan when asked, or when given `--deploy KEY=VALUE`, and

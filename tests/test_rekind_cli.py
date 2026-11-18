@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from openproj.cli import main
+from openproj.model import kind_refusal, load_repo
 
 
 def _write(root: Path, kind_dir: str, name: str, text: str) -> Path:
@@ -187,6 +188,27 @@ def test_rekind_refuses_a_drop_list_that_does_not_match_what_would_be_lost(tmp_p
 def test_rekind_refuses_a_kind_it_is_already(plan: Path, capsys):
     assert main(["rekind", "pitch-ccc001", "pitch", str(plan)]) == 1
     assert "already" in capsys.readouterr().out
+
+
+def test_rekind_refuses_a_kind_the_plan_has_turned_off(plan: Path, capsys):
+    """The target of a rekind is a record being written, so it meets the kind gate
+    every other door that writes one has, in `kind_refusal`'s sentence. The web
+    route asked and this command did not, so a plan with issues turned off took
+    one from a terminal. Nothing may move, either: the refusal comes before the
+    old file is touched.
+    """
+    (plan / "config").mkdir(exist_ok=True)
+    (plan / "config" / "defaults.yaml").write_text(
+        "schema_version: 4\nnominal_availability: 1.0\nkinds: [note]\n", encoding="utf-8"
+    )
+    before = {one: path.read_text(encoding="utf-8") for one, path in _ids(plan).items()}
+
+    assert main(["rekind", "task-ddd001", "issue", str(plan)]) == 1
+
+    out = capsys.readouterr().out
+    assert f"blocker: {kind_refusal('issue', load_repo(plan)[1])}\n" in out
+    assert "nothing written" in out
+    assert {one: path.read_text(encoding="utf-8") for one, path in _ids(plan).items()} == before
 
 
 def test_rekind_refuses_an_id_that_names_nothing(plan: Path, capsys):

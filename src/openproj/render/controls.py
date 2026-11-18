@@ -8,14 +8,17 @@ from markupsafe import Markup
 
 from ..index import Index
 from ..model import MAX_BODY_BYTES, Record
-from .env import _fragment
+from .env import PHONE, _fragment
 from .hill import _hill_html
 from .tokens import (
     DRAWING_ART,
     DRAWING_SIZE_MARKS,
     HISTORY_MARKS,
+    KINDS,
     PEOPLE_FIELDS,
     PRIORITIES,
+    TEMPLATE_ART,
+    TEMPLATES,
     _human,
     _read_date,
 )
@@ -132,7 +135,7 @@ _PLAN_FACETS = (
     "priority",
     "status",
     "owner",
-    "assignees",
+    "developers",
     "reviewers",
     "cycle",
     "product",
@@ -141,27 +144,19 @@ _PLAN_FACETS = (
     "predicate",
 )
 
-# The filter model itself, shared by every view that offers the bar above. The
-# README has always said three views filter the same plan the same way; while
-# `matches` lived inside the table's script, that was true of one of them, and a
-# second copy of it is how a facet comes to mean something different per page.
-_FILTER_JS = Markup(r"""
-<script>
-const params = new URLSearchParams(location.search);
-
-// Every field the control bar offers. A field in one list and not the other is a
-// dropdown that changes the URL and filters nothing.
-const FILTERS = ['kind','status','owner','assignees','reviewers','priority',
-                 'cycle','product','project','tags'];
-
+# The query language, in the browser: the parser and `answers`, and nothing that
+# reads a page. Its own block because the cycle page's betting-table box speaks the
+# language without having the control bar the rest of `_FILTER_JS` drives —
+# jcanton, 2026-10-13: "the search box doesn't know the query language (e.g.
+# `cycle:39` doesn't work) while all other ones do". A second copy for that box
+# would be a third parser, and two is already one more than anybody wants.
+_QUERY_JS = r"""
 // The menu option that means "this field is empty". Spelled here as a literal
 // and in `index.NO_VALUE` in Python, because this block is a constant rather
 // than a template — `test_empty_is_spelled_the_same_on_both_sides_of_the_wire`
 // is what stops the two drifting, and a drift would filter differently in the
 // browser than on the server with neither one erroring.
 const NO_VALUE = '(none)';
-
-function wanted(field) { return params.getAll(field).filter(Boolean); }
 
 // --- the query language ----------------------------------------------------
 //
@@ -181,13 +176,22 @@ function wanted(field) { return params.getAll(field).filter(Boolean); }
 // `derived` and eleven other things nobody would type — and because the same
 // list exists in `index.py`, where `test_the_two_field_lists_are_the_same` holds
 // the two together.
-const QUERY_FIELDS = ['kind','status','owner','priority','cycle','assignees',
-                      'reviewers','tags','product','project','id','title','prs','predicate'];
-const ALIASES = {tag: 'tags', assignee: 'assignees', reviewer: 'reviewers',
-                 pr: 'prs', person: 'owner'};
+const QUERY_FIELDS = ['kind','status','owner','priority','cycle','developers',
+                      'reviewers','tags','product','project','pitch','id','title','prs',
+                      'predicate'];
+// The fields whose value is a record id rather than a word: an ancestor, found
+// by the walk `_holder_of` does in `index.py`. Each answers to that record's
+// title as well, which rides on the row in its own key. `_HOLDER_FACETS` is the
+// other copy of this list and `test_the_holder_fields_are_the_same` pins them.
+const HOLDER_FIELDS = ['product','project','pitch'];
+const ALIASES = {tag: 'tags', developer: 'developers', reviewer: 'reviewers',
+                 pr: 'prs', person: 'owner',
+                 assignee: 'developers', assignees: 'developers'};
 // Free text, matched by substring; everything else is a vocabulary and is
-// matched whole, so `cycle:3` does not answer for cycle 30.
-const FREE_TEXT = ['title', 'prs'];
+// matched whole, so `cycle:3` does not answer for cycle 30. The holder fields
+// are free text because a pitch is titled with a sentence and nobody types a
+// whole one — see `FREE_TEXT` in `query.py`, which carries the argument.
+const FREE_TEXT = ['title', 'prs', 'product', 'project', 'pitch'];
 
 // One record's values per field, lowered — the same map `query_fields` builds in
 // `index.py`, so both parsers are asked about identical data and a disagreement
@@ -198,7 +202,13 @@ function queryFields(row) {
     // `predicates` on the row, `predicate` in the language: the menu is named
     // for the question and the row for its answers.
     const held = name === 'predicate' ? row.predicates : row[name];
-    fields[name] = [].concat(held ?? []).map(String).map(v => v.toLowerCase())
+    // A holder answers to its title as well as to its id, and the title rides in
+    // a key of its own rather than inside `row[name]`: the facet branch of
+    // `matches` below reads `row[field]` straight against what a menu submitted,
+    // and a title in there would be a value the box accepts and the server does
+    // not. `query_fields` in `index.py` joins the same two on the same field.
+    const called = HOLDER_FIELDS.includes(name) ? row[name + '_title'] : null;
+    fields[name] = [].concat(held ?? [], called ?? []).map(String).map(v => v.toLowerCase())
       .filter(v => v !== '');
   }
   return fields;
@@ -390,6 +400,27 @@ function answers(node, fields, text, names) {
   return !!want && held.some(value => plain(value) === want);
 }
 
+"""
+
+# The filter model itself, shared by every view that offers the bar above. The
+# README has always said three views filter the same plan the same way; while
+# `matches` lived inside the table's script, that was true of one of them, and a
+# second copy of it is how a facet comes to mean something different per page.
+_FILTER_JS = Markup(
+    r"""
+<script>
+const params = new URLSearchParams(location.search);
+
+// Every field the control bar offers. A field in one list and not the other is a
+// dropdown that changes the URL and filters nothing.
+const FILTERS = ['kind','status','owner','developers','reviewers','priority',
+                 'cycle','product','project','tags'];
+
+function wanted(field) { return params.getAll(field).filter(Boolean); }
+
+"""
+    + _QUERY_JS
+    + r"""
 // Parsed once per query and not once per row: the table redraws on every
 // keystroke over as many rows as the plan has, and parsing `kind:task` two
 // hundred times to answer one question is two hundred parses.
@@ -479,11 +510,19 @@ function syncFilters() {
 // Whether anything is set at all, asked of the query string rather than of the
 // controls: the query string is the state, and the people page's `role` is a
 // field the record list below has never heard of.
+//
+// Every field `matches` reads, as well as every menu drawn. Records draws no
+// menus and filters by all of `FILTERS`, so `/?owner=ann` — where People sends a
+// name in a plan without a Table, and where a switched-off `/table?owner=ann`
+// sends its reader — narrowed the rows with this button hidden and the fold
+// saying nothing. The table, the graph and the timeline draw a menu for every
+// field in `FILTERS` already, so on those the set is what it was. A Set, so a
+// field that is both counts once in "3 set".
 function showTheWayOut() {
   const out = document.getElementById('unfilter');
   const fields = [...document.querySelectorAll('.facet[data-field]')]
     .map(facet => facet.dataset.field);
-  const chosen = [...fields, 'q', 'predicate']
+  const chosen = [...new Set([...fields, ...FILTERS, 'q', 'predicate'])]
     .filter(field => params.getAll(field).filter(Boolean).length);
   if (out) out.hidden = !chosen.length;
   sayWhatIsFolded(chosen.length);
@@ -516,13 +555,15 @@ const FOLDS = '.facetbox, .windowfold, .keyfold';
 //
 // **The listener is not a nicety.** Closed at 390 and then turned to landscape,
 // or opened on a desktop window that was narrow, the summary goes — the
-// stylesheet only draws it below 40rem — while the box is still closed. That is
+// stylesheet only draws it on a phone — while the box is still closed. That is
 // eleven filters with nothing on the page that can reach them. So the same query
 // that draws the handle decides the state, both ways, whenever it changes.
 //
-// It does not fight the reader: `change` fires when the WIDTH crosses 40rem, not
-// when a summary is clicked, so a fold opened by hand on a phone stays open.
-const PHONE = matchMedia('(max-width: 40rem)');
+// It does not fight the reader: `change` fires when the window crosses the
+// query, not when a summary is clicked, so a fold opened by hand on a phone stays
+// open. The query is `env.PHONE`, joined in rather than written out, so the
+// stylesheet's handle and this state cannot disagree about what a phone is.
+const PHONE = matchMedia(""" + json.dumps(PHONE) + r""");
 function foldOnAPhone(narrow) {
   for (const box of document.querySelectorAll(FOLDS)) box.open = !narrow;
   refitAroundTheFold();
@@ -685,7 +726,8 @@ addEventListener('pointerdown', event => {
 
 syncFilters();
 </script>
-""")
+"""
+)
 
 
 # Raw, because the JS in here contains regex escapes. `\\.` is not a Python escape,
@@ -1085,6 +1127,16 @@ const FORMATS = [
   {key: 'z', label: 'Undo', title: 'Undo  ⌘Z', history: 'undo'},
   {key: 'z', shift: true, label: 'Redo', title: 'Redo  ⌘⇧Z', history: 'redo'},
 
+  // The template menu, a group of one between the history and the marks —
+  // jcanton, 2026-10-09: "we can move the template selector as a button on top
+  // of the editor, between undo/redo and the Bold button, and have it present
+  // also in the /detail/editing page". It was a `<select>` above the toolbar on
+  // the create form only, so a record that already existed could never be given
+  // a template, and the create form's bar was a row taller than the record
+  // page's for a control that is a toolbar's job. `label` is the accessible
+  // name, as on the history pair: the button wears `TEMPLATE_ART`.
+  {group: true, label: 'Template', title: 'Template', template: true},
+
   {key: 'b', group: true, label: 'B', title: 'Bold  ⌘B', wrap: '**'},
   {key: 'i', label: 'I', title: 'Italic  ⌘I', wrap: '*', style: 'font-style: italic'},
   // ⌘⇧X and not ⌘⇧S: the shortcut is matched on `event.key`, and every shifted
@@ -1157,6 +1209,9 @@ const DRAW_ART = {{ draw_art|tojson }};
 
 // The size toggle's pair, arriving the same way — one shown at a time.
 const DRAW_SIZE_ART = {{ size_art|tojson }};
+
+// And the template button's, the same way again.
+const TEMPLATE_ART = {{ template_art|tojson }};
 
 // The room's undo history, once there is a room wired to this box. Declared here
 // and assigned in `_COEDIT`, which is a separate `<script>` inlined AFTER this
@@ -1987,8 +2042,11 @@ function attachStatus(surface, bar) {
   // by typing a parameter nothing on the page mentioned; it is the switch beside
   // the three view segments now, so the way to a keymap is on the page as well.
   if (surface.setKeymap) {
+    const keymap = document.createElement('button');
+    // Named so a phone can take it away — see `.statusbar .keymap`.
+    keymap.classList.add('keymap');
     bar.append(statusPick(
-      document.createElement('button'), 'Keymap', surface.keymaps, EDITOR.keymap,
+      keymap, 'Keymap', surface.keymaps, EDITOR.keymap,
       // Nothing announced. The sentence that was here explained what vim mode
       // takes — Escape, Tab, every printable key in NORMAL mode — to somebody who
       // had just switched to vim mode on purpose. jcanton, 2026-08-21: "we don't
@@ -2075,7 +2133,7 @@ function attachStatus(surface, bar) {
   return {refresh};
 }
 
-function attachEditing(surface, bar, creating) {
+function attachEditing(surface, bar, templates) {
   const area = surface.el;
   // The two history buttons, so their disabled state can be kept honest. Empty
   // on a bar that was never drawn, which is what makes `syncHistory` a no-op on
@@ -2084,6 +2142,10 @@ function attachEditing(surface, bar, creating) {
   const historyButtons = [];
   if (bar) {
     for (const mark of FORMATS) {
+      // Before the rule and not after it: the template button is a group of one,
+      // and a page with nothing to offer that skipped it below the rule would
+      // draw two rules side by side with no button between them.
+      if (mark.template && !templates?.length) continue;
       if (mark.group) {
         // A rule and not a gap. Three groups of adjacent buttons say "these do
         // the same kind of thing" only if the boundary is visible; spacing
@@ -2122,6 +2184,21 @@ function attachEditing(surface, bar, creating) {
         // thirteen of fourteen buttons on this bar were once mouse-only.
         button.onmousedown = event => { event.preventDefault(); step(mark.history); };
         button.onclick = event => { if (event.detail === 0) step(mark.history); };
+      } else if (mark.template) {
+        // A menu of the plan's templates. Named by class for the reason the
+        // drawings button below gives: it writes nothing when PRESSED, only
+        // when something in its menu is chosen, and the sweep that asserts
+        // every `.mark` writes markdown has to be able to tell it apart.
+        //
+        // `templates` is a PARAMETER for the reason the old `creating` flag in
+        // this slot was one: the list is each page's own constant, declared in
+        // a different `<script>` from this one, and the table and cycle pages
+        // inline this block with no such name at all.
+        button.classList.add('tpl');
+        button.id = 'template';
+        button.innerHTML = TEMPLATE_ART;
+        button.setAttribute('aria-label', mark.label);
+        attachTemplates(surface, button, templates);
       } else if (mark.draw) {
         // The one button in this bar that neither writes markdown nor moves a
         // stack: it opens the drawings menu, and `attachDrawing` — which runs
@@ -2134,22 +2211,15 @@ function attachEditing(surface, bar, creating) {
         // markdown, so a button that writes none has to be tellable from the
         // ones that do by something other than the words on it.
         //
-        // Withheld from the create form, which has no record for a drawing to
-        // belong to yet — the same gate the button carried as a `not creating`
-        // guard in the template while it was rendered on the server, moved here
-        // with it. Slide is absent there on the same grounds. (Written as prose
-        // rather than by quoting the Jinja tag: this file IS a Jinja template,
-        // and the tag quoted inside a JS comment is a tag Jinja opens.)
-        //
-        // A PARAMETER and not the page's own `CREATING`: that `const` is
-        // declared in `detail.py`'s script, which is a different `<script>`
-        // from this one, and the slide editor — the other page that calls this
-        // — declares no such name at all. Reading it from here would be a
-        // `ReferenceError` on one of the two pages, and `typeof` is not the
-        // hatch it looks like: a `const` in its temporal dead zone THROWS on
-        // `typeof`, which is the trap `COEDIT_HISTORY`'s own comment above
-        // already records this file falling into once.
-        if (creating) continue;
+        // **On the create form too**, since 2026-10-09 — jcanton: the create
+        // page "is missing the drawings button". It was withheld there on the
+        // grounds that nothing was stored yet for a drawing to belong to, and
+        // that was never what a drawing needs: `POST /api/drawing` mints the
+        // drawing its own id and commits `drawings/<id>.png` without asking
+        // which record will cite it, exactly as the Image button beside it
+        // commits `assets/…` from the same form and always has. A form abandoned
+        // after drawing leaves a PNG nothing cites, which is what an abandoned
+        // upload has always left.
         button.classList.add('draw');
         button.id = 'drawing';
         button.innerHTML = DRAW_ART;
@@ -2607,6 +2677,17 @@ function drawPopup(label) {
   bigger.type = 'button';
   bigger.id = 'draw-size';
   bigger.className = 'grow';
+  // What the last press of Save came to, said inside the popup. `#state` is
+  // where every sentence of `openDrawing`'s goes and where a screen reader
+  // hears it, and it is in the commit bar UNDER the overlay — invisible at full
+  // page and dimmed behind the backdrop at the smaller size. That cost nothing
+  // while a successful save closed the popup and uncovered it; with Save
+  // leaving the drawing open, the confirmation has to be where the person is
+  // looking. No `role` of its own: `#state` already announces the same
+  // sentence, and two live regions would say it twice.
+  const said = document.createElement('span');
+  said.id = 'draw-said';
+  said.className = 'said';
   const save = document.createElement('button');
   save.type = 'button';
   save.id = 'draw-save';
@@ -2624,7 +2705,7 @@ function drawPopup(label) {
   // bar is `justify-content: flex-end`, so a plain `order` would have moved all
   // three. Apart from the two that END the session, because this one only
   // changes how much room they have.
-  head.append(bigger, save, close);
+  head.append(bigger, said, save, close);
   // The question a close attempt over unsaved strokes raises, in place of
   // Save and Close rather than beside them — built once, here, so it exists
   // before there is ever anything to ask about. See `openDrawing`'s own
@@ -2651,7 +2732,7 @@ function drawPopup(label) {
   stage.className = 'drawstage';
   box.append(head, stage);
   overlay.append(box);
-  return {overlay, box, stage, head, bigger, save, close, ask, keep, discard};
+  return {overlay, box, stage, head, bigger, said, save, close, ask, keep, discard};
 }
 
 // One popup at a time. Nothing stops a second `openproj:draw` firing while the
@@ -2686,10 +2767,25 @@ async function openDrawing(surface, status, entry) {
   }
   DRAWING_OPEN = true;
   const button = document.getElementById('drawing');
-  const {overlay, box, stage, head, bigger, save, close, ask, keep, discard} = drawPopup(
+  const {overlay, box, stage, head, bigger, said, save, close, ask, keep, discard} = drawPopup(
     entry ? `Editing ${entry.id}` : 'A new drawing'
   );
   document.body.appendChild(overlay);
+  // Every sentence below, in the two places it has to be: `#state` for the
+  // page and the screen reader, and the popup's own bar for the eyes.
+  const say = text => {
+    status.textContent = text;
+    said.textContent = text;
+  };
+  // The keyboard back into the drawing, after a press on the popup's own
+  // chrome. The container and not `api.focusContainer()`, which is what this
+  // called until 2026-10-20 and which does not exist: `focusContainer` is a
+  // method of Excalidraw's internal `App`, and the object `excalidrawAPI` hands
+  // over carries no such key. Every call threw a TypeError that nothing saw,
+  // because the tests pressed these buttons with `.click()`, which never moves
+  // focus off the drawing in the first place. `.excalidraw-container` is the
+  // element `App.focusContainer` focuses — `tabIndex: 0`, Excalidraw's own.
+  const focusDrawing = () => stage.querySelector('.excalidraw-container')?.focus();
 
   // Which size the popup opens at, remembered the way the theme, the palette and
   // the table's widths are: somebody who wants the drawing editor big wants it
@@ -2719,17 +2815,20 @@ async function openDrawing(surface, status, entry) {
     // Excalidraw sizes its canvas from its container and watches it, so the
     // resize needs no telling — but the keyboard does: the press left focus on
     // this button, and the point of the press was to draw in the bigger box.
-    if (api) api.focusContainer();
+    focusDrawing();
   };
 
   let root = null, api = null, etag = null, closed = false, mounted = null;
+  // Whether the popup's bar is showing "saved" — the one sentence that a
+  // later stroke makes untrue. See `onChange` below.
+  let savedShown = false;
 
   // The raw close: unmounts and removes the overlay, no question asked. Every
   // caller below that already told the person what happened — a fetch that
-  // failed, a response that was refused, a save that just succeeded — calls
-  // THIS directly, because there is nothing of theirs left in the popup to
-  // lose. `closeAttempt`, further down, is the only path that asks first, and
-  // it is the one wired to Close and to Escape.
+  // failed, a drawing that would not read back — calls THIS directly, because
+  // there is nothing of theirs in the popup to lose. `closeAttempt`, further
+  // down, is the only path that asks first, and it is the one wired to Close
+  // and to Escape.
   function teardown() {
     if (closed) return;
     closed = true;
@@ -2787,6 +2886,7 @@ async function openDrawing(surface, status, entry) {
   // native `confirm()` would.
   const asking = state => {
     ask.hidden = !state;
+    said.hidden = state;
     save.hidden = state;
     close.hidden = state;
     if (state) keep.focus();
@@ -2794,7 +2894,7 @@ async function openDrawing(surface, status, entry) {
   // Backing out of the question hands the keyboard back to the drawing, not to
   // a button that has just been hidden — without this, `document.activeElement`
   // falls to `<body>` and the next Escape is nobody's.
-  keep.onclick = () => { asking(false); if (api) api.focusContainer(); };
+  keep.onclick = () => { asking(false); focusDrawing(); };
   discard.onclick = () => teardown();
 
   // The close a person actually presses: Close, or Escape with no question
@@ -2862,7 +2962,7 @@ async function openDrawing(surface, status, entry) {
   try {
     lib = await excalidraw(status);
   } catch (error) {
-    status.textContent = `the drawing editor could not be loaded — ${error.message}`;
+    say(`the drawing editor could not be loaded — ${error.message}`);
     teardown();
     return;
   }
@@ -2870,18 +2970,18 @@ async function openDrawing(surface, status, entry) {
 
   let initial = {elements: [], appState: {}, files: {}};
   if (entry) {
-    status.textContent = `opening ${entry.id}…`;
+    say(`opening ${entry.id}…`);
     let response;
     try {
       response = await fetch(`/${entry.path}`);
     } catch (error) {
-      status.textContent = `${entry.path} could not be opened — ${error.message}`;
+      say(`${entry.path} could not be opened — ${error.message}`);
       teardown();
       return;
     }
     if (closed) return;
     if (!response.ok) {
-      status.textContent = `${entry.path} could not be opened`;
+      say(`${entry.path} could not be opened`);
       teardown();
       return;
     }
@@ -2895,12 +2995,12 @@ async function openDrawing(surface, status, entry) {
     try {
       loaded = await lib.loadSceneOrLibraryFromBlob(blob, null, null);
     } catch (error) {
-      status.textContent = `${entry.path} does not read back as a drawing — ${error.message}`;
+      say(`${entry.path} does not read back as a drawing — ${error.message}`);
       teardown();
       return;
     }
     if (loaded.type !== lib.MIME_TYPES.excalidraw) {
-      status.textContent = `${entry.path} is a library file, not a drawing`;
+      say(`${entry.path} is a library file, not a drawing`);
       teardown();
       return;
     }
@@ -2960,8 +3060,20 @@ async function openDrawing(surface, status, entry) {
     // call, which was written first and measured doing nothing at all:
     // `root.render` is React 18's, so it returns before the tree commits and
     // `api` is still `null` on the next line. `document.activeElement` was
-    // `<body>` and `r` did not pick the rectangle.
+    // `<body>` and `r` did not pick the rectangle. (Nor would it have later:
+    // `api` has no `focusContainer` at all — see `focusDrawing`.)
     autoFocus: true,
+    // "saved" stops being true at the first real stroke after it, and a bar
+    // that goes on saying it is the bar lying. Gated on `isDirty` and not on
+    // `onChange` firing at all, which it does on pointer-move, selection and
+    // scroll too (see `isDirty`'s own comment). Skipped entirely unless the
+    // sentence is up, so a long session pays for the comparison once per
+    // save, not once per pointer-move.
+    onChange: () => {
+      if (!savedShown || !isDirty()) return;
+      savedShown = false;
+      said.textContent = '';
+    },
   }));
   // The baseline `isDirty` compares against: `initial.elements` is exactly
   // what Excalidraw was just told to mount — `[]` for a new drawing,
@@ -2970,10 +3082,28 @@ async function openDrawing(surface, status, entry) {
   // rather than "did the PERSON change anything".
   mounted = signature(initial.elements);
   save.disabled = false;
-  status.textContent = entry ? `editing ${entry.id}` : 'drawing a new picture';
+  say(entry ? `editing ${entry.id}` : 'drawing a new picture');
 
+  // One save in flight at a time. While a successful save closed the popup a
+  // second press had nothing to land on; now that the drawing stays open, a
+  // double click on a NEW drawing would POST twice — two files, two embeds
+  // spliced at the caret — before the first answer turned `entry` into the
+  // drawing it made.
   save.onclick = async () => {
+    save.disabled = true;
+    try {
+      await saveScene();
+    } finally {
+      save.disabled = false;
+    }
+  };
+
+  async function saveScene() {
     const elements = api.getSceneElements();
+    // Read now, before any `await`: Excalidraw mutates its elements in place,
+    // so a signature taken after the round trip would count strokes drawn
+    // DURING it as saved.
+    const saving = signature(elements);
     const files = api.getFiles();
     const blob = await lib.exportToBlob({
       elements, files, mimeType: 'image/png',
@@ -2993,12 +3123,12 @@ async function openDrawing(surface, status, entry) {
       // — so the advice names them first. A dropped photograph is downscaled to
       // 1440px on the way in and one of those fits with room to spare; three or
       // four in one drawing do not.
-      status.textContent = `that drawing is ${Math.ceil(blob.size / 1024)} KB; the limit `
+      say(`that drawing is ${Math.ceil(blob.size / 1024)} KB; the limit `
         + `is ${MAX_DRAWING_BYTES / 1024} KB — use fewer or smaller images, simplify it, `
-        + `or ask for the ceiling to be raised`;
+        + `or ask for the ceiling to be raised`);
       return;
     }
-    status.textContent = 'saving…';
+    say('saving…');
     // An upload is a commit like any other, so the shell's banner is told
     // before it starts and told its sha afterwards — both save paths commit,
     // a re-save of an existing drawing as much as a new one, and without this
@@ -3023,11 +3153,11 @@ async function openDrawing(surface, status, entry) {
         // open with the drawing still in it: a conflict dialog that also
         // throws away the work it refused would be the worse of the two
         // losses, and there is nothing else here that could show it again.
-        status.textContent = refusal(answer, 409);
+        say(refusal(answer, 409));
         return;
       }
       if (!response.ok) {
-        status.textContent = refusal(answer, response.status);
+        say(refusal(answer, response.status));
         return;
       }
       committed = answer.commit;
@@ -3040,29 +3170,39 @@ async function openDrawing(surface, status, entry) {
         // undo-safe boundary `attachUploads` writes an upload's path through.
         const {from, to} = surface.caret();
         surface.splice(from, to, `![](${answer.path})`);
-      } else {
-        etag = `"${answer.etag}"`;
+        // From here on this popup is editing an EXISTING drawing: the next
+        // Save is a PUT against the version just written, and splices nothing.
+        entry = {id: answer.id, path: answer.path};
+        overlay.setAttribute('aria-label', `Editing ${answer.id}`);
       }
-      status.textContent = `${answer.path} saved`;
-      // Said before `teardown`, and for both arms rather than only the re-save
-      // that needs it: a brand-new drawing has no picture on the page yet, so
-      // this finds nothing and costs a walk of `document.images`. One call at
-      // the one place the bytes change beats a condition that has to stay
-      // true.
+      etag = `"${answer.etag}"`;
+      // **Save saves; it does not close.** jcanton, 2026-10-20: "clicking
+      // 'save' on an excalidraw drawing closes the drawing and goes back to
+      // the record. can we only make it save instead?" A save mid-drawing is a
+      // checkpoint, and closing on it made every checkpoint cost a reopen
+      // through the menu. Close is still the one way out.
+      //
+      // What was saved is the new baseline for `isDirty`, so Close straight
+      // after a save asks nothing — there is nothing left to lose — and
+      // strokes drawn after it are unsaved again.
+      mounted = saving;
+      say(`${answer.path} saved`);
+      savedShown = true;
+      // For both arms rather than only the re-save that needs it: a brand-new
+      // drawing has no picture on the page yet, so this finds nothing and
+      // costs a walk of `document.images`. One call at the one place the bytes
+      // change beats a condition that has to stay true.
       refreshDrawing(answer.path);
-      // `teardown`, not `closeAttempt`: a save that just succeeded put every
-      // stroke on the server, so there is nothing left for `isDirty` to
-      // protect — asking here would be asking whether to discard work that
-      // is already safe. This is also draw-Save-then-Close's whole answer:
-      // Save already closes the popup on success, so there is no separate
-      // Close press left for a question to interrupt.
-      teardown();
+      // The press left the keyboard on Save; the person saving mid-drawing
+      // wants it back in the drawing, for the same reason the size toggle
+      // hands it back.
+      focusDrawing();
     } catch (error) {
-      status.textContent = `that drawing was not saved — ${error.message}`;
+      say(`that drawing was not saved — ${error.message}`);
     } finally {
       dispatchEvent(new CustomEvent('openproj:wrote', {detail: committed}));
     }
-  };
+  }
 }
 
 // Every picture on the page showing `path`, asked for again.
@@ -3117,26 +3257,36 @@ function refreshDrawing(path) {
 // seventeenth `FORMATS` entry, because a menu is page chrome and not a
 // formatting mark), and nothing outside this function builds the popover,
 // fills it or reads what was pressed in it.
-function attachDrawing(surface, status) {
-  const button = document.getElementById('drawing');
-  // Withheld from a reader the server would refuse a write from, on both pages
-  // that draw it — a page with no button is the ordinary case, not a null this
-  // wiring could walk into.
-  if (!button) return;
-
+// **A few words under the button that opens them.** The drawings menu and the
+// template menu are the same control, and this is the one copy of it: where it
+// hangs, how it stays on the screen, what closes it and where the keyboard goes
+// afterwards. The drawings menu had it to itself until the template menu came,
+// and each of those was a defect once in a menu that lacked it — the menu that
+// ran off the right of a phone, and the one that never really closed — so a
+// second menu written beside the first is a second place for both to come back.
+//
+// `rows` is asked every time the menu opens, never at setup, so nothing here can
+// drift from a body somebody has just typed into. Each row is `{text, choose}`;
+// a press closes the menu, hands the keyboard back to the button, and only then
+// runs `choose` — which is free to move the focus somewhere else again.
+function menuUnder(button, className, label, rows) {
   const menu = document.createElement('div');
-  menu.className = 'drawmenu';
+  menu.className = className;
   menu.hidden = true;
   menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'Drawings in this document');
+  menu.setAttribute('aria-label', label);
 
   // Under the button, in the page's coordinates — parked on the body for the
   // reason every list `park` carries one is: an ancestor with `overflow` would
-  // otherwise clip it, and nothing about this button's home in `.editbar`
-  // promises there is none.
+  // otherwise clip it, and nothing about a toolbar's home promises there is none.
   function place() {
     const at = button.getBoundingClientRect();
-    menu.style.left = (at.left + scrollX) + 'px';
+    // Kept on the screen. Hung from the button's left edge, the menu opened
+    // from the right half of a phone's toolbar ran past the right edge — 230 to
+    // 392 on a 390px screen — and the page grew a sideways scroll to reach it.
+    // A hidden menu measures 0 wide and is placed as before.
+    const room = document.documentElement.clientWidth - menu.offsetWidth - 8;
+    menu.style.left = (Math.max(8, Math.min(at.left, room)) + scrollX) + 'px';
     menu.style.top = (at.bottom + scrollY) + 'px';
   }
 
@@ -3149,33 +3299,23 @@ function attachDrawing(surface, status) {
     button.setAttribute('aria-expanded', 'false');
   }
 
-  // Recomputed every time the menu opens: no stored state, and nothing this
-  // popover owns can drift from a body somebody just finished typing a
-  // drawing's markdown into by hand.
   function open() {
-    const rows = drawingsIn(surface.text());
-    menu.replaceChildren(...[null, ...rows].map(entry => {
+    menu.replaceChildren(...rows().map(row => {
       const item = document.createElement('button');
       item.type = 'button';
       item.setAttribute('role', 'menuitem');
-      item.textContent = entry ? entry.id : '+ drawing';
-      item.onclick = () => choose(entry);
+      item.textContent = row.text;
+      item.onclick = () => {
+        close();
+        button.focus();
+        row.choose();
+      };
       return item;
     }));
     menu.hidden = false;
     button.setAttribute('aria-expanded', 'true');
     place();
     menu.querySelector('button').focus();
-    announce(rows.length
-      ? `${rows.length} drawing${rows.length === 1 ? '' : 's'} in this document. `
-        + '+ drawing to start another.'
-      : 'No drawings in this document yet. + drawing to start one.');
-  }
-
-  function choose(entry) {
-    close();
-    button.focus();
-    surface.el.dispatchEvent(new CustomEvent('openproj:draw', {detail: entry}));
   }
 
   button.setAttribute('aria-haspopup', 'true');
@@ -3194,13 +3334,86 @@ function attachDrawing(surface, status) {
     close();
     button.focus();
   });
+}
+
+function attachDrawing(surface, status) {
+  const button = document.getElementById('drawing');
+  // Withheld from a reader the server would refuse a write from, on both pages
+  // that draw it — a page with no button is the ordinary case, not a null this
+  // wiring could walk into.
+  if (!button) return;
+
+  // Recomputed every time the menu opens: no stored state, and nothing this
+  // popover owns can drift from a body somebody just finished typing a
+  // drawing's markdown into by hand. `null` is "+ drawing", first.
+  menuUnder(button, 'drawmenu', 'Drawings in this document', () => {
+    const found = drawingsIn(surface.text());
+    announce(found.length
+      ? `${found.length} drawing${found.length === 1 ? '' : 's'} in this document. `
+        + '+ drawing to start another.'
+      : 'No drawings in this document yet. + drawing to start one.');
+    return [null, ...found].map(entry => ({
+      text: entry ? entry.id : '+ drawing',
+      choose: () => surface.el.dispatchEvent(new CustomEvent('openproj:draw', {detail: entry})),
+    }));
+  });
 
   // `openDrawing` owns everything from here: the fetch-on-press loader, the
   // popup, both save paths. `entry` is the row that was pressed, or `null`
-  // for "+ drawing" — the same detail `choose` dispatched above.
+  // for "+ drawing" — the same detail the menu dispatched above.
   surface.el.addEventListener('openproj:draw', event => {
     openDrawing(surface, status, event.detail);
   });
+}
+
+// Whether a body is still one nobody has written in: empty, or one of the plan's
+// templates word for word. The create form's kind switch asks it before it swaps
+// one template for another, and the Template menu asks it before it decides
+// between replacing the box and adding to the end of it — the same question, so
+// one answer, rather than the two copies of it that would disagree about
+// whitespace the first time somebody changed one.
+function untouchedBody(text, templates) {
+  const said = text.trim();
+  return !said || templates.some(template => template.text.trim() === said);
+}
+
+// **A template goes in at the end of what is there**, and in place of it only
+// when what is there is nobody's writing — jcanton, 2026-10-09: "in those where
+// the body already contains text the template can be added at the bottom".
+//
+// A person's edit and not the page's: a plain `splice`, never under `apply`, so
+// it is one step on whichever undo stack owns the box, it fires the `input` the
+// gutter and the status strip redraw on, and in a room it reaches everybody else
+// as typing — which is what it is. `apply` is the create form's kind switch,
+// where the page swaps a template it put there itself.
+//
+// Separated from the text above it by exactly one blank line, however the body
+// happened to end: a heading that runs on from the last line of a paragraph is
+// not a heading in markdown. The caret lands at the start of what arrived, so
+// the box scrolls to it rather than leaving it below the fold.
+function insertTemplate(surface, template, templates) {
+  const text = surface.text();
+  if (untouchedBody(text, templates)) {
+    surface.splice(0, text.length, template.text);
+    surface.setCaret(0);
+    return false;
+  }
+  const kept = text.replace(/\s+$/, '');
+  surface.splice(kept.length, text.length, '\n\n' + template.text);
+  surface.setCaret(kept.length + 2);
+  return true;
+}
+
+function attachTemplates(surface, button, templates) {
+  menuUnder(button, 'tplmenu', 'Templates', () => templates.map(template => ({
+    text: template.label,
+    choose: () => {
+      const name = template.label.toLowerCase();
+      announce(insertTemplate(surface, template, templates)
+        ? `The ${name} template is added at the end of the document.`
+        : `The document is the ${name} template now.`);
+    },
+  })));
 }
 
 // --- what is open right now, as against what the corpus cites --------------
@@ -3246,27 +3459,156 @@ function widenPullRequests(redraw) {
     });
 }
 
-// Folded into the list rather than replacing it, and the ORDER is the argument:
-// a reference some record already cites is one this plan has a reason to mention
-// again, so it keeps its place at the front and only gains the title it never
-// had. Everything else is appended — the filter runs over the whole list and
-// slices eight, so an open pull request nobody has cited yet is one narrowing
-// keystroke away.
+// What `/api/prs` said is open, kept apart from `SUGGEST.prs`: that one is the
+// bare `owner/repo#` per repository, and the table's menu reads it as it is.
+const OPEN_REFS = [];
+
 function foldInPullRequests(live) {
-  const held = new Map(SUGGEST.prs.map(one => [one.value, one]));
-  for (const one of live) {
-    const repo = one.value.split('#')[0] + '#';
-    if (!held.has(repo)) {
-      const bare = {value: repo, label: 'any pull request'};
-      held.set(repo, bare);
-      SUGGEST.prs.unshift(bare);
-    }
-    const already = held.get(one.value);
-    // A cited reference has no label — the corpus knows the number and not what
-    // it is called — so this is the half the network was asked for.
-    if (already) already.label = already.label || one.label;
-    else { held.set(one.value, one); SUGGEST.prs.push(one); }
+  OPEN_REFS.push(...live);
+}
+
+// A link to a pull request or an issue on GitHub, as the reference `_pr_refs`
+// draws. A pasted URL and the `owner/repo#N` the list offered were two spellings
+// of one thing, and only one of them was what the list would complete to.
+// `/pull/` and `/issues/` both, and whatever trails the number — `/files`, a
+// `#discussion_r…` — because a link is copied from wherever somebody was reading.
+const GITHUB_REF = new RegExp(
+  '^https?://(?:www\\.)?github\\.com/([\\w.-]+)/([\\w.-]+)/(?:pull|issues)/([0-9]+)'
+  + '(?:[/?#]\\S*)?$', 'i');
+
+function asReference(text) {
+  const link = GITHUB_REF.exec(String(text).trim());
+  return link ? `${link[1]}/${link[2]}#${link[3]}` : null;
+}
+
+// What a pull request or issue box offers for what has been typed in it.
+//
+// jcanton, 2026-11-11: "`icon4py PRnr`" — the half of the name somebody
+// remembers, and the number. So what was typed is cut into words at spaces,
+// slashes and hashes; a word of digits is the number, every other word has to
+// find the repository (or, for an open one, its title), and the repositories are
+// the plan's own `repositories:` and no others. A repository not listed is
+// typed in full, and then offered exactly as typed.
+//
+// **The number is written whether or not anything is known about it.** The
+// open list is the hundred most recently touched, and the pull request somebody
+// is citing is as likely merged as open; `icon4py 1210` is `C2SM/icon4py#1210`
+// either way, with a title beside it when the server had one.
+//
+// **Nothing typed that cannot be searched for opens anything.** `#` and `##` are
+// headings in the body, and a lone `#1` is prose: fewer than three digits with
+// no name beside them offer nothing, because Enter would take the first row.
+function referencesFor(said) {
+  const repos = SUGGEST.repos || [];
+  const title = new Map(OPEN_REFS.map(one => [one.value, one.label]));
+  const known = value => ({value, label: title.get(value) || ''});
+  const text = String(said).trim();
+  const pasted = asReference(text);
+  if (pasted) return [known(pasted)];
+  if (!text) {
+    return [...repos.map(r => ({value: r + '#', label: 'pull request or issue'})), ...OPEN_REFS];
   }
+  const words = text.toLowerCase().split(/[\s/#,]+/).filter(Boolean);
+  const number = words.filter(w => /^[0-9]+$/.test(w)).pop() || '';
+  const names = words.filter(w => !/^[0-9]+$/.test(w)).map(sought);
+  if (names.some(n => !n)) return [];
+  if (!names.length && number.length < 3) return [];
+  // The worst of the words' ranks, so a repository every word found as a
+  // substring sorts above one that one word found only as a subsequence.
+  const rank = hay => names.reduce((worst, n) => {
+    const r = found(n, hay);
+    return r && worst ? Math.max(worst, r) : 0;
+  }, 1);
+  const named = repos
+    .map(r => ({r, rank: rank(plain(r))}))
+    .filter(m => m.rank)
+    .sort((a, b) => a.rank - b.rank)
+    .map(m => m.r);
+  const offered = number
+    ? named.map(r => known(`${r}#${number}`))
+    // Not the half reference the box already holds: choosing one reopens the
+    // list on it, and offering it again first would make Enter a no-op.
+    : named.filter(r => (r + '#').toLowerCase() !== text.toLowerCase())
+      .map(r => ({value: r + '#', label: 'pull request or issue'}));
+  const open = OPEN_REFS
+    .map(one => {
+      const [repo, n] = one.value.split('#');
+      if (number && !n.startsWith(number)) return null;
+      return {one, rank: rank(plain(repo) + ' ' + plain(one.label))};
+    })
+    .filter(m => m && m.rank)
+    .sort((a, b) => a.rank - b.rank)
+    .map(m => m.one)
+    .filter(one => !offered.some(o => o.value === one.value));
+  const all = [...offered, ...open];
+  // Written in full for a repository the plan does not list: offered as it is,
+  // so Enter takes it rather than nothing.
+  if (!all.length && /^[\w.-]+\/[\w.-]+#[0-9]+$/.test(text)) return [known(text)];
+  return all;
+}
+
+// --- where the cited pull requests stand ------------------------------------
+//
+// jcanton, 2026-11-11: a record whose pull requests have all merged is done, and
+// one whose pull requests were all closed unmerged is shelved — offered, never
+// written. `/api/pr-states` lists only the records whose status disagrees with
+// GitHub; the table draws a mark beside the status, and the record page a line
+// with a button that fills Status (and End date) for Save. See the route for why
+// it is not automatic.
+//
+// Asked once per page, after it has drawn, and only where there is a server and
+// somebody signed in who could act on it: the route is writers-only, and a
+// rendered file has nobody to ask.
+let PR_STATES = {};
+
+function askPullRequestStates(then) {
+  // And not on a plan that names no repositories, which has nothing to look up:
+  // the route would answer an empty map for a request every page load made.
+  if (!SUGGEST.live || !(SUGGEST.repos || []).length) return;
+  fetch('/api/pr-states', {headers: {accept: 'application/json'}})
+    .then(answer => (answer.ok ? answer.json() : null))
+    .then(said => {
+      if (!said) return;
+      PR_STATES = said.records || {};
+      then(PR_STATES);
+    })
+    // A mark that is not drawn is the page as it was yesterday, and nothing to
+    // report: the question was the page's own and nobody asked it.
+    .catch(() => {});
+}
+
+// What the mark and the line say, in one place so the two pages agree.
+function prStateSentence(state) {
+  const one = state.count === 1;
+  const day = state.at ? longDate(state.at) : '';
+  const when = !day ? '' : one ? ` on ${day}` : `, the last on ${day}`;
+  const each = one ? 'Its PR' : `All ${state.count} of its PRs`;
+  return state.verdict === 'landed'
+    ? `${each} ${one ? '' : 'have '}landed${when}. Is it done?`
+    : `${each} ${one ? 'was' : 'were'} closed without landing${when}. Is it shelved?`;
+}
+
+// GitHub's mark (Octicons' `mark-github`, MIT), filled for landed and struck
+// through for dropped. Struck as well as coloured: green against red is the one
+// pair a dichromat cannot tell apart, which is the argument the status ladder is
+// built on.
+const GITHUB_MARK = 'M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17'
+  + '-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 '
+  + '0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27'
+  + '-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12'
+  + '-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21'
+  + '-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13'
+  + '.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 '
+  + '0 8c0-4.42 3.58-8 8-8Z';
+
+function prStateMark(state) {
+  if (!state) return '';
+  const said = esc(prStateSentence(state));
+  const strike = state.verdict === 'dropped'
+    ? '<path class="ghgap" d="M0 16 16 0"/><path class="ghstrike" d="M0 16 16 0"/>' : '';
+  return `<span class="ghmark gh-${esc(state.verdict)}" role="img" aria-label="${said}"`
+    + ` title="${said}"><svg viewBox="0 0 16 16" aria-hidden="true">`
+    + `<path d="${GITHUB_MARK}"/>${strike}</svg></span>`;
 }
 
 // Type-to-filter, not a picker beside the field. A datalist only completes a whole
@@ -3320,6 +3662,14 @@ function park(input, list, follow) {
 function attachSuggest(input) {
   const source = SUGGEST[input.dataset.suggest] || [];
   const multi = input.dataset.type === 'list';
+  // A box of record ids reads as their titles (`refChips`, in the shell). First,
+  // so its own `input` listener has turned a finished id into a chip before
+  // `open` below asks what is being typed. Folded inside a record's own page —
+  // the record page and the create form — which is where the stylesheet that
+  // folds it is (`_DETAIL_STYLE`), and where every field is on screen at once.
+  const refs = input.dataset.suggest === 'records'
+    ? refChips(input, source, multi, !!input.closest('article.record'))
+    : null;
   const list = document.createElement('ul');
   const id = 'suggest-' + (++SUGGEST_N);
   list.className = 'suggest';
@@ -3372,9 +3722,20 @@ function attachSuggest(input) {
   }
 
   const tokens = () => input.value.split(',').map(s => s.trim());
-  const typed = () => (multi ? tokens()[tokens().length - 1] : input.value).trim().toLowerCase();
+  function typed() {
+    if (refs) return refs.typed().trim().toLowerCase();
+    return (multi ? tokens()[tokens().length - 1] : input.value).trim().toLowerCase();
+  }
+  // What the box already holds, so it is not offered again.
+  const taken = () => (refs ? refs.ids() : tokens().slice(0, -1));
 
   function choose(value) {
+    if (refs) {
+      refs.add(value);
+      input.focus();
+      close();
+      return;
+    }
     // `kilnlab/kiln4py#` is half a reference. Appending the separator after one would
     // end the entry at the point where the number still has to be typed.
     const partial = value.endsWith('#');
@@ -3421,10 +3782,15 @@ function attachSuggest(input) {
     // cached at attach time would be the shorter, older list.
     const said = typed();
     const needle = sought(said);
-    const matches = source
-      .map(item => ({item, rank: found(needle, plain(item.value) + ' ' + plain(item.label))}))
-      .filter(m => !said || m.rank)
-      .filter(m => !multi || !tokens().slice(0, -1).includes(m.item.value))
+    const ranked = input.dataset.suggest === 'prs'
+      // Its own search, for the reasons over `referencesFor`; ranked already,
+      // so every row it gives is rank 1 to the sort below and keeps its place.
+      ? referencesFor(said).map(item => ({item, rank: 1}))
+      : source
+        .map(item => ({item, rank: found(needle, plain(item.value) + ' ' + plain(item.label))}))
+        .filter(m => !said || m.rank);
+    const matches = ranked
+      .filter(m => !multi || !taken().includes(m.item.value))
       // Eight are shown, so the cap already throws matches away and the eighth
       // used to be decided by the id. A substring before a subsequence — the one
       // place where a weak match can evict a strong one, and the reason `found`
@@ -3457,17 +3823,33 @@ function attachSuggest(input) {
     highlight();
   }
 
-  input.addEventListener('input', open);
+  // Not over a chip's removal: the list opening on the rest of the plan because
+  // somebody took one reference away is a popup nobody asked for.
+  input.addEventListener('input', event => { if (!event.fromRefs) open(); });
   input.addEventListener('focus', () => {
     // A list that already holds a name needs a separator before the next one, or
     // the first thing typed lands inside the previous value and matches nothing.
-    if (multi && input.value.trim() && !input.value.trim().endsWith(',')) {
+    // Not a box of chips, whose text is only ever the one being added.
+    if (multi && !refs && input.value.trim() && !input.value.trim().endsWith(',')) {
       input.value = input.value.trim() + ', ';
       input.setSelectionRange(input.value.length, input.value.length);
     }
     open();
   });
   input.addEventListener('blur', () => setTimeout(close, 150));
+  // A link pasted and never chosen from the list is still the reference it names,
+  // so the file holds one spelling. On `change`, which fires before the blur that
+  // a form or a table cell saves on, and without an `input` event of its own,
+  // which would reopen the list on a box being left.
+  if (input.dataset.suggest === 'prs') {
+    input.addEventListener('change', () => {
+      const tidied = input.value.split(',').map(one => {
+        const ref = asReference(one);
+        return ref ? (one.match(/^\s*/)[0] + ref) : one;
+      }).join(',');
+      if (tidied !== input.value) input.value = tidied;
+    });
+  }
   list.addEventListener('mousedown', event => {
     const item = event.target.closest('li');
     if (item) { event.preventDefault(); choose(item.dataset.value); }
@@ -3595,10 +3977,11 @@ function bodyToken(text, at) {
   const ref = openRef(text, at);
   if (ref) {
     return {
-      // Not a snapshot: `foldInPullRequests` grows this array in place, so a
-      // popup that opened before the answer landed reads the wider list on the
-      // next keystroke without being handed it.
-      source: SUGGEST.prs || [],
+      // Searched by `referencesFor`, which reads the plan's repositories and
+      // `OPEN_REFS` as they are at that keystroke — so a popup that opened before
+      // the server's answer landed reads the wider list on the next one.
+      search: referencesFor,
+      source: SUGGEST.repos || [],
       // The one shape whose vocabulary the server can widen.
       live: true,
       from: ref.from,
@@ -3688,9 +4071,11 @@ function attachBodyCompletion(surface) {
     // into the document on the way to typing a footnote.
     const said = token.typed.trim();
     const needle = sought(said);
-    matches = token.source
-      .map(item => ({item, rank: found(needle, plain(item.value) + ' ' + plain(item.label))}))
-      .filter(m => !said || m.rank)
+    matches = (token.search
+      ? token.search(said).map(item => ({item, rank: 1}))
+      : token.source
+        .map(item => ({item, rank: found(needle, plain(item.value) + ' ' + plain(item.label))}))
+        .filter(m => !said || m.rank))
       // Eight, so the cap throws matches away: substring before subsequence,
       // and the source's own order inside each tier. The same sort the field
       // combobox does, because a reader who has learned one of these lists has
@@ -4004,13 +4389,6 @@ def _control_html(
     return _fragment(_CONTROL, f=field, priorities=PRIORITIES, describedby=describedby)
 
 
-def _pr_sort(ref: str) -> tuple[str, int]:
-    """Newest first within a repository. A PR number is a number, and sorting the
-    references as text puts #999 above #1400."""
-    repo, _, number = ref.partition("#")
-    return repo, int(number) if number.isdigit() else 0
-
-
 def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> dict:
     """What already exists, offered rather than remembered.
 
@@ -4031,6 +4409,14 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
             value = getattr(record, name, None)
             people.update(value if isinstance(value, list) else [value] if value else [])
         tags.update(record.tags)
+    # And everybody known without a record naming them yet: the roster, whoever
+    # has a `people/` file, and whoever this server lets write. Built from the
+    # records alone, plan-d's Owner offered `agnese` and not `jacopo` — jcanton,
+    # 2026-10-10 — on a plan with no roster whose records had not yet named him,
+    # which is the moment a typo is likeliest and the list most needed.
+    people.update(index.known_people)
+    people.update(index.icons)
+    people.update(index.writers)
     # A login has no comma and no space in it. An early version of the table wrote
     # a whole comma-separated string into a list field, and the picker then offered
     # "jcanton, halungge" as if it were one person — garbage in the corpus became
@@ -4040,18 +4426,21 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
     # {value, label}: the value is what gets written to the file, the label is the
     # human hint beside it. An id typed from memory is a dangling reference the
     # validator rejects after the save; offered, it cannot be mistyped at all.
-    # Two kinds of entry for one field. A whole reference completes a PR already
-    # cited somewhere in the plan; a bare `org/repo#` completes the half nobody
-    # remembers — which org, and whether it is kiln4py or kiln4pygen — and leaves
-    # the number to be typed. Everything here comes from the corpus, so it costs
-    # no network and cannot be stale in a way the plan is not already stale.
-    refs = {ref for record in index.records.values() for ref in record.prs}
-    repos = {ref.split("#")[0] + "#" for ref in refs if "#" in ref}
+    # The repositories the PLAN names, and nothing read out of the corpus. This
+    # offered every reference some record already cited, and a repository for
+    # each — jcanton, 2026-11-11, on why that was the wrong list: a pull request
+    # cited by one record almost always belongs to that record and not the next,
+    # and anything somebody had pasted into `prs:` came back as a suggestion,
+    # which on icon4py's plan was a page of the knowledge base. A repository not
+    # in `config/defaults.yaml` is typed in full; `referencesFor` in the page is
+    # what turns `icon4py 1403` into `C2SM/icon4py#1403` for one that is.
+    #
+    # `prs` is the bare `owner/repo#` of each, for the table's menu, which
+    # completes through a native datalist and a prefix and has nothing to run a
+    # search with. The field and the body read `repos` and the live list.
     return {
-        "prs": (
-            [{"value": r, "label": "any pull request"} for r in sorted(repos)]
-            + [{"value": r, "label": ""} for r in sorted(refs, key=_pr_sort, reverse=True)]
-        ),
+        "prs": [{"value": f"{r}#", "label": "pull request or issue"} for r in index.repositories],
+        "repos": list(index.repositories),
         "people": [{"value": p, "label": ""} for p in sorted(people)],
         # Named `records`, filled from the PLAN, deliberately: these complete
         # `parent` and `depends_on`, and offering an issue or a note there
@@ -4248,6 +4637,28 @@ def _facets_html(
     )
 
 
+def _offered_templates(index: Index) -> list[dict[str, str]]:
+    """What the editor's Template button offers: one body per kind that has one.
+
+    Only the kinds this plan has switched on, off `index.kinds` — the set the
+    create form's kind picker is drawn from. A template is named by its kind, so
+    offering a product's skeleton on a plan with products switched off is a menu
+    naming a thing that plan does not have. `blank` is not one: inserting nothing
+    is not a choice a menu should offer, and the empty body it stood for on the
+    create form is what switching to a kind with no template now gives.
+
+    One list for both pages that draw the bar — the record page (and with it the
+    create form) and the slide editor — handed to `attachEditing` by each. Not
+    shipped inside the shared block below: the table and the cycle page inline
+    that block too, and draw no bar for the list to be offered from.
+    """
+    return [
+        {"kind": kind, "label": _human(kind), "text": TEMPLATES[kind]}
+        for kind in KINDS
+        if kind in index.kinds and TEMPLATES.get(kind)
+    ]
+
+
 def _combobox_html(index: Index | None, linkable: bool = False, live: bool = False) -> Markup:
     """The suggestion data and the widget that filters it, for any page with inputs.
 
@@ -4264,6 +4675,7 @@ def _combobox_html(index: Index | None, linkable: bool = False, live: bool = Fal
             "records": [],
             "tags": [],
             "prs": [],
+            "repos": [],
             "cycles": [],
             "linkable": [],
             "live": False,
@@ -4276,4 +4688,5 @@ def _combobox_html(index: Index | None, linkable: bool = False, live: bool = Fal
         history_art=HISTORY_MARKS,
         draw_art=DRAWING_ART,
         size_art=DRAWING_SIZE_MARKS,
+        template_art=TEMPLATE_ART,
     )

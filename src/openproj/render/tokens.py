@@ -68,7 +68,7 @@ EDITABLE: dict[str, str] = {
     "person_weeks": "number",
     "tags": "list",
     "owner": "text",
-    "assignees": "list",
+    "developers": "list",
     "reviewers": "list",
     "review_waived": "bool",
     "parent": "text",
@@ -323,6 +323,15 @@ HISTORY_MARKS = {
     ),
 }
 
+# The template button's: a page with a turned corner and three ruled sections,
+# because a template is the headings of a document and nothing in it yet. Drawn
+# for the history marks' reason — no glyph in the vendored subset says "page" —
+# and sized by `.marks .tpl svg` for theirs.
+TEMPLATE_ART = _ICON_SVG.format(
+    '<path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/>'
+    '<path d="M9 11h6"/><path d="M9 14.5h6"/><path d="M9 18h3.5"/>'
+)
+
 # The mark the drawings button wears, beside the two the history buttons wear
 # and rendered into the bar the same way — a template variable `attachEditing`
 # sets with `innerHTML`, never a `.replace` into finished markup.
@@ -438,7 +447,7 @@ LABELS = {
     "title": "Title",
     "status": "Status",
     "owner": "Owner",
-    "assignees": "Assignees",
+    "developers": "Developers",
     "reviewers": "Reviewers",
     "review_waived": "Review waived",
     "start_date": "Start date",
@@ -560,9 +569,105 @@ HUMAN = {
     # roles, which the people page filters by. Already English, but a dropdown
     # reading "owner, Pitch, Ready" is three labelling conventions in one bar.
     "owner": "Owner",
-    "assignee": "Assignee",
+    "developer": "Developer",
     "reviewer": "Reviewer",
 }
+
+
+def _percent(part: float, whole: float) -> int:
+    """`part` of `whole` as a whole percent from 0 to 100, for a bar's width.
+
+    Written once because it was written three times — the cycle page, the cycles
+    index and the people page each carried `min(100, round(100 * x / capacity))`,
+    and all three raised. An invariant written three times is guarded in none of
+    them: `person_weeks: .inf` in one hand-committed task file made the ratio
+    infinite, `round()` raises OverflowError on infinity, and /people, /cycles and
+    /cycle/37 all answered 500 off a file `openproj check` reported nothing about.
+
+    The bound goes BEFORE the round, which is the whole of the fix and the same
+    order `days_after` and `within_the_calendar` (`model.py`) settled on. The two
+    ends were already the right ones — a bar cannot be wider than full or
+    narrower than empty — they were just applied to an integer that could no
+    longer be made.
+
+    The constants come first in both comparisons because NaN loses every one of
+    them, exactly as `within_the_calendar` does it: `min(100.0, nan)` is 100.0
+    and `min(nan, 100.0)` is the NaN, which rounds no better than the infinity
+    did.
+
+    **That NaN branch is no longer reachable from a plan file, and the line that
+    said it was is corrected rather than deleted.** It read "NaN is reachable
+    here and not hypothetical — an `availability` of `.inf` makes the capacity
+    infinite too, and inf/inf is NaN", and that was true until `Cycle.rate` and
+    `size_weeks` (`model.py`) started answering the nominal rate and None for a
+    value that is not a number. Both of this function's arguments are finite now
+    whatever anybody commits. The bounds stay for the reason `days_after` keeps
+    its own: a caller is not a proof, this is the one place in the app that turns
+    a ratio into a width, and the reachable case — `held` above `capacity`, which
+    is an ordinary over-bet — still needs the upper one.
+
+    So an unreadable ratio draws a full bar rather than an empty one. That is the
+    direction this number must never be wrong in: the cycles index says so about
+    its own sum, and a bar drawn empty is a cycle that looks free to bet into.
+
+    **There is a second copy, in the browser, and it is called `percent`.** The
+    cycle page's `recount` redraws the roster's bars while a rate is being typed,
+    so the same ratio is taken in JavaScript — and it was taken there with only
+    the upper bound, which made `-1` in a rate box freeze the bar at whatever it
+    was last showing where a reload drew an empty one. Whoever changes this
+    changes that, and the comment above `percent` says which of the two rules
+    here does not survive the translation.
+
+    **The three that were named here as still open are closed.** The record
+    page's two `round(100 * counted.fraction)` and the deck's third are this
+    function now, and `_CYCLE`'s roster row no longer takes `(row.rate *
+    100)|round|int` in a template where nothing can guard it. What a page is
+    `openproj check` says about the files that hold one is `unusable_numbers`
+    (`model.py`) — jcanton, 2026-09-24, "the rest of the .inf/.nan sweep on the
+    entire thing".
+
+    **No readout needs a guard of its own, and that was measured rather than
+    argued.** A reader-facing `_number` was written for the fifteen places that
+    spell a week — `{capacity:.1f} wk`, `{staffed_at:g} full-time between them` —
+    and then deleted with no caller, because guarding the two SOURCES emptied all
+    fifteen: `size_weeks` answers None for a size that is not a number and
+    `Cycle.rate` falls back to the nominal rate for an availability that is not
+    one, so nothing downstream of either is ever handed a non-finite float. All
+    21 routes were rendered over a corpus carrying `.inf` in a config file, `.inf`
+    in a cycle and `.nan` on a task, and the only `inf` left anywhere in the
+    output was Ace's own minified source. Guard where the value enters, not where
+    it is printed.
+    """
+    if not whole:
+        return 0
+    return round(max(0.0, min(100.0, 100 * part / whole)))
+
+
+def _over(held: float, capacity: float) -> bool:
+    """Whether somebody is holding more weeks than their capacity buys.
+
+    **The browser has the second copy, inside `recount`, and it is spelled
+    `capacity > 0 && held > capacity`.** This one was `capacity and held >
+    capacity`, written out three times, and the two shapes disagree on every
+    negative number — which a rate box takes, because it is a plain text input.
+    With a hand-committed `availability: {someone: -1}` the served row came down
+    wearing `class="over"` with that person named under "Over capacity", and one
+    character typed into the rate box took both away. Commit 4e259a4 fixed the
+    BAR two lines above this line in `recount` and left the flag beside it.
+
+    `capacity > 0` and not `bool(capacity)`, and the browser's is the shape that
+    is right rather than merely the one that won: a capacity is a number of
+    weeks, so a capacity that is not positive is not a budget somebody can be
+    over. It also keeps this flag agreeing with the bar drawn next to it —
+    `_percent(1.0, -4.0)` is 0, so the alternative was an empty bar in a row
+    coloured for being full. NaN loses `> 0` as well, which is the same direction
+    `_percent` puts its constants first for.
+
+    Whoever changes either of these changes an invariant written in two
+    languages, which is this repository's characteristic way of guarding half of
+    one.
+    """
+    return capacity > 0 and held > capacity
 
 
 def _human(value: object) -> str:
@@ -717,13 +822,13 @@ def _ago(epoch: int, now: int) -> str:
 
 # Fields that name a person. They get a datalist of everyone already in the corpus,
 # so a typo shows up as "not in the list" rather than as a reviewer who does not exist.
-PEOPLE_FIELDS = ("owner", "assignees", "reviewers", "reported_by", "written_by")
+PEOPLE_FIELDS = ("owner", "developers", "reviewers", "reported_by", "written_by")
 # Which suggestion list each field draws from. A datalist only completes a whole
 # value, so the comma-separated ones also get an "add" picker that appends a token
 # — otherwise the suggestions are useless the moment there is more than one name.
 SUGGESTS = {
     "owner": "people",
-    "assignees": "people",
+    "developers": "people",
     "reviewers": "people",
     "parent": "records",
     "depends_on": "records",
@@ -914,9 +1019,9 @@ def card_facts() -> dict[str, list[dict[str, str]]]:
     That identity is the whole point of this function existing, and it is
     jcanton's, on 2026-09-18: the right-click box "should display the editable
     fields as the edit view, so owner, assignees, reviewer, etc etc". The card
-    used to draw its own shorter vocabulary — `With`, which is the assignees
+    used to draw its own shorter vocabulary — `With`, which is the developers
     minus the owner, a compression that reads well and is not a field anybody can
-    edit. A box that shows `With` and a box that edits `assignees` are two boxes
+    edit. A box that shows `With` and a box that edits `developers` are two boxes
     however alike they look.
 
     Progress is not here. It is not a field — it is counted — so it is appended

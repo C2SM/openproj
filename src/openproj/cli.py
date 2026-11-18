@@ -52,6 +52,7 @@ from .model import (
     _and_then,
     edited_by_id,
     in_model_order,
+    kind_refusal,
     load_repo,
     loop_made,
     mint_id,
@@ -65,6 +66,11 @@ from .model import (
     unknown_fields,
     validate_all,
 )
+
+# The ways `serve` can know who somebody is. One tuple, read by the parser's
+# `choices` and by `_serve`'s refusal, because the environment spelling never
+# passes through `choices` at all.
+AUTH_MODES = ("dev", "github", "tailscale")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -206,7 +212,19 @@ def _parser() -> argparse.ArgumentParser:
 
     serve = commands.add_parser("serve", help="run the editable server")
     serve.add_argument("--repo", type=Path, required=True, help="a bare clone of the plan repo")
-    serve.add_argument("--auth", choices=("dev", "github"), default="dev")
+    # No default, for the reason `--org` has none, and with more at stake: the
+    # default was `dev`, so a bare `openproj serve` signed every request in as
+    # somebody who may write. Asked as a flag or as OPENPROJ_AUTH, and refused at
+    # startup when neither says — argparse never checks a default against
+    # `choices`, so `_serve` checks both spellings in one place.
+    serve.add_argument(
+        "--auth",
+        choices=AUTH_MODES,
+        default=os.environ.get("OPENPROJ_AUTH"),
+        help="how a person is known: `dev` signs everybody in, for a machine only you can "
+        "reach; `github` is sign-in plus org membership; `tailscale` asks the tailnet who "
+        "the client is and maps it through OPENPROJ_TAILSCALE_USERS (default: OPENPROJ_AUTH)",
+    )
     # No default. Membership of the org is the write permission, and a default
     # of one team's org made every other deployment that team's — silently, with
     # `--auth github` refusing everybody outside it.
@@ -347,6 +365,16 @@ def _new(args) -> int:
         return 1
 
     records, config, _ = load_repo(args.repo)
+    # The parser offers every kind this tool has, because argparse is built
+    # before any plan is read and cannot know which kinds this one switched off.
+    # So the refusal is here, the moment the config is in hand and before an id
+    # is minted, and in `kind_refusal`'s sentence — the one every door that
+    # writes a record gives — so a person told no in a terminal and an agent told
+    # no in a 422 are sent to the same line of the same file.
+    if (refused := kind_refusal(kind, config)) is not None:
+        print(f"blocker: {refused}")
+        print("nothing written")
+        return 1
     try:
         fields = _assigned(args.assignments)
     except ValueError as error:
@@ -512,6 +540,14 @@ def _rekind(args) -> int:
         return 1
 
     records, config, _ = load_repo(repo)
+    # The new record is written, so it passes the gate `openproj new` and
+    # `POST /api/rekind` both put in front of a write, in the same sentence:
+    # without it, a plan that has turned issues off took one from the command
+    # line through the one door that never asked.
+    if (refused := kind_refusal(kind, config)) is not None:
+        print(f"blocker: {refused}")
+        print("nothing written")
+        return 1
     # The day does not enter the decision -- what this refuses and what it drops
     # are structural -- but `build_index` pairs a plan with one, so it gets today.
     index = build_index(records, config, date.today())
@@ -855,6 +891,14 @@ def _check(repo: Path, today: date | None) -> int:
             f"{one.why}"
         )
     index = build_index(records, config, today or date.today(), unreadable)
+    # The files that read and hold a number nothing can compute with, between the
+    # files that did not read and the problems on records. Counted as blockers
+    # for the same reason those are: the plan still draws, and every date or bar
+    # that value feeds is drawn at a bound nobody chose. A `cooldown_weeks: .inf`
+    # moves the end of every cycle on every page, and this command reported
+    # byte-identical counts on a corpus holding one and on a corpus holding none.
+    for bad in index.unusable:
+        print(f"blocker: {bad.path}: {bad.why}")
     problems = sorted(
         index.problems,
         key=lambda p: (p.severity, p.record_id, p.field or ""),
@@ -862,8 +906,9 @@ def _check(repo: Path, today: date | None) -> int:
     for problem in problems:
         print(f"{problem.severity}: {problem.record_id}: {problem.field}: {problem.message}")
     blockers = [p for p in problems if p.severity == "blocker"]
-    print(f"{len(blockers) + len(unreadable)} blockers, {len(problems) - len(blockers)} warnings")
-    return 1 if blockers or unreadable else 0
+    stopped = len(blockers) + len(unreadable) + len(index.unusable)
+    print(f"{stopped} blockers, {len(problems) - len(blockers)} warnings")
+    return 1 if blockers or unreadable or index.unusable else 0
 
 
 def _render(repo: Path, out_dir: Path, today: date | None) -> int:
@@ -875,8 +920,9 @@ def _render(repo: Path, out_dir: Path, today: date | None) -> int:
     # WITHOUT the time column — omitted, not blank, because blank looks broken
     # and file mtimes lie after a fresh clone.
     stamps = last_edited_in(repo)
+    index = build_index(records, config, today or date.today(), unreadable)
     written = render_static(
-        build_index(records, config, today or date.today(), unreadable),
+        index,
         out_dir,
         repo,
         edited=edited_by_id(stamps) if stamps is not None else None,
@@ -888,6 +934,11 @@ def _render(repo: Path, out_dir: Path, today: date | None) -> int:
     # announces only success is how it ships.
     for one in unreadable:
         print(f"left out {one.path}: {one.why}")
+    # Not "left out": these files are in the export and their settings are in
+    # force. What is wrong is one value in each, and a build log that says so is
+    # where somebody notices before the pages ship.
+    for bad in index.unusable:
+        print(f"{bad.path}: {bad.why}")
     return 0
 
 
@@ -1065,8 +1116,49 @@ def _serve(args) -> int:
     """
 
     from .github import GitHubApp
+    from .tailnet import SOCKET, parse_users
     from .web import create_app
 
+    if args.auth not in AUTH_MODES:
+        said = (
+            "nothing says how people sign in"
+            if not args.auth
+            else f"OPENPROJ_AUTH={args.auth!r} is not a way to sign in"
+        )
+        print(
+            f"refusing to start: {said}. Pass --auth dev, --auth github or --auth "
+            "tailscale, or set OPENPROJ_AUTH — `dev` lets anybody who can reach the "
+            "port write.",
+            file=sys.stderr,
+        )
+        return 2
+    tailscale_users: dict[str, str] = {}
+    if args.auth == "tailscale":
+        try:
+            tailscale_users = parse_users(os.environ.get("OPENPROJ_TAILSCALE_USERS", ""))
+        except ValueError as error:
+            print(f"refusing to start: {error}", file=sys.stderr)
+            return 2
+        if not tailscale_users:
+            print(
+                "refusing to start: --auth tailscale needs OPENPROJ_TAILSCALE_USERS, the "
+                "tailnet logins that may write and the plan login each writes as — "
+                "`you@example.com=you,them@example.com=them`.",
+                file=sys.stderr,
+            )
+            return 2
+        if os.environ.get("OPENPROJ_FORWARDED_ALLOW_IPS", "").strip() == "*":
+            # Under `*` uvicorn takes the client from the LEFTMOST entry of
+            # X-Forwarded-For, which is the one the client wrote — nginx's
+            # `$proxy_add_x_forwarded_for` appends to whatever arrived. With the
+            # address as the identity, that is anybody writing as anybody.
+            print(
+                "refusing to start: --auth tailscale knows a person by their address, and "
+                "OPENPROJ_FORWARDED_ALLOW_IPS=* believes whatever address a client claims. "
+                "Name the proxy instead (the default, 127.0.0.1, is a proxy on this machine).",
+                file=sys.stderr,
+            )
+            return 2
     if args.auth == "github" and not args.org:
         print(
             "refusing to start: --auth github needs the org whose members may write. "
@@ -1086,6 +1178,8 @@ def _serve(args) -> int:
         # development run needs neither and a deployment sets both or is refused.
         remote=os.environ.get("OPENPROJ_REMOTE", ""),
         credentials=credentials,
+        tailscale_users=tailscale_users,
+        tailscale_socket=os.environ.get("OPENPROJ_TAILSCALE_SOCKET", SOCKET),
     )
     # After `create_app`, so a path that is no repository at all is refused by
     # the store in its own words rather than warned about here and then refused.
@@ -1203,6 +1297,8 @@ def _schedule(repo: Path, as_json: bool, today: date | None) -> int:
         # To stderr, so `--json` stays a document a script can pipe while the
         # person watching still finds out the plan was read short.
         print(f"left out {one.path}: {one.why}", file=sys.stderr)
+    for bad in index.unusable:
+        print(f"{bad.path}: {bad.why}", file=sys.stderr)
     if as_json:
         print(
             json.dumps(

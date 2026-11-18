@@ -11,7 +11,16 @@ import io
 import math
 import re
 import secrets
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence, Sized
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+    Sized,
+)
 from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -129,6 +138,29 @@ def what_json_can_carry(data: object) -> object:
     if isinstance(data, list):
         return [what_json_can_carry(value) for value in data]
     return data
+
+
+def a_number(value: object) -> bool:
+    """Whether `value` is a number anybody can plan against.
+
+    `.inf`, `-.inf` and `.nan` are all legal YAML and all pass a pydantic
+    `float`, so `person_weeks: .inf` is a size the model accepts and no
+    arithmetic can use. The question is asked here rather than at the dozen
+    places that ask it, for the reason `days_after` exists: an invariant written
+    twice is guarded once, and the rounding sites that raise on these three were
+    found five at a time, on `main`, under a green suite.
+
+    `None` answers False, because every caller's next move is the same for a size
+    nobody typed and a size that is not a number: draw the dash. It takes
+    `object` and not `float | None` so that the one question can also be put to a
+    value straight out of a file, before anything has decided what it is.
+
+    The predicate and not a clamp. Clamping belongs where the arithmetic is —
+    `within_the_calendar` for a length in days, `_percent` for a bar's width —
+    and those two already do it. This is for the places whose honest answer is
+    not a number at all: what a reader is shown, and what `openproj check` says.
+    """
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def days_after(day: date, days: float) -> date:
@@ -308,6 +340,53 @@ class Unreadable(BaseModel):
     """
 
     path: str
+    why: str
+
+
+class Unusable(BaseModel):
+    """A file in the plan that reads, and holds a setting that could not be used as
+    written.
+
+    `Unreadable`'s sibling and deliberately not `Unreadable` itself: that one says
+    "this file is not a record, so nothing in it is in the plan", and of a
+    `config/defaults.yaml` holding `cooldown_weeks: .inf` every word of that is
+    false. The file parsed, the settings around the bad one are in force, and the
+    pages render — `within_the_calendar` and `_percent` see to that. What is
+    wrong is one value, and the consequence is a date or a bar drawn at a bound
+    nobody chose.
+
+    Two families of setting arrive here, and the argument is the same for both.
+    A number nothing can compute with, from `unusable_numbers`. And a switch —
+    `views` or `kinds`, from `resolve_switches` — that names something it cannot
+    switch: a typo, a name that is always on, a view whose dependency is off, a
+    value that is not a list at all. The file is not dropped for any of those,
+    because `views: cycles` is one word in one file and `schema_version`,
+    `cooldown_weeks` and `repositories` sit beside it; what is drawn instead is
+    the switch's own default, or the list without the name, and this is what
+    says so. A typo that silently hid the Cycles page would be a page gone with
+    nothing anywhere saying why.
+
+    Deliberately not a `Problem` either, for the reason `Unreadable` gives: a
+    Problem is keyed by record id, every page hangs one on that record's row, and
+    the table's headline count links to a filter over records. The two files this
+    can be about — `config/*.yaml` and a cycle — have no record between them, so
+    a Problem here would add to a count whose filter can never show it.
+
+    A record's own `person_weeks: .inf` is NOT one of these. That record exists,
+    it has a row and a page, and `_problems_for` reports it there, beside the
+    field, like every other thing wrong with a record. Nor is an issue file in a
+    plan whose `kinds` leaves issues out: the switch is fine, the record is the
+    thing that disagrees with it, and `_kind_problems` hangs the warning on it.
+
+    `field` as well as `path`, because these files hold twenty settings and the
+    reader has to be sent to one line rather than to a file. `why` says what is
+    drawn instead, not what the value is: "so every cycle's cool-down is drawn at
+    the end of the calendar" is actionable where "cooldown_weeks is inf" is the
+    thing they can already see.
+    """
+
+    path: str
+    field: str
     why: str
 
 
@@ -538,9 +617,46 @@ class Cycle(BaseModel):
             return []
         return [one for one in value if isinstance(one, str)]
 
+    def rate(self, who: str, nominal: float = 1.0) -> float:
+        """This person's availability in this cycle, as a number.
+
+        **The one place a typed availability becomes a number anything computes
+        with**, and the reason it is one place is the fifteen readouts on the
+        other side of it. `availability` is a `dict[str, float]` off a file, so
+        `.inf`, `-.inf` and `.nan` all reach it — and from here the value runs
+        into `capacity`, into the scheduler's `_staffed_at`, into `budget_weeks`
+        and out to `{staffed_at:g} full-time between them`, `{capacity:.1f} wk`
+        and a dozen more. Every one of those printed `inf` off one hand edit, and
+        guarding them one at a time is fifteen chances to miss one.
+
+        A rate that is not a number falls back to `nominal` — which is where the
+        line already sent a rate of zero and a person not on the roster at all,
+        both for the reason `_availability_of` (`schedule.py`) writes down: the
+        scheduler cannot fix a planning mistake by refusing to produce a date.
+        The reader is told which file it was in by `unusable_numbers`, on every
+        page, rather than by a bar that silently means something else.
+
+        `nominal` is guarded too and not taken on trust: it is
+        `config.nominal_availability`, which is a hand-edited config value of
+        exactly the same kind, and a fallback that can itself be `.inf` is not a
+        fallback. 1.0 is `Config`'s own default for it.
+
+        **A stated zero is zero here, and it is the nominal rate in the
+        scheduler, and that is not an oversight in either.** They are two
+        questions: this one is "what rate does the file state for this person in
+        this cycle", where zero is a thing somebody typed and means it; the
+        scheduler's is "what do we divide the appetite by", where zero is a
+        division by zero and no forecast at all. `_availability_of`
+        (`schedule.py`) asks this and then applies its own floor on top, so the
+        two answers stay different on purpose and the non-finite case is
+        answered once.
+        """
+        stated = self.availability.get(who)
+        return stated if a_number(stated) else (nominal if a_number(nominal) else 1.0)
+
     def capacity(self, who: str, nominal: float = 1.0) -> float:
         """Weeks of work this person can hold in this cycle."""
-        return self.availability.get(who, nominal) * self.build_weeks
+        return self.rate(who, nominal) * self.build_weeks
 
 
 class Person(BaseModel):
@@ -660,12 +776,11 @@ class Config(BaseModel):
     # a roster yet is a tracker nobody finishes setting up.
     known_people: list[str] = []
     # The repositories this plan's work happens in, as `owner/repo`, from
-    # config/defaults.yaml. Empty is the ordinary state and means one thing only:
-    # the pull-request completion offers what the corpus already cites and asks
-    # nothing of the network. Named here rather than in this tool's source
-    # because they are a fact about the PLAN — jcanton, 2026-08-25, asking
-    # whether kiln4py's and griddle's open pull requests could be offered — and
-    # openproj is not one team's tool alone.
+    # config/defaults.yaml. The pull-request completion offers these and nothing
+    # else, and empty means it offers nothing and asks nothing of the network.
+    # Named here rather than in this tool's source because they are a fact about
+    # the PLAN — jcanton, 2026-08-25, asking whether kiln4py's and griddle's open
+    # pull requests could be offered — and openproj is not one team's tool alone.
     repositories: list[str] = []
     # Keyed by cycle number. Loaded from `cycles/*.md`, not from a config file.
     plans: dict[int, Cycle] = {}
@@ -674,6 +789,35 @@ class Config(BaseModel):
     # is who the team says is on it. Neither answers the other's question, and a
     # login in one and not the other is the normal state of both.
     people: dict[str, Person] = {}
+    # Which views this plan lists, in nav order, and which kinds of record — both
+    # RESOLVED, never as the file wrote them. `read_config` pulls the two keys
+    # out before the file is validated and hands them to `resolve_switches`, so
+    # a value that is not a list costs that switch and not the file around it,
+    # and nothing past that one function reads `views` or `kinds` as written.
+    #
+    # Everything on by default, because absent has to mean everything: every
+    # plan written before the keys existed would otherwise lose every page on
+    # the upgrade that introduced them. Factories and not literals, because the
+    # vocabulary is off the kind ladder and the ladder is further down this file.
+    views: tuple[str, ...] = Field(default_factory=lambda: VIEWS)
+    kinds: frozenset[str] = Field(default_factory=lambda: frozenset(KIND_NAMES))
+
+    # Which config file each setting above was taken from, keyed by field name.
+    # Private for the same reason `Record._source` is: it is where the value came
+    # from and not part of the value, so `serialise` must never write it back.
+    #
+    # Here because the configuration is a MERGE of up to four files and a reader
+    # sent to the wrong one is worse off than a reader sent to none — this
+    # repository has the rule written down about line numbers in documents and it
+    # is the same rule. `read_config` is the only writer, and it fills this at the
+    # moment it accepts a key, which is the one moment both halves are in hand.
+    _from: dict[str, str] = PrivateAttr(default_factory=dict)
+    # What `resolve_switches` could not use in `views` and `kinds`, as written.
+    # Carried here rather than returned beside the Config, because the three
+    # callers of `read_config` all unpack two values and only `build_index`
+    # wants this; private for the reason `_from` is, and it survives the
+    # `model_copy` in `with_plans` and `with_people` the way `_from` does.
+    _unusable: list[Unusable] = PrivateAttr(default_factory=list)
 
     @field_validator("repositories")
     @classmethod
@@ -700,6 +844,32 @@ class Config(BaseModel):
                     "'kilnlab/kiln4py'"
                 )
         return given
+
+    def nominal(self) -> float:
+        """`nominal_availability`, as a number anything can divide by.
+
+        The field stays exactly as the file wrote it, because
+        `unusable_numbers` has to be able to say that it is wrong and a value
+        repaired at parse time is a value nobody can report. So the repair is
+        here, at the one place the setting is read as a rate, and the two readers
+        — `Cycle.rate` and `_staffed_at` (`schedule.py`) — both come through it.
+
+        1.0 is this field's own default. Zero falls back too and always has: it
+        is the divisor in `size / staffed_at`, and the line it replaced ended
+        `or 1.0` for exactly that reason.
+        """
+        stated = self.nominal_availability
+        return stated if a_number(stated) and stated else 1.0
+
+    def allows(self, kind: str) -> bool:
+        """Whether this plan has this kind of record.
+
+        The one predicate every kind question goes through — the write doors, the
+        create form's picker and the warning on a file already there — so that
+        "is an issue on here" has one answer, off the resolved set, and never a
+        second one somebody works out from `kinds` as the file wrote it.
+        """
+        return kind in self.kinds
 
     def with_people(self, people: list[Person]) -> Config:
         """Carried on the config for the same reason cycles are: nothing
@@ -742,7 +912,24 @@ class Config(BaseModel):
         ends_on = (
             days_after(after[0], -1)
             if after
-            else days_after(reviews_on, round(self.cooldown_weeks * 7) - 1)
+            # Bounded before it is rounded, through `within_the_calendar`, for
+            # the reason `schedule.build_end` and `Index.build_end` both are:
+            # `round()` raises on infinity, and `cooldown_weeks: .inf` in one
+            # config file reached this `round` from `with_plans`, which
+            # `load_repo` calls OUTSIDE every `readable()` wrapper — so the
+            # raise escaped `load_repo` itself. Every route 500ed before an
+            # Index existed and `openproj check` died with a traceback, off one
+            # number in one file. The third copy of the same arithmetic, and the
+            # last one without the guard.
+            #
+            # The rounding stays OUTSIDE the subtraction, rather than handing
+            # `cooldown_weeks * 7 - 1` to `days_after` and letting it round.
+            # `round()` is banker's, so it does not distribute over the `- 1`:
+            # a cool-down of 1.5 weeks is `round(10.5) - 1 = 9` here and
+            # `round(9.5) = 10` the other way, and half-week cool-downs would
+            # every one of them shift by a day. A guard may not move a date on a
+            # plan whose numbers are fine.
+            else days_after(reviews_on, round(within_the_calendar(self.cooldown_weeks * 7)) - 1)
         )
         return plan.model_copy(
             update={
@@ -823,17 +1010,47 @@ def read_config(
     """
     loaded, refused = readable(paths, lambda path: _config_mapping(path, text_of(path)))
     data: dict[str, object] = {}
+    # Where each accepted setting came from. Recorded as the merge happens rather
+    # than worked out afterwards: afterwards there is only the merged mapping,
+    # and which of four files a key was in is exactly what it no longer says.
+    came_from: dict[str, str] = {}
+    # `views` and `kinds` exactly as written, kept out of `data` because they are
+    # RESOLVED rather than validated. Handed to pydantic with the rest, `views:
+    # cycles` or a bare `views:` is a ValidationError, and the loop below drops
+    # the whole file for one — `schema_version`, `cooldown_weeks` and
+    # `repositories` with it — where what is wrong is one switch, whose answer is
+    # its own default and an `Unusable` saying so.
+    switches: dict[str, object] = {}
     for path, mapping in loaded:
         # Unknown keys are ignored so a repository with a half-written config
         # still loads rather than taking the whole index down.
-        candidate = {**data, **{k: v for k, v in mapping.items() if k in Config.model_fields}}
+        taken = {
+            k: v for k, v in mapping.items() if k in Config.model_fields and k not in _SWITCHES
+        }
+        switched = {k: mapping[k] for k in _SWITCHES if k in mapping}
+        candidate = {**data, **taken}
         try:
             Config.model_validate(candidate)
         except ValidationError as error:
             refused.append(Unreadable(path=path, why=why_it_will_not_read(error, path)))
             continue
         data = candidate
-    return Config.model_validate(data), refused
+        # After the validation and not before it, so a file that is dropped
+        # leaves no claim behind on the keys it was going to set — a switch
+        # included, since a file that is not in the plan does not get to turn a
+        # page off. Last write wins, which is the same rule the merge above runs on.
+        switches.update(switched)
+        came_from.update(dict.fromkeys([*taken, *switched], path))
+    views, kinds, unusable = resolve_switches(
+        switches.get("views", _MISSING),
+        switches.get("kinds", _MISSING),
+        came_from.get("views", SWITCHES_FILE),
+        came_from.get("kinds", SWITCHES_FILE),
+    )
+    config = Config.model_validate({**data, "views": views, "kinds": kinds})
+    config._from = came_from
+    config._unusable = unusable
+    return config, refused
 
 
 def load_config(root: Path) -> Config:
@@ -1028,6 +1245,11 @@ class Record(BaseModel):
     # written back into the record.
     _unread: tuple[str, ...] = PrivateAttr(default=())
 
+    # The keys this file wrote under a name `_RENAMED` has since replaced, and
+    # read under the new one. Kept so the validator can say so — the value is on
+    # the page either way, and only the file is out of date.
+    _old_names: tuple[str, ...] = PrivateAttr(default=())
+
     id: str
     # Not a `Literal` written out: the rungs are `KINDS` below, and a kind
     # spelled in two places is a kind that gets added to one of them.
@@ -1054,7 +1276,7 @@ class Record(BaseModel):
     status: str = STATUS_ORDER[0]
 
     owner: str | None = None
-    assignees: list[str] = []
+    developers: list[str] = []
     reviewers: list[str] = []
     review_waived: bool = False
 
@@ -1527,6 +1749,291 @@ KINDS: tuple[Rung, ...] = (
 KIND_NAMES: tuple[str, ...] = tuple(rung.name for rung in KINDS)
 
 
+# The views a plan may switch, in the nav's order — which is also the order a
+# plan that does not say gets them in, so a plan with no `views` key draws the nav
+# it drew before the key existed. One word per view, and the word is the `Links`
+# field and the `_NAV` key (`render/shell.py`): there is no second spelling
+# anywhere to map it to, which is what keeps the config, the router, the nav and
+# the export from each growing their own. `deck` has no nav slot and is here
+# because it is a page a plan can list, which puts a link to it on the record
+# and cycle pages.
+#
+# Here and not in `render`, because `openproj check` has to know the vocabulary
+# to say what is wrong with a setting, and `check` does not import jinja.
+VIEWS: tuple[str, ...] = (
+    "table",
+    "graph",
+    "timeline",
+    "cycles",
+    "deck",
+    "people",
+    "issues",
+    "notes",
+)
+# The kinds `kinds` switches, off the ladder rather than written out: a third
+# unplanned rung is switchable on the commit that adds it. The planned four are
+# the hierarchy and the schedule — a plan without `project` would orphan the
+# parent of every pitch — so they are always on and never in this tuple.
+OPTIONAL_KINDS: tuple[str, ...] = tuple(rung.name for rung in KINDS if not rung.planned)
+_PLANNED_KINDS: tuple[str, ...] = tuple(rung.name for rung in KINDS if rung.planned)
+# What `views` may name and cannot switch, and what it is told instead. Records
+# is the landing page and the only home of the Create button, a record page is
+# what every bar, node and cycle row links to, and Help is in the footer — each
+# a request the tool will not honour, and the branch that decides not to act has
+# to say so rather than let somebody believe they turned Help off.
+_ALWAYS_ON_SAID = {
+    "records": "views names records, which is always on and always first",
+    "help": "views names help, which is always on, in the footer",
+    "detail": "views names detail, which is always on: every record has its page",
+}
+ALWAYS_ON_VIEWS: tuple[str, ...] = tuple(_ALWAYS_ON_SAID)
+# What a view cannot be listed without. A value that is a kind is a kind the view
+# lists, and also what the view cannot EXIST without (`reachable`); anything else
+# is another view, and every view exists. The deck is one cycle's review, reached
+# from that cycle's page, so it goes with `cycles` — jcanton: "should not be
+# possible to turn it on without having cycles". A list of a kind the plan does
+# not have is a list of nothing, and each inbox view is named for its rung's
+# directory, so that half is derived and a third inbox needs no line here.
+#
+# Only one way round: a kind may be on while its view is unlisted, which is
+# exactly icon4py's notes — kept as a kind for drafting, dropped from the nav, and
+# still at `/notes` for whoever types it.
+VIEW_NEEDS: dict[str, str] = {
+    "deck": "cycles",
+    **{rung.directory: rung.name for rung in KINDS if not rung.planned},
+}
+# The two keys `read_config` resolves rather than validates, and the file the
+# switches are documented to live in — which is what a sentence names when no
+# file wrote the key, since that is where somebody adding it should look.
+_SWITCHES = ("views", "kinds")
+SWITCHES_FILE = "config/defaults.yaml"
+# Absent, as distinct from `views:` with nothing after it: the first is every
+# view and says nothing, the second is a value that is not a list and is reported.
+_MISSING = object()
+
+
+def _as_a_list(key: str, raw: object, vocabulary: tuple[str, ...], example: str) -> str:
+    """How to write this key as the list it was not: the words it held, when every
+    one is a word the key takes — `views: cycles, graph` is two views and a pair
+    of brackets short of right — and an example otherwise. The likely mistake is
+    the simplest one to fix, and a sentence that names it without saying how is
+    half of what an error owes its reader."""
+    words = [word.strip() for word in raw.split(",")] if isinstance(raw, str) else []
+    shown = ", ".join(words) if words and all(word in vocabulary for word in words) else example
+    return f"write it in brackets, as {key}: [{shown}]"
+
+
+def _needs_met(view: str, kinds: Collection[str], views: Collection[str]) -> bool:
+    need = VIEW_NEEDS.get(view)
+    if need is None:
+        return True
+    return need in kinds if need in KIND_NAMES else need in views
+
+
+def reachable(view: str, kinds: Collection[str]) -> bool:
+    """Whether a view's address answers in a plan with these kinds, listed or not.
+
+    **Unlisted is not off.** `views` decides what the nav shows and what the
+    other pages link to; it does not decide what exists. jcanton, 2026-10-20:
+    "the derived-only views actually exist but are hidden in the nav". The
+    Table, the Graph, the Timeline, Cycles, the deck and People are drawn from
+    records every plan has, so each answers at its address in every plan —
+    and reached that way, nothing else on the site links to it. The Issues and
+    Notes lists are the exception: each is a view of an optional kind, and a
+    list of a kind the plan has not got is a list of nothing, so those two
+    exist exactly when their kind does. Reaching one cannot add records of a
+    kind the plan turned off, so `/notes` answers in a plan with `note` on
+    whatever `views` says, and `/issues` is a 404 in one without `issue`.
+
+    Every other view in `VIEW_NEEDS` needs another view, and every view
+    exists, so this is `_needs_met` against all of them.
+    """
+    return _needs_met(view, kinds, VIEWS)
+
+
+def resolve_switches(
+    views_raw: object, kinds_raw: object, views_from: str, kinds_from: str
+) -> tuple[tuple[str, ...], frozenset[str], list[Unusable]]:
+    """The views and kinds a plan has, out of `views` and `kinds` as written.
+
+    Parse permissively, validate strictly, and here that means the answer is
+    always usable and whatever it could not use is said: a name that is not a
+    view is left out, a duplicate counts once at its first place, a name that is
+    always on is a no-op, a view whose dependency is off stays unlisted, and a value
+    that is not a list is the key's default. Each of those is one `Unusable`, so
+    the banner and `openproj check` name it. A typo that silently hid the Cycles
+    page is finding F1 — a page gone and nothing saying why.
+
+    Absent and written are different answers, and on purpose. `views` absent is
+    every view whose dependency holds, silently — so `kinds: [note]` alone does
+    not report the Issues list it never asked for. A broken dependency is said
+    only for a view the setting actually names.
+
+    `views_from` and `kinds_from` are the file each key was read from, which is
+    where each `Unusable` sends its reader. `why` opens with the key, because the
+    banner prints the path and the reason and not the field.
+
+    The order the list gives is kept: it is the nav order after Records. Kinds
+    are a set, and the planned four are in it whatever it says.
+    """
+    unusable: list[Unusable] = []
+
+    def said(field: str, path: str, why: str) -> None:
+        unusable.append(Unusable(path=path, field=field, why=why))
+
+    kinds = set(KIND_NAMES)
+    if kinds_raw is not _MISSING and not isinstance(kinds_raw, list):
+        said(
+            "kinds",
+            kinds_from,
+            "kinds is not a list, so every kind is on; "
+            + _as_a_list("kinds", kinds_raw, OPTIONAL_KINDS, "note"),
+        )
+    elif isinstance(kinds_raw, list):
+        kinds = set(_PLANNED_KINDS)
+        # A list and not a set, because an item YAML hands back may be a list
+        # or a mapping, and neither can be hashed.
+        seen: list[object] = []
+        for item in kinds_raw:
+            if item in seen:
+                # Said once, where it first appeared. A repeat of a name already
+                # reported as unusable is the same sentence twice.
+                if item in OPTIONAL_KINDS:
+                    said("kinds", kinds_from, f"kinds names {item} twice; it counts once")
+                continue
+            seen.append(item)
+            if isinstance(item, str) and item in OPTIONAL_KINDS:
+                kinds.add(item)
+            elif isinstance(item, str) and item in _PLANNED_KINDS:
+                others = [name for name in _PLANNED_KINDS if name != item]
+                said(
+                    "kinds",
+                    kinds_from,
+                    f"kinds names {item}, which is always on — so are "
+                    f"{', '.join(others[:-1])} and {others[-1]}",
+                )
+            else:
+                said(
+                    "kinds",
+                    kinds_from,
+                    f"kinds names {item!r}, which is not a kind this setting switches "
+                    f"({', '.join(OPTIONAL_KINDS)}), so it is left out",
+                )
+
+    default = tuple(view for view in VIEWS if _needs_met(view, kinds, VIEWS))
+    if views_raw is _MISSING:
+        return default, frozenset(kinds), unusable
+    if not isinstance(views_raw, list):
+        # "Every view is on" only when it is: the default leaves out the list of a
+        # kind that is off, and a sentence the nav under it contradicts is worse
+        # than none.
+        lists = [
+            RUNG[VIEW_NEEDS[view]].directory.capitalize() for view in VIEWS if view not in default
+        ]
+        but = (
+            f" but the {' and '.join(lists)} list{'s' if len(lists) > 1 else ''}, "
+            f"whose kind{'s are' if len(lists) > 1 else ' is'} off"
+            if lists
+            else ""
+        )
+        said(
+            "views",
+            views_from,
+            f"views is not a list, so every view is on{but}; "
+            + _as_a_list("views", views_raw, VIEWS, "cycles, graph"),
+        )
+        return default, frozenset(kinds), unusable
+
+    # Every view the list names, wherever in it: `[deck, cycles]` turns the deck
+    # on as surely as `[cycles, deck]` does, because the deck has no place in the
+    # nav for the order to decide.
+    named = {item for item in views_raw if isinstance(item, str) and item in VIEWS}
+    views: list[str] = []
+    seen_views: list[object] = []
+    for item in views_raw:
+        if item in seen_views:
+            if item in views:
+                said(
+                    "views",
+                    views_from,
+                    f"views names {item} twice; it counts once, at its first place",
+                )
+            continue
+        seen_views.append(item)
+        if isinstance(item, str) and item in VIEWS:
+            need = VIEW_NEEDS.get(item, "")
+            if _needs_met(item, kinds, named):
+                views.append(item)
+            elif need in KIND_NAMES:
+                said(
+                    "views",
+                    views_from,
+                    f"views names {item}, which needs the {need} kind in kinds, so the "
+                    f"{RUNG[need].directory.capitalize()} list is off",
+                )
+            else:
+                said(
+                    "views",
+                    views_from,
+                    f"views names {item}, which needs {need}, so nothing links to the {item}",
+                )
+        elif isinstance(item, str) and item in _ALWAYS_ON_SAID:
+            said("views", views_from, _ALWAYS_ON_SAID[item])
+        else:
+            said(
+                "views",
+                views_from,
+                f"views names {item!r}, which is not a view openproj has "
+                f"({', '.join(VIEWS)}), so it is left out",
+            )
+    return tuple(views), frozenset(kinds), unusable
+
+
+def kind_refusal(kind: str, config: Config) -> str | None:
+    """Why a record of this kind may not be written here, or None if it may.
+
+    One sentence for every door — `POST /api/record`, the target of a rekind,
+    `openproj new` — and for the warning on a file that is already there, so the
+    reader who meets it in a 422, in a terminal and beside a record reads the
+    same words each time and is sent to the same line of the same file.
+
+    `kind` is a kind this tool has: each door refuses a word that is not one
+    first, in its own sentence, because "turned off" is not what is wrong with it.
+
+    No backticks, although it names a key. Every place on the web that shows it
+    shows it as text — the problems beside a record, a table cell's marks, the
+    422 banner — so a backtick is drawn as a backtick, and no other sentence the
+    reader meets there has one: they name `views` and a config file bare. The
+    switched-off page marks the key and the file up in `<code>` itself.
+    """
+    if config.allows(kind):
+        return None
+    path = config._from.get("kinds", SWITCHES_FILE)
+    return (
+        f"{RUNG[kind].directory.capitalize()} are turned off for this plan. "
+        f"kinds in {path} decides which kinds of record it has."
+    )
+
+
+def kind_off_warning(kind: str, config: Config) -> str | None:
+    """What the warning beside a record of a kind that is off says, or None.
+
+    `kind_refusal`'s sentence, and then what to do about it. A door refusing a
+    write has nothing to add — the reader has not written anything yet — but a
+    file that is already there is a disagreement the reader has to settle, and
+    an error that says what is wrong and not how to fix it is half of one. Either
+    way settles it: the record goes, into the plan or out of it, or the kind
+    comes back. Promote is named only for a kind that has it, which today is
+    every optional kind, because the day one does not, telling its reader to
+    press a button that is not there would be worse than not naming it.
+    """
+    refused = kind_refusal(kind, config)
+    if refused is None:
+        return None
+    way_out = "Promote it or delete it" if kind in INBOXES else "Delete it"
+    return f"{refused} {way_out}, or put {kind} back in kinds."
+
+
 # Who is on the hook for doing it, and whether anybody has to look at it after.
 # Split out of `_WORK_FIELDS` below on `Rung.staffed`, because the two tuples
 # answer two different questions and a project answers them differently: it is
@@ -1539,7 +2046,7 @@ KIND_NAMES: tuple[str, ...] = tuple(rung.name for rung in KINDS)
 # the switch that turns the reviewers gate off, and a switch for a gate that no
 # longer fires is a box that does nothing.
 _PEOPLE_FIELDS = (
-    "assignees",
+    "developers",
     "reviewers",
     "review_waived",
 )
@@ -1695,6 +2202,8 @@ def parse_text(text: str, source: str) -> Record:
         raise ValueError(f"{source}: no usable 'kind', and the id names no known kind either")
 
     model = _MODELS[kind]
+    old_names = tuple(name for name in _RENAMED if name in data)
+    data = {_current_name(name, data): value for name, value in data.items()}
     fields = {
         name: value
         for name, value in data.items()
@@ -1708,6 +2217,7 @@ def parse_text(text: str, source: str) -> Record:
     # and was only ever used to name the file in an error message.
     record._source = source
     record._unread = tuple(name for name in data if name not in model.model_fields)
+    record._old_names = old_names
     return record
 
 
@@ -1718,7 +2228,7 @@ def parse_file(path: Path) -> Record:
 def parse_cycle_text(text: str, source: str) -> Cycle:
     """Parse one cycle file. Same frontmatter-and-body shape as a record, and a
     different type: nearly every field a Record carries is nonsense on a cycle,
-    and the one it would reach for — `assignees: list[str]` — cannot hold the
+    and the one it would reach for — `developers: list[str]` — cannot hold the
     fraction that is the whole point of the record."""
     frontmatter, body = _split(text, source)
     data = _round_trip_yaml().load(frontmatter) or {}
@@ -1765,6 +2275,92 @@ def person_path(login: str) -> str | None:
     rendered `/cycle/-1` was.
     """
     return f"{PEOPLE_DIR}/{login}.md" if LOGIN_PATTERN.match(login) else None
+
+
+def cycle_path(number: int) -> str:
+    """`cycles/0037.md` — the one flat name a cycle record has.
+
+    Here rather than in `web.py`, where it was written, because it now has a
+    second reader: `unusable_numbers` has to send somebody to the file a bad
+    availability is in, and it has only the cycle's number to go on. Two copies
+    of a path format is the defect this repository keeps paying for in a
+    different currency each time — the write door and the reader disagreeing
+    about which file is which — so the format is spelled once.
+    """
+    return f"{_CYCLE_DIR}/{number:04d}.md"
+
+
+# The settings a person types as a number, and what is drawn instead when the
+# number is not one. Data rather than four branches, so that a fifth float added
+# to `Config` is one line here and not a rule somebody forgets to write.
+#
+# Each sentence says the CONSEQUENCE and not the value: "cooldown_weeks is inf"
+# is the thing already on screen, and what a reader cannot see is which of the
+# dates in front of them came out of it.
+_CONFIG_NUMBERS = {
+    "cooldown_weeks": "so every cycle's cool-down is drawn at the end of the calendar",
+    "nominal_availability": (
+        "so everybody not named in a cycle is counted at one full-time person "
+        "instead, which is this setting's own default"
+    ),
+    "dates_within_weeks_of_a_cycle": (
+        "so no typed date is ever reported as falling outside the plan's cycles"
+    ),
+}
+
+
+def unusable_numbers(config: Config) -> list[Unusable]:
+    """Every number in this plan's configuration that is not a number.
+
+    Records are not walked here and that is the division `Unusable` exists for: a
+    record with `person_weeks: .inf` has a row, a page and a field to hang the
+    complaint on, so `_problems_for` reports it there like everything else wrong
+    with a record. A config file and a cycle file have no record between them.
+
+    **Nothing here raises and nothing here clamps.** By the time this runs the
+    arithmetic has already been made safe — `within_the_calendar` for the dates,
+    `_percent` for the bars — so the pages render either way. What was missing
+    was anybody being told, which is how five of these lived on `main` under a
+    green suite of 2400: `openproj check` reported byte-identical counts on a
+    corpus with `.inf` in it and on one without.
+
+    Sorted by path so the banner and `openproj check` list them in the order
+    somebody would open the files, the same rule `load_repo` sorts its
+    unreadable files by.
+    """
+    found = [
+        Unusable(
+            # `config/` when the setting is at its default and no file claimed
+            # it, which is not a state this can be reached in — a default is a
+            # literal in `Config` and every one of them is finite. It is the
+            # honest fallback rather than a name invented for the line.
+            path=config._from.get(field, "config/"),
+            field=field,
+            why=f"{field} is not a number, {said}",
+        )
+        for field, said in _CONFIG_NUMBERS.items()
+        if not a_number(getattr(config, field))
+    ]
+    found.extend(
+        Unusable(
+            path=cycle_path(number),
+            field="availability",
+            # What `Cycle.rate` does with it, and not what it would do without
+            # the guard: the page draws an ordinary bar off the nominal rate, so
+            # the sentence has to say that the bar is honest arithmetic on a
+            # number this person did not choose. "The bar is wrong" would send
+            # somebody looking at a bar that is right.
+            why=(
+                f"availability for {who} is not a number, so cycle {number} counts "
+                "them at the plan's nominal rate rather than at the rate this file "
+                "states"
+            ),
+        )
+        for number, cycle in sorted(config.plans.items())
+        for who, rate in sorted(cycle.availability.items())
+        if not a_number(rate)
+    )
+    return sorted(found, key=lambda one: (one.path, one.field))
 
 
 def login_of(source: str) -> str:
@@ -1878,8 +2474,10 @@ def serialise(record: Record, original_text: str | None = None) -> str:
     else:
         data = yaml.load(_split(original_text, record.id)[0]) or {}
         for key, value in dumped.items():
-            if key in data:
-                if data[key] != value:
+            written = _written_as(data, key)
+            if written in data:
+                if data[written] != value:
+                    _rename_in_place(data, key)
                     data[key] = _in_the_style_of(data[key], value)
             elif value != type(record).model_fields[key].default:
                 data[key] = value
@@ -2015,26 +2613,47 @@ def size_weeks(record: Record) -> float | None:
     keeps answering on its behalf.
     """
     stated = getattr(record, "person_weeks", None)
-    return None if stated is None else float(stated)
+    # **`.inf` and `.nan` answer None here, and that is the source fix.** All
+    # three are legal YAML and all three pass a pydantic `float`, so a
+    # hand-edited size arrives as an ordinary number and every consumer below
+    # treated it as one: `_weighed` summed it into a rollup, `Progress.fraction`
+    # divided by it, and `round(100 * fraction)` raised — on the record page
+    # twice and on the deck once, which is every record at a review meeting.
+    #
+    # None rather than a clamp, because None is the answer this function already
+    # has for a size nobody can use and every caller already handles: an unsized
+    # rung is LEFT OUT of a rollup rather than counted at zero (see `_weighed`),
+    # so a parent's percentage stays a true statement about the children whose
+    # weeks are known instead of becoming a true statement about nothing.
+    #
+    # It does make this record read as unsized, which is a different sentence
+    # from "sized wrongly" — so the rule in `_problems_for` says which it is,
+    # beside the field, rather than leaving the reader with the ready gate's
+    # "needs person_weeks" over a file that plainly has one.
+    return None if not a_number(stated) else float(stated)
 
 
 def workers_on(record: Record) -> list[str]:
-    """Everyone on the hook for this record, each counted once.
+    """The people doing the work on this record: its developers, each counted once.
 
-    An owner who is also an assignee — which is most of them — was counted twice,
-    so they were booked twice and, now that the workers divide the size, would
-    have halved it on their own.
+    **The owner is not one of them unless they are also assigned.** An owner's job
+    is to see the work done, and that is not a claim on their weeks — jcanton,
+    2026-09-23. It used to be `[owner] + developers`, which booked the owner of
+    every record as a worker: an owner reviewing somebody else's task was told the
+    task could not start until they were free, their capacity on the betting table
+    carried a share of it, and the size was divided by one more person than was
+    actually on it. The ready gate already asks for `developers` separately from
+    `owner` for exactly this reason, so the two now mean the same thing on both
+    sides of the check.
 
     Here rather than in `schedule.py`, where it was written, because two things
-    now ask it. The scheduler divides a size by these people's availabilities to
-    get a duration; `staffing_of` below names how many of them there are in the
-    sentence three pages print, since "the 4.0 the bet buys" is unreadable
-    without them. Both readings have to come off the same list or the sentence
-    explains a number computed from a different set of names than the one it
-    counts.
+    ask it. The scheduler divides a size by these people's availabilities to get a
+    duration; `staffing_of` below names how many of them there are in the sentence
+    three pages print, since "the 4.0 the bet buys" is unreadable without them.
+    Both readings have to come off the same list or the sentence explains a number
+    computed from a different set of names than the one it counts.
     """
-    named = ([record.owner] if record.owner else []) + list(record.assignees)
-    return list(dict.fromkeys(named))
+    return list(dict.fromkeys(record.developers))
 
 
 def staffing_of(record: Record, staffed_at: float | None) -> str:
@@ -2107,6 +2726,10 @@ _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 # means — "a point that is only a box keeps its place in the count and says
 # nothing, which is exactly what is on the page it came from".
 _CHECKBOX = re.compile(r"^\s*[-*+]\s+\[([ xX])\](?=\s|$)")
+# Any list item at all, ticked or not, bulleted or numbered. Used only to say
+# where one point ENDS: a line under a point that is itself a marker opens a new
+# item rather than continuing the one above.
+_LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])(?=\s|$)")
 # Fenced blocks, kept whole so that a pitch quoting markdown keeps its example.
 _FENCED = re.compile(r"((?:^|\n)(?:```|~~~).*?(?:\n(?:```|~~~)[^\n]*|\Z))", re.S)
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
@@ -2238,6 +2861,77 @@ def _progress_scoped(body: str) -> Iterator[tuple[str, bool, bool]]:
         yield line, in_code, bool(depth)
 
 
+def _checklist_lines(body: str) -> list[tuple[str, bool, int | None]]:
+    """Every line of the body, with the index of the checklist point it is part of.
+
+    **A point is an ITEM and not a line**, which is the whole of this function.
+    Both `checklist_items` and `without_checklist` used to match `_CHECKBOX`
+    against each line on its own, so a point somebody had wrapped — and the real
+    plan wraps at 80 columns, with 48 continuation lines across it — was half
+    lifted and half left:
+
+        - [x] Two-layer design agreed -- parallel coupling, no copies -- and implemented
+              as #1436, based on main
+
+    The slide got "…and implemented" and the record kept `as #1436, based on
+    main` as an orphan. Six spaces of indent with no list marker in front of it
+    any more is an indented code block, so what a reviewer saw under the points
+    was a grey monospace box holding the back half of three sentences, each cut
+    mid-clause. jcanton, 2026-09-21, reporting it off the deployed deck.
+
+    The extent is markdown's own, because the point of lifting a point is that
+    the slide says what the record page says. A line continues the one above it
+    when it is not blank, not a heading and not another list marker — and, if a
+    blank line came between, when it is also indented past the marker, which is
+    how CommonMark tells a second paragraph inside an item from the paragraph
+    after the list. A lazy continuation at column 0 is taken as a continuation
+    because that is what a renderer does with it: leaving it behind would print
+    it twice, once inside the point on the slide and once as prose beneath.
+
+    A nested `- [ ]` is NOT a continuation — `_CHECKBOX` is asked first, so a
+    sub-item opens a point of its own, which is what `checklist_items` has always
+    promised ("sub-items are items, and they arrive flat").
+
+    The list is built once and read by both callers, rather than each deciding
+    for itself where a point ends: two readings of one document is two chances
+    for the tick on a slide and the prose under it to disagree about which line
+    belongs to which — which is the shape of the defect this replaces.
+    """
+    lines = list(_progress_scoped(body))
+    # Which point each line belongs to, or `None` for a line no point claims.
+    of: list[int | None] = [None] * len(lines)
+    seen = 0
+    at = 0
+    while at < len(lines):
+        line, in_code, counted = lines[at]
+        if in_code or not counted or not _CHECKBOX.match(line):
+            at += 1
+            continue
+        indent = len(line) - len(line.lstrip())
+        of[at] = seen
+        # `end` is one past the last line this point has claimed; `run` walks
+        # ahead of it, so a blank line is only claimed if something after it
+        # turns out to be inside the item too.
+        end = run = at + 1
+        while run < len(lines):
+            text, nested, inside = lines[run]
+            if nested or not inside:
+                break
+            if not text.strip():
+                run += 1
+                continue
+            if _CHECKBOX.match(text) or _LIST_MARKER.match(text) or _HEADING.match(text):
+                break
+            if run != end and len(text) - len(text.lstrip()) <= indent:
+                break
+            for back in range(end, run + 1):
+                of[back] = seen
+            end = run = run + 1
+        seen += 1
+        at = end
+    return [(line, in_code, of[where]) for where, (line, in_code, _) in enumerate(lines)]
+
+
 def checklist_items(body: str) -> list[tuple[bool, str]]:
     """Every task-list item under `## Progress` or `## Solution`, as (ticked, what
     it says).
@@ -2271,14 +2965,21 @@ def checklist_items(body: str) -> list[tuple[bool, str]]:
     `- [ ]` with nothing after it — keeps its place in the count and says nothing,
     which is exactly what is on the page it came from.
     """
-    found: list[tuple[bool, str]] = []
-    for line, in_code, counted in _progress_scoped(body):
-        if in_code or not counted:
+    ticked: dict[int, bool] = {}
+    said: dict[int, list[str]] = {}
+    for line, _, of in _checklist_lines(body):
+        if of is None:
             continue
         mark = _CHECKBOX.match(line)
         if mark:
-            found.append((mark.group(1) != " ", line[mark.end() :].strip()))
-    return found
+            ticked[of] = mark.group(1) != " "
+            said[of] = [line[mark.end() :].strip()]
+        elif line.strip():
+            # Joined with one space, which is what a renderer does with a wrapped
+            # paragraph. Keeping the newline would put a hard break in the middle
+            # of a sentence on a slide read from the back of a room.
+            said[of].append(line.strip())
+    return [(ticked[at], " ".join(part for part in said[at] if part)) for at in sorted(said)]
 
 
 def checklist(body: str) -> tuple[int, int]:
@@ -2310,16 +3011,15 @@ def without_checklist(body: str) -> str:
     reads a shaping document, and `render.py` is held to
     `test_no_page_is_assembled_by_substitution`.
     """
+    # Only the points that were LIFTED, which is the other end of
+    # `checklist_items` being scoped: a box in a rabbit hole is not on the
+    # slide's list any more, so taking it out of the prose as well would delete a
+    # line off the slide that nothing anywhere puts back. `_checklist_lines`
+    # answers that for the whole item and not for its first line, so the lines a
+    # wrapped point runs onto go with it — left behind they were an indented
+    # block with no list marker in front of them, which markdown draws as code.
     return _without_emptied_headings(
-        [
-            (line, in_code)
-            for line, in_code, counted in _progress_scoped(body)
-            # Only the points that were LIFTED, which is the other end of
-            # `checklist_items` being scoped: a box in a rabbit hole is not on the
-            # slide's list any more, so taking it out of the prose as well would
-            # delete a line off the slide that nothing anywhere puts back.
-            if in_code or not counted or not _CHECKBOX.match(line)
-        ]
+        [(line, in_code) for line, in_code, of in _checklist_lines(body) if of is None]
     )
 
 
@@ -2569,7 +3269,6 @@ def mint_id(kind: str, taken: Collection[str] = ()) -> str:
             return minted
 
 
-
 def rekind_plan(index, record, kind: str) -> tuple[list[str], list[str]]:
     """What changing this record's kind would refuse, and what it would drop.
 
@@ -2582,7 +3281,7 @@ def rekind_plan(index, record, kind: str) -> tuple[list[str], list[str]]:
     Both computed before anything is written, and both handed back to the
     page BEFORE it commits — the fields are a compare-and-swap on the shape
     of the change, exactly as `also` is for a cascading delete. A reader who
-    was shown "this drops its appetite and its assignees" and then had
+    was shown "this drops its appetite and its developers" and then had
     something else dropped was not asked.
 
     **This is not a second copy of the containment ladder, and the sentence
@@ -2685,6 +3384,7 @@ def rekind_references(records, record_id: str, new_id: str) -> dict[str, dict]:
         if fields:
             moved[other.id] = fields
     return moved
+
 
 def unknown_fields(kind: str, fields: Iterable[str]) -> list[str]:
     """The names this kind's model does not own, sorted.
@@ -3277,7 +3977,7 @@ def _status_problems(
     # Whether to ask this rung for hands at all. A project is scheduled and so
     # reaches the gates below, and it is not staffed: the pitches and tasks under
     # it carry the names, and `unread_fields` has just told the reader that its
-    # own `assignees` is not read. Demanding a field in one breath and saying it
+    # own `developers` is not read. Demanding a field in one breath and saying it
     # is not read in the next is the form-and-validator disagreement this file
     # bans, one layer down. Same shape as `_appetite_problem`, which yields
     # nothing for a container for the same reason and has since it was written.
@@ -3292,8 +3992,8 @@ def _status_problems(
         # a record by the people on it (`workers_on`), so a bet with an owner and
         # nobody assigned is a bet that has been accepted and staffed with nobody.
         # jcanton, 2026-08-22.
-        if staffed and not record.assignees:
-            yield "blocker", "assignees", "a ready record needs somebody on it", 2
+        if staffed and not record.developers:
+            yield "blocker", "developers", "a ready record needs somebody on it", 2
         if staffed and not (record.review_waived or reviews):
             yield "blocker", "reviewers", "a ready record needs a reviewer, or review waived", 1
         yield from _appetite_problem(record, f"a ready {record.kind} needs an appetite")
@@ -3312,8 +4012,8 @@ def _status_problems(
         # no claim on anybody's capacity: it is work that is happening and that
         # the plan cannot account for at all.
         yield from _appetite_problem(record, "work in progress needs an appetite")
-        if staffed and not record.assignees:
-            yield "blocker", "assignees", "work in progress needs somebody on it", 2
+        if staffed and not record.developers:
+            yield "blocker", "developers", "work in progress needs somebody on it", 2
         if staffed and not record.review_waived and not (set(reviews) - {record.owner}):
             yield (
                 "blocker",
@@ -3432,7 +4132,7 @@ def _people_problems(record: Record, config: Config) -> Iterator[tuple[str, str 
     # on a product. The typo this rule exists to catch is one on a record that
     # will actually be staffed by it.
     unread = unread_fields(record.kind) if record.kind in RUNG else ()
-    for field in ("owner", "assignees", "reviewers", "reported_by", "written_by"):
+    for field in ("owner", "developers", "reviewers", "reported_by", "written_by"):
         if field in unread:
             continue
         value = getattr(record, field, None)
@@ -3497,6 +4197,37 @@ PARENT_KINDS = {rung.name: rung.under for rung in KINDS}
 CHILD_KINDS = {
     rung.name: tuple(other.name for other in KINDS if rung.name in other.under) for rung in KINDS
 }
+
+
+def out_to(record: Record, by_id: dict[str, Record]) -> str | None:
+    """Where taking this record out of its parent files it: the nearest record
+    above that parent which may hold its kind, or nothing.
+
+    jcanton, 2026-10-12: "move-out should always move to the upper parent".
+    Every way out wrote `parent: null` — `Take out of "X"` on the right-click
+    menu, the table's move bar and its `+` row — so a pitch taken out of the
+    pitch it had been hand-filed under, inside `proj-370001`, left the project
+    as well and landed at the top of the tree. Nobody taking a thing out of a
+    box means it to leave the room the box is in.
+
+    The NEAREST holder and not the grandparent: a pitch inside a project inside
+    a product cannot be filed under the product, so the walk goes on past it and
+    finds nothing, which is the honest answer for a pitch with no project left
+    to hold it. The walk stays inside `by_id`, which every caller passes as
+    `index.plan`, so an inbox id never comes back to reach a page — and stops on
+    a name nobody wrote, for the same reason `is_bettable` keeps a record's own
+    number there. `seen` is for a loop somebody committed by hand: the write
+    path refuses one (`loop_made`) and a file can still hold one.
+    """
+    allowed = PARENT_KINDS.get(record.kind, ())
+    seen = {record.id}
+    holder = by_id.get(record.parent) if record.parent else None
+    while holder is not None and holder.id not in seen:
+        seen.add(holder.id)
+        holder = by_id.get(holder.parent) if holder.parent else None
+        if holder is not None and holder.kind in allowed and holder.id not in seen:
+            return holder.id
+    return None
 
 
 def is_bettable(record: Record, by_id: dict[str, Record]) -> bool:
@@ -3759,7 +4490,7 @@ def _rollup_problems(
     this record's own appetite over the availability of its own people — and the
     contents is `Span.elapsed_weeks`, the working days the tasks actually occupy.
 
-    **The placement is what makes shared assignees come out right**, and it is
+    **The placement is what makes shared developers come out right**, and it is
     why the sum went. Two tasks of four weeks and half a week are four and a half
     weeks of calendar if one person holds both and four if they run side by side
     on different people; a sum reports four and a half in both cases and is wrong
@@ -3908,6 +4639,58 @@ _RETIRED = {
 }
 
 
+# Fields this tool still reads under a name it no longer writes, old name to
+# new. Unlike `_RETIRED` the value is not stranded: the file is read as though
+# it said the new name, so nothing on any page changes, and the key is renamed
+# where it stands the first time a save writes that field.
+#
+# `assignees` became `developers` on 2026-10-12 — jcanton: "let's change
+# 'assignees' to 'developers' everywhere". Read rather than retired because a
+# retired `assignees` would empty every list the scheduler divides a size by,
+# and the plans it was written in were migrated after the deploy that reads the
+# new name, not in the same instant.
+_RENAMED = {"assignees": "developers"}
+
+
+def _current_name(name: str, data: Mapping) -> str:
+    """The name a frontmatter key is read under. The new name wins outright: a
+    file carrying both is read by what it says under the new one, and the old
+    one is unread and reported."""
+    new = _RENAMED.get(name)
+    return new if new is not None and new not in data else name
+
+
+def _written_as(mapping: Mapping, key: str) -> str:
+    """The name this file writes `key` under: its own, or the old one it still
+    says, so a save that leaves the value alone leaves the old name alone too."""
+    if key in mapping:
+        return key
+    return next((old for old, new in _RENAMED.items() if new == key and old in mapping), key)
+
+
+def _rename_in_place(mapping: MutableMapping, key: str) -> None:
+    """Respell an old name of `key` where it stands, before `key` is written.
+
+    In place rather than popped and re-added, because a save keeps a person's
+    key order and comments — "Edit it in git if you prefer" — and a list that
+    jumped to the bottom of the frontmatter the day it was renamed is a file
+    somebody reformatted for them. Assigning `key` beside the old name instead
+    would leave both, and the old one unread for ever.
+    """
+    for old, new in _RENAMED.items():
+        if new != key or old not in mapping or key in mapping:
+            continue
+        keys = list(mapping)
+        value = mapping.pop(old)
+        if hasattr(mapping, "insert"):
+            mapping.insert(keys.index(old), key, value)
+            comments = getattr(mapping, "ca", None)
+            if comments is not None and old in comments.items:
+                comments.items[key] = comments.items.pop(old)
+        else:
+            mapping[key] = value
+
+
 def _problems_for(
     record: Record,
     config: Config,
@@ -3933,6 +4716,44 @@ def _problems_for(
         yield "blocker", "id", f"id must match {ID_PATTERN.pattern}", 1
     elif not record.id.startswith(_PREFIX_FOR_KIND[record.kind] + "-"):
         yield "blocker", "id", f"id prefix must match kind {record.kind}", 1
+
+    # A size that is not a number. `.inf`, `-.inf` and `.nan` are legal YAML and
+    # pass a pydantic `float`, so this is the one thing a person can type into
+    # `person_weeks` that the model accepts and no arithmetic can use — and until
+    # this rule existed, `openproj check` reported byte-identical counts on a
+    # corpus holding one and on a corpus holding none, while the record page and
+    # the deck answered 500 off it.
+    #
+    # `getattr`, because only two of the six rungs declare the field at all and a
+    # product carries none; the rung loop above is what reports it on one that
+    # should not have it.
+    #
+    # **Stamped 1, and alone with the rung rule in being stamped below the
+    # current version.** Grandfathering exists so that a requirement invented
+    # today does not turn somebody's year-old file red — a rule about a field
+    # that did not have to be filled in when the file was written. No file
+    # predates arithmetic. `person_weeks: .inf` has never been a size anybody
+    # could plan against, at any schema version, and it broke pages on the day it
+    # was committed; stamped 6 it would report a warning where it means a
+    # blocker, on every record that exists today, for ever.
+    #
+    # A blocker and not a warning for the same reason: `size_weeks` now answers
+    # None for it, so the record is out of every rollup it belongs in and the
+    # plan is quietly smaller than it says it is.
+    size = getattr(record, "person_weeks", None)
+    if size is not None and not a_number(size):
+        yield (
+            "blocker",
+            "person_weeks",
+            # The value said back, because the three spellings YAML has for this
+            # do not all survive a round trip through a reader's eye: `.nan`,
+            # `.NaN` and `.NAN` are one value, and somebody looking for the
+            # literal they typed needs to be told which line to look at rather
+            # than which characters to search for.
+            f"person_weeks is {size}, which is not a size anything can be planned "
+            "against — this record is left out of every rollup it is under",
+            1,
+        )
 
     # What this rung is not allowed to carry, off the ladder rather than out of a
     # validator per field. A product is a container: it groups the codebases a
@@ -3972,13 +4793,13 @@ def _problems_for(
                 # **Three sentences because there are three reasons, and one of
                 # them is new.** A project is scheduled — it has dates, a cycle,
                 # a priority, a bar on the timeline — so telling its author that
-                # it "is never scheduled, so its assignees is not read" would be
-                # a warning arguing with the page one click away. Its assignees
+                # it "is never scheduled, so its developers is not read" would be
+                # a warning arguing with the page one click away. Its developers
                 # are not read because the work is one rung down, and the
                 # sentence has to say that instead. It is worded to carry all
                 # three of `_PEOPLE_FIELDS`: "nobody works on one directly"
                 # reads as well before `review_waived` — a switch for a gate
-                # that no longer fires — as it does before `assignees`.
+                # that no longer fires — as it does before `developers`.
                 if field in _PEOPLE_FIELDS and RUNG[name].schedules:
                     what = f"{_an(name)} is a grouping and nobody works on one directly"
                 elif RUNG[name].planned:
@@ -3998,6 +4819,10 @@ def _problems_for(
     for field, where in _RETIRED.items():
         if field in record._unread:
             yield "warning", field, f"{field} is no longer read: {where}", 5
+    # Stamped 5 for the reason the loop above gives: a warning cannot be demoted.
+    for old in record._old_names:
+        new = _RENAMED[old]
+        yield "warning", new, f"{old} is the old name of {new} — rename the key to {new}", 5
 
     if record.id in parent_cycles:
         yield "blocker", "parent", "part of a parent cycle", 1
@@ -4272,6 +5097,36 @@ def _identity_problems(records: list[Record]) -> Iterator[Problem]:
             )
 
 
+def _kind_problems(records: list[Record], config: Config) -> Iterator[Problem]:
+    """A file of a kind this plan has turned off: it loads, and it is warned about.
+
+    Loaded, listed on Records and drawn on its page like any other, because
+    hiding it would be a list that drops rows and looks normal — the thing
+    `readable` exists to prevent. What is wrong is the disagreement between the
+    file and the switch, and the reader can settle it either way: delete the
+    record, or put its kind back in `kinds`. So a warning and never a blocker,
+    and the sentence is `kind_refusal`'s, which is what the write doors say.
+
+    Beside `_identity_problems` and outside `_parked`'s exemption with it: a
+    shelved issue in a plan without issues is off whether it is shelved or not.
+
+    Version 5 is the vocabulary this belongs to and not a date it was invented
+    on. It is a warning at every version, so the number decides nothing; a 6
+    would still have made `LATEST_SCHEMA_VERSION` — the newest version any rule
+    carries — a number no rule agreed with, and the seed with it.
+    """
+    for record in records:
+        warned = kind_off_warning(record.kind, config)
+        if warned is not None:
+            yield Problem(
+                severity="warning",
+                record_id=record.id,
+                field="kind",
+                sentence=warned,
+                rule_version=5,
+            )
+
+
 def _parked(record: Record) -> bool:
     """Exempt from every rule: parked work is not broken work.
 
@@ -4356,6 +5211,7 @@ def validate_all(
     # a second file has taken, and the save that lands on the wrong file does not
     # care that one of the two is parked.
     problems.extend(_identity_problems(records))
+    problems.extend(_kind_problems(records, config))
     return problems
 
 
@@ -4410,6 +5266,8 @@ def patch_text(
     yaml = YAML()
     yaml.preserve_quotes = True
     mapping = yaml.load(front) or {}
+    for key in (*drop, *fields):
+        _rename_in_place(mapping, key)
     for key in drop:
         mapping.pop(key, None)
     for key, value in fields.items():

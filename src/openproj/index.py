@@ -14,19 +14,25 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from datetime import date, timedelta
+from datetime import date
+from functools import cached_property
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, model_validator
 
 from .model import (
+    _SWITCHES,
+    KIND_NAMES,
     PRIORITY_RANK,
     RUNG,
     STATUS_ORDER,
+    VIEWS,
     Config,
     Cycle,
     Problem,
     Record,
     Unreadable,
+    Unusable,
     _days_outside,
     ancestors,
     checklist,
@@ -35,11 +41,12 @@ from .model import (
     size_weeks,
     under,
     unread_fields,
+    unusable_numbers,
     validate_all,
     workers_on,
 )
 from .query import QueryError, evaluate, parse, plain
-from .schedule import Explanation, Span, schedule
+from .schedule import Explanation, Span, build_end, schedule
 
 COMPUTED_PREDICATES = (
     "blocked",
@@ -69,7 +76,7 @@ COMPUTED_PREDICATES = (
 )
 
 _SCALAR_FACETS = ("kind", "status", "owner", "priority", "cycle")
-_LIST_FACETS = ("assignees", "reviewers", "tags")
+_LIST_FACETS = ("developers", "reviewers", "tags")
 # The heading a deferred-scope list is written under, lowercased as `sections`
 # returns it.
 _FOR_LATER = "for later"
@@ -205,6 +212,43 @@ def _progress_of(
     return Progress(done=ticked, total=items, unit="items") if items else None
 
 
+class CycleWindow(NamedTuple):
+    """A cycle's three dates, and which of the two tints it wears.
+
+    The timeline worked the dates out inside its own band loop and immediately
+    threw them away for pixels; the calendar needs the same three and no pixels.
+    Written once here rather than twice there, because the copy that stayed in
+    `Index.build_end` had already drifted — it was missing both guards the
+    scheduler's copy has.
+
+    `alt` is here for the same reason and it arrived the harder way round: the
+    two drawings each worked it out from the cycle's NUMBER, and each of them
+    was answering a different question from the one the alternation asks.
+    """
+
+    number: int
+    opens: date
+    builds_until: date
+    closes: date
+    # Whether this cycle wears the second of the two tints, on the timeline's
+    # band and in the calendar's grid.
+    #
+    # The claim the alternation makes is about ADJACENCY — two cycles running up
+    # against each other have to read as two — so it is keyed on the cycle's RANK
+    # among the plan's dated cycles. Parity of the NUMBER says the same thing
+    # only while the numbers run consecutively: a plan holding 34, 36, 38, 40
+    # with contiguous windows drew four bands in ONE uniform fill, which is the
+    # exact thing the tint was added to remove, and one cancelled or renumbered
+    # cycle is all it takes to get there.
+    #
+    # Rank over the PLAN's cycles and not over the ones a drawing happens to
+    # show, which is the property number parity was chosen for and is worth
+    # keeping: a band does not repaint when the timeline's window scrolls past
+    # the cycle before it, and the calendar's grid does not repaint when a reader
+    # pages into a month that holds one cycle instead of two.
+    alt: bool
+
+
 class Index(BaseModel):
     # THE PLAN, and only the plan: kinds whose rung says `planned`. Narrowed on
     # purpose rather than superseded — every PM surface (table, graph, timeline,
@@ -243,6 +287,12 @@ class Index(BaseModel):
     # handed to each renderer, because it is the answer to "is what I am looking
     # at the whole plan" and every page has to be able to say no.
     unreadable: list[Unreadable] = []
+    # The config and cycle files that read, and hold a number nothing can compute
+    # with. Beside `unreadable` rather than folded into it, because the sentence
+    # is different in every word: those files are not in the plan, and these are.
+    # `Unusable` (`model.py`) has the whole argument, including why a record's
+    # own bad size is a `Problem` up there instead of one of these.
+    unusable: list[Unusable] = []
     facets: dict[str, list[str]]
     search_blob: dict[str, str]
     # The second, narrow haystack: `nameable`'s id-and-title string, which is
@@ -268,10 +318,29 @@ class Index(BaseModel):
     # The roster from config/people.yaml, so a cycle nobody has been bet into yet
     # still has names to set availability against.
     known_people: list[str] = []
+    # Who the SERVER lets write, when it keeps a list of its own — the plan
+    # logins of `OPENPROJ_TAILSCALE_USERS`. Not the plan's: no file holds it, so
+    # `build_index` never sets it and only `web.py` does. Carried so the people
+    # suggestions can offer them, because on a plan with no roster the person
+    # typing was otherwise missing from Owner until a record already named them.
+    writers: list[str] = []
     # The repositories this plan's work happens in, carried for the reason the
     # roster is: a renderer is handed an index and never a Config, and the pull
     # request completion has to know which repositories to ask about.
     repositories: list[str] = []
+    # Which views and which kinds this plan has, as `resolve_switches` answered —
+    # carried for the reason the repositories are: the nav, the create form's
+    # kind picker, the Help page's sentence and the export are all drawn from an
+    # index, and none of them is handed a Config. Everything on by default, the
+    # same answer `Config` gives, so an index built by hand in a test is a plan
+    # that never wrote either key.
+    views: tuple[str, ...] = VIEWS
+    kinds: frozenset[str] = frozenset(KIND_NAMES)
+    # The file each switch was read from, for the keys a file actually wrote.
+    # A sentence that says which setting turned a page off has to send its
+    # reader to the right one of four files; a key nobody wrote is absent here,
+    # and the reader names `SWITCHES_FILE` (`model.py`), which is where it goes.
+    switches_from: dict[str, str] = {}
     # The icon each person picked for themselves, login to icon name, from
     # `people/<login>.md`. The choice and not the record: the one page that draws
     # these wants the mark beside a name, and an index carrying the whole record
@@ -414,26 +483,144 @@ class Index(BaseModel):
         return began <= window[1] and self.today >= window[0]
 
     def build_end(self, cycle: int | None) -> date | None:
-        """The last day of a cycle's build.
+        """The last day of a cycle's build, through the scheduler's own function.
 
         From the record where there is one — `with_plans` fills `builds_until` in
         from the two meeting dates — and otherwise from the window less the
         cool-down. Asked through the index rather than by rebuilding a `Config`,
         which would substitute the default cool-down for the repository's own and
         leave a filter quietly disagreeing with the timeline it explains.
+
+        This used to repeat the arithmetic — `window[1] - timedelta(days=round(
+        self.cooldown_weeks * 7))` — and repeating it meant repeating it without
+        the two guards `schedule.build_end` carries: `days_after`, which bounds
+        before it rounds because `round()` raises on infinity, and the clamp that
+        stops a cool-down longer than the window putting the end of build before
+        the start of it. A `cooldown_weeks` of `.inf` in one config file was nine
+        routes down, from one number.
         """
         window = self.cycles.get(cycle) if cycle is not None else None
-        if window is None:
+        if window is None or cycle is None:
             return None
-        plan = self.plans.get(cycle)
-        if plan is not None and plan.builds_until is not None:
-            return plan.builds_until
-        return window[1] - timedelta(days=round(self.cooldown_weeks * 7))
+        return build_end(cycle, window, self._config)
+
+    @cached_property
+    def _config(self) -> Config:
+        """The narrow Config the scheduler's date functions ask for.
+
+        Built from what the index carries rather than passed in, for the reason
+        the windows are carried at all: a renderer is handed an index and never a
+        Config, and a rebuilt one-field Config substitutes the default cool-down
+        for the repository's own — which leaves a filter quietly disagreeing with
+        the timeline that explains it.
+
+        Cached because `build_end` above is called once per record by the
+        `overrun` predicate inside `apply_filters`, and before this it built a
+        fresh pydantic model — two field validations — on every one of those
+        calls; the same rebuild is why `cycle_windows` below hoisted it out of
+        its loop by hand, and caching here is that hoist made general.
+
+        The cache is sound because an Index is built once, in `build_index`, and
+        never written to afterwards: nothing in `src/` assigns a field on one or
+        mutates a field's dict in place. Two threads racing this compute the same
+        Config twice and one wins, which is the same value either way.
+
+        `model_copy` was cited here as the safe alternative to assigning through,
+        and it is not — it copies the instance `__dict__`, which is where a
+        `cached_property` puts its answer, so a copy that replaces
+        `cooldown_weeks` keeps the Config built from the old one. That is
+        answered below, in code, because a docstring is not a guard.
+
+        `build_end` itself is the other candidate and cannot be this: it is
+        keyed by a cycle, so caching it means a dict per index rather than a
+        property, and the cost being paid is the Config and not the arithmetic.
+        Threading an optional pre-built config through instead was the third —
+        it loses because `overrun` reaches `build_end` through a predicate
+        signature that carries only a record and an index, so the one caller
+        that needs it is the one caller with nowhere to put it.
+        """
+        return Config(cooldown_weeks=self.cooldown_weeks, plans=self.plans)
+
+    # A copy of an index must not carry a cache computed off the original's
+    # fields. `model_copy` copies `__dict__` wholesale, and a `cached_property`
+    # lives in there beside the fields — pydantic's own docstring warns that it
+    # "might have unexpected side effects if you store anything in it, on top of
+    # the model fields (e.g. the value of cached properties)". Measured on
+    # pydantic 2.13.4: `index.model_copy(update={"cooldown_weeks": 5.0})` gave a
+    # copy whose `cooldown_weeks` was 5.0 and whose `_config.cooldown_weeks` was
+    # still 2.0, so every `build_end` off that copy answered with the cool-down
+    # the caller had just replaced — silently, and on the one number the whole
+    # function exists to get from the repository rather than from a default.
+    #
+    # Nothing copies an index with that field today. `/api/slide/preview` in
+    # `web.py` copies a RECORD, and the one place that copies an index —
+    # `tests/test_render.py`, updating `plan` and `children` — happens to update
+    # fields the cached Config does not read. That is the entire distance between
+    # sound and wrong, and it is a field name, which is why this is a line of
+    # code and not another sentence in the docstring above.
+    #
+    # Evicted by TYPE and not by name, so a second `cached_property` added to
+    # this class is guarded by having been added rather than by somebody
+    # remembering this comment. Both dunders, because `model_copy` is one of
+    # these two plus the update, and `copy.copy` and `copy.deepcopy` are the
+    # other callers: overriding `model_copy` alone would leave those carrying a
+    # stale cache for the same reason.
+    def _uncached(self) -> Index:
+        for name, attribute in vars(type(self)).items():
+            if isinstance(attribute, cached_property):
+                self.__dict__.pop(name, None)
+        return self
+
+    def __copy__(self) -> Index:
+        return super().__copy__()._uncached()
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Index:
+        return super().__deepcopy__(memo)._uncached()
+
+    def cycle_windows(self) -> list[CycleWindow]:
+        """Every dated cycle, as the three dates a drawing of one needs.
+
+        Unclamped: the timeline clips to its own window and the calendar shows
+        whatever month a reader is on, and a helper that clipped for one of them
+        would be wrong for the other.
+
+        Sorted, and the order is load-bearing rather than tidy: `alt` is the rank
+        in this list, so the alternation both drawings make is a statement about
+        which cycle comes NEXT and not about how the numbers happen to be spelt.
+
+        **By the day it opens, and not by its number.** Keying the tint on the
+        number was the first defect here — a plan that skips one draws two
+        touching bands in a single fill, which is the thing the alternation
+        exists to prevent. Ranking by number instead of by `% 2` narrowed that
+        assumption without removing it: it still needs the numbers to run in the
+        same order as the dates, and `with_plans` lets a cycle record override
+        its own window, so one `starts_on` typed into `cycles/0036.md` is enough
+        to put 36 after 38 in time and beside it in tint. The date is the thing
+        the drawing is actually about.
+
+        Ranking over the PLAN's cycles rather than over the drawn window is the
+        other half, and it is why this is not computed in the timeline: a band
+        that repaints because an earlier cycle scrolled out of view is a band
+        whose colour a reader cannot learn anything from.
+        """
+        config = self._config
+        return [
+            CycleWindow(
+                number,
+                opens,
+                build_end(number, (opens, closes), config),
+                closes,
+                alt=bool(rank % 2),
+            )
+            for rank, (number, (opens, closes)) in enumerate(
+                sorted(self.cycles.items(), key=lambda cycle: (cycle[1][0], cycle[0]))
+            )
+        ]
 
     def load(self, cycle: int) -> dict[str, float]:
         """Person-weeks each person is holding in this cycle.
 
-        Charged where the assignees are, and split evenly among them (D-C4): a
+        Charged where the developers are, and split evenly among them (D-C4): a
         pitch whose children carry the names charges nothing itself, because its
         appetite is a rollup and charging both counts the same work twice.
 
@@ -476,7 +663,7 @@ class Index(BaseModel):
         Keyed by person rather than counted, because the two callers want
         different arithmetic over the same walk: a person's own figure names the
         records on their own hook, and a cycle's names the distinct records
-        behind every figure on the page — a record with two assignees is one
+        behind every figure on the page — a record with two developers is one
         unsized bet on the cycle card and one on each of their rows.
         """
         return self._charged(cycle)[1]
@@ -682,6 +869,16 @@ def _product_of(record: Record, by_id: dict[str, Record]) -> str | None:
     return _holder_of(record, by_id, "product")
 
 
+def _pitch_of(record: Record, by_id: dict[str, Record]) -> str | None:
+    """The pitch a record belongs to. Same walk, one rung further down.
+
+    Empty for a task filed straight under a project, which the ladder allows —
+    `under=("pitch", "project")` on the task rung — and which is the one case
+    that tells this apart from `_project_of` on a real plan.
+    """
+    return _holder_of(record, by_id, "pitch")
+
+
 def _holder_of(record: Record, by_id: dict[str, Record], kind: str) -> str | None:
     """The nearest ancestor of this kind, walking up the parent chain.
 
@@ -775,7 +972,7 @@ SEARCH_FIELDS = (
     "tags",
     "prs",
     "owner",
-    "assignees",
+    "developers",
     "reviewers",
     "reported_by",
     "written_by",
@@ -888,7 +1085,12 @@ def _ordered(field: str, values: set[str]) -> list[str]:
 # both answers to a walk up the chain. Written once because three call sites ask
 # the same question — `build_index`, `query_fields` and `matching` — and a list
 # that grew a rung in two of them would offer a menu that filters nothing.
-_HOLDER_FACETS = ("product", "project")
+#
+# Three rungs and not four. Nothing is filed under a task — no rung in `KINDS`
+# carries `under=("task",)` — so `task:` would be `id:` spelled differently, and
+# an unknown field matches nothing rather than everything, which is what makes
+# leaving it out safe rather than merely tidy.
+_HOLDER_FACETS = ("product", "project", "pitch")
 
 
 def _facet_values(record: Record, field: str, by_id: dict[str, Record]) -> list[str]:
@@ -1011,6 +1213,14 @@ def build_index(
         # start date as passed on a plan whose whole calendar says otherwise.
         problems=validate_all(parsed, config, spans, today),
         unreadable=list(unreadable),
+        # The numbers nothing can compute with, and the switches `read_config`
+        # could not use as written, in one list and one order — by file and then
+        # by setting, the order somebody would open them in. Stable, so a
+        # switch's own reports keep the order its list gave them.
+        unusable=sorted(
+            [*unusable_numbers(config), *config._unusable],
+            key=lambda one: (one.path, one.field),
+        ),
         facets={field: _ordered(field, values) for field, values in facets.items()}
         | {"predicate": sorted(COMPUTED_PREDICATES)},
         search_blob=search_blob,
@@ -1021,6 +1231,9 @@ def build_index(
         cooldown_weeks=config.cooldown_weeks,
         known_people=config.known_people,
         repositories=config.repositories,
+        views=config.views,
+        kinds=config.kinds,
+        switches_from={key: config._from[key] for key in _SWITCHES if key in config._from},
         icons={login: person.icon for login, person in config.people.items() if person.icon},
         today=today,
         holidays=config.holidays,
@@ -1098,6 +1311,45 @@ def predicates_of(index: Index, record_id: str) -> list[str]:
     return [name for name in COMPUTED_PREDICATES if _matches_predicate(index, record_id, name)]
 
 
+def _title_of(by_id: dict[str, Record], record_id: str | None) -> str | None:
+    """What a record is called, or None where it is called nothing.
+
+    An untitled record is one nobody can find again — every create path refuses
+    one, and a plan hand-written in git can still hold one — and an empty title
+    must not reach a field's values: `plain("")` is `""`, and the whole-match
+    branch of `evaluate` guards the needle rather than the haystack, so a blank
+    would sit in the list looking like a value.
+
+    A record id no file was written for answers None, exactly as `_holder_of`
+    does one line above: a dangling `parent` is deliberately not a validation
+    problem, so every lookup down this path is a `.get`.
+    """
+    record = by_id.get(record_id) if record_id else None
+    return (record.title.strip() or None) if record else None
+
+
+def holder_fields(record: Record, by_id: dict[str, Record]) -> dict[str, str | None]:
+    """The ancestors a row is filtered by, and what each of them is called.
+
+    One function and not a spelling per row builder: `_row` (`rows.py`) and
+    `_record_row` (`records.py`) both ship these, the browser's `queryFields`
+    reads them by name, and a key on one page's rows and not on the other's is
+    one filter meaning two things depending on which view a link opens in.
+
+    `<field>_title` BESIDE `<field>` rather than inside it. The checkbox branch
+    of `matches()` reads `row[field]` straight against what a menu submitted, so
+    a title in there would be a value the box accepts and the server refuses —
+    the two parsers disagreeing, which is the failure `tests/test_search.py`
+    exists to catch.
+    """
+    fields: dict[str, str | None] = {}
+    for field in _HOLDER_FACETS:
+        holder = _holder_of(record, by_id, field)
+        fields[field] = holder
+        fields[f"{field}_title"] = _title_of(by_id, holder)
+    return fields
+
+
 def query_fields(index: Index, record_id: str) -> dict[str, list[str]]:
     """One record's values per field, lowered — what `query.evaluate` asks about.
 
@@ -1106,10 +1358,28 @@ def query_fields(index: Index, record_id: str) -> dict[str, list[str]]:
     disagreement between them is the language rather than the plan.
     """
     record = index.records[record_id]
-    fields = {
-        field: [value.lower() for value in _facet_values(record, field, index.records)]
-        for field in (*_SCALAR_FACETS, *_LIST_FACETS, *_HOLDER_FACETS)
-    }
+    fields: dict[str, list[str]] = {}
+    for field in (*_SCALAR_FACETS, *_LIST_FACETS, *_HOLDER_FACETS):
+        values = _facet_values(record, field, index.records)
+        fields[field] = [value.lower() for value in values]
+        # A holder answers to its TITLE as well as to its id, and only here.
+        # `_facet_values` stays ids alone, because that is what a `<select>`
+        # submits and what a pasted URL has to carry, and a menu whose options
+        # were two per project is a menu nobody can read. So the id is the
+        # value and the title is a second way of typing it: `project:warm_bubble`
+        # is the name on the screen — the Project menu draws it over the id it
+        # submits — and it answered nothing at all, with no sentence beside the
+        # box, while `project:proj-000123` answered eighteen rows.
+        #
+        # Titles are not unique and this does not pretend they are: two pitches
+        # called `bed_heat` are two answers to one question, which is the OR the
+        # menus already mean within a field. The id is how you ask for one.
+        if field in _HOLDER_FACETS:
+            fields[field] += [
+                title.lower()
+                for value in values
+                if (title := _title_of(index.records, value)) is not None
+            ]
     fields["id"] = [record.id.lower()]
     fields["title"] = [record.title.lower()]
     fields["prs"] = [pr.lower() for pr in record.prs]

@@ -624,8 +624,29 @@ function popItems(row) {
 
 // --- opening ----------------------------------------------------------------
 
+// Whether a press belongs to the browser rather than to this menu. Shift, on
+// every view and every device, as it always was. **And a long-press on a link
+// from a finger** — jcanton, 2026-10-08, choosing between the options a phone
+// review laid out: on Android a long-press is a `contextmenu`, so a thumb held
+// on a title got this menu where the browser's had been, and the browser's is
+// the one with "open in new tab" and "copy link address" that a phone reader
+// actually reaches for — with no Shift on a touch screen to get it back. The
+// rest of a row still opens ours. iOS sends no `contextmenu` for a long-press
+// at all, so there this changes nothing and the record page is the way in.
+//
+// `pointerType` where the event carries it, which Chrome's and Firefox's do; a
+// coarse primary pointer where it does not, which is Safari's `MouseEvent`.
+function theBrowsersMenu(event) {
+  if (event.shiftKey) return true;
+  const finger = 'pointerType' in event
+    ? event.pointerType === 'touch'
+    : matchMedia('(pointer: coarse)').matches;
+  return finger && !!event.target.closest('a[href]');
+}
+
 // Returns whether this module answered the press, and the call site is
-// `if (!event.shiftKey && popMenu(event.clientX, event.clientY, id)) event.preventDefault();`
+// `if (!theBrowsersMenu(event) && popMenu(x, y, id)) event.preventDefault();`,
+// with `x` and `y` the event's `clientX` and `clientY`
 // — a press on something this view has no row for gets the browser's own menu
 // rather than an empty box of ours.
 function popMenu(x, y, id) {
@@ -1472,7 +1493,7 @@ function popWriteItems(row) {
 
 // Whether a field has nothing in it — the four ways one can be unset, in one
 // place, because `holds` (`table.py`) records what it costs to have them written
-// out twice: an `assignees: []` that read as a value in one copy and as unset in
+// out twice: an `developers: []` that read as a value in one copy and as unset in
 // the other is a row the gate exempts and the form then asks about.
 function popEmpty(value) {
   return value === null || value === undefined || value === ''
@@ -1714,14 +1735,24 @@ function popTakeOutItem(row) {
             why: ((POP_SCHEMA.parent_kinds || {})[row.kind] || []).length
                  ? `${popTitle(row)} is not inside anything.`
                  : `A ${row.kind} belongs to nothing, so there is nothing to take it out of.`};
-  return {kind: 'take-out', text: `Take out of "${popTitleOf(row.parent)}"`,
-    // `{parent: null}`, which is what `reparent(child, null)` (`table.py`) has
-    // sent for this same gesture since it was a drag. Two spellings of "no
-    // parent" would not even be the same write: `patch_text` round-trips, so
-    // `parent: ''` writes an empty string into the file where `null` writes the
-    // key with nothing after it.
-    run: () => popWrite(row.id, {parent: null},
-      `${popTitle(row)} is no longer inside anything`)};
+  // Out of the parent and into whatever holds THAT — `row.out_to`, the one
+  // answer this, the table's move bar and its `+` row all read (`out_to`,
+  // `model.py`). It was `{parent: null}` here, so a pitch taken out of the pitch
+  // it had been filed under left its project as well — jcanton, 2026-10-12,
+  // "move-out should always move to the upper parent". The label names where it
+  // lands, because that is part of what pressing it does.
+  const into = row.out_to || null;
+  return {kind: 'take-out',
+    text: `Take out of "${popTitleOf(row.parent)}"`
+          + (into ? ` into "${popTitleOf(into)}"` : ''),
+    // `null` where nothing above may hold it, which is what `reparent`
+    // (`table.py`) sends for the same case. Two spellings of "no parent" would
+    // not even be the same write: `patch_text` round-trips, so `parent: ''`
+    // writes an empty string into the file where `null` writes the key with
+    // nothing after it.
+    run: () => popWrite(row.id, {parent: into}, into
+      ? `${popTitle(row)} is now inside "${popTitleOf(into)}"`
+      : `${popTitle(row)} is no longer inside anything`)};
 }
 
 // --- the three items that open a form ---------------------------------------
@@ -1948,7 +1979,8 @@ function popForm(spec) {
     // status turning one box into another — would re-open the title over
     // whatever the reader had just been asked for.
     opens: spec.opens || (spec.mode === 'new' ? ['title'] : []),
-    controls: new Map(), marks: new Map(), why: null, save: null, hill: null,
+    controls: new Map(), marks: new Map(), why: null, save: null, cancel: null,
+    hill: null,
   };
   popDrawForm();
 }
@@ -2038,15 +2070,16 @@ function popDrawForm() {
   // one `submit` however it was reached. Enter inside a FIELD does not get here:
   // it takes that field's answer and closes it — see `popOpenField`.
   form.save.type = 'submit';
-  const cancel = popPress('form-cancel', 'Cancel', 'popcancel');
+  form.cancel = popPress('form-cancel', 'Cancel', 'popcancel');
   // `askFor`'s own sentence for the same press, because it is the same news.
-  cancel.onclick = () => { announce('nothing was changed'); popDone(); };
-  acts.append(form.save, cancel);
+  form.cancel.onclick = () => { announce('nothing was changed'); popDone(); };
+  acts.append(form.save, form.cancel);
   box.append(acts);
   box.addEventListener('submit', event => {
     event.preventDefault();
     popSave();
   });
+  box.addEventListener('keydown', popTab);
   POP.classList.add('popforming');
   // **`role="dialog"` and not `menu`, and the swap is not cosmetic**: a `<form>`
   // is not a child a `role="menu"` may have, and a reader arriving inside one
@@ -2101,7 +2134,7 @@ function popWireFields(box) {
       // arrived as "the row was pressed", was swallowed by the `preventDefault`
       // below, and never reached the box. jcanton, 2026-09-18: "when editing the
       // new card I can't add space characters in the fields (tried title and
-      // assignees)".
+      // developers)".
       //
       // `event.target` and not a check for an open control: a `<select>` inside
       // this element answers its own space and arrows too, and this handler has
@@ -2156,7 +2189,7 @@ function popOpenField(name) {
   control.setAttribute('aria-label', popLabel(name));
   // Every box that is typed into, and not only the ones whose type is the word
   // `text`. A list field's type is `list` and its control is a text box all the
-  // same, and gating on the word left `assignees`, `reviewers`, `tags`,
+  // same, and gating on the word left `developers`, `reviewers`, `tags`,
   // `depends_on` and `prs` — five of the seven fields anybody completes —
   // completing nothing at all. jcanton, 2026-09-18: "autocomplete doesn't work
   // in the forms inside our new editable card. can you enable all as in the
@@ -2205,8 +2238,13 @@ function popOpenField(name) {
     // **It must not bubble**: `popClose` is listening for Escape on the way up
     // and would take the whole box down, when what was asked for was to undo one
     // field. The table's own editor stops it for exactly this reason.
-    event.preventDefault();
     event.stopPropagation();
+    // And it is not this field's when something inside it already answered it —
+    // a record reference marked for removal (`refChips`) lets go of its mark, and
+    // one Escape must not also throw away the edit around it. The table's cell
+    // asks the same question.
+    if (event.defaultPrevented) return;
+    event.preventDefault();
     popShutField(name, slot, was);
   };
   // Every control, and not only the status one. What a status demands moves when
@@ -2255,10 +2293,11 @@ function popDressChip(chip, name, value) {
 }
 
 // Take the control away again, having either read it or thrown it away.
-// The answer taken and the control closed, which is Enter. **It stages and does
-// not write**: `form.values` is what Save sends, and until Save is pressed the
-// only thing that has happened is that a word on the card now reads what was
-// typed instead of what the record holds.
+// The answer taken and the control closed, which is Enter — and Tab, on its way
+// to the next field (`popTab`). **It stages and does not write**: `form.values`
+// is what Save sends, and until Save is pressed the only thing that has happened
+// is that a word on the card now reads what was typed instead of what the record
+// holds.
 //
 // The whole box is drawn again rather than the one slot rewritten, because what
 // that word looks like is `cardHtml`'s answer — a chip with its tint and its
@@ -2267,9 +2306,9 @@ function popDressChip(chip, name, value) {
 // one. The redraw rebuilds every control from `popFormRow`, so every OTHER open
 // control is staged first or the redraw would rewrite its answer back to the
 // record's.
-function popTakeField(name) {
+function popTakeField(name, then) {
   const form = POP_FORM;
-  if (!form.controls.has(name)) return;
+  if (!form.controls.has(name)) return false;
   // **A half-written date must not clear the date that is there.** A native
   // picker answers `value === ''` for `2026-0` exactly as it does for a box
   // somebody emptied on purpose — the defect `openEditor` (`table.py`) records
@@ -2284,15 +2323,74 @@ function popTakeField(name) {
     if (!(box.validity && box.validity.badInput)) continue;
     popFormSays([`${popLabel(other)} is half-written — finish it, or press Escape in it.`]);
     box.focus();
-    return;
+    return false;
   }
   for (const [other, box] of form.controls) form.values[other] = popReadOf(other, box);
   form.controls.delete(name);
   // What is still open stays open, and `popDrawForm` opens exactly this list.
-  form.opens = [...form.controls.keys()];
+  // `then` is the field Tab is moving to, and it goes LAST whether or not it was
+  // already open, because each field `popDrawForm` opens takes the keyboard and
+  // the last one keeps it.
+  form.opens = [...form.controls.keys()].filter(other => other !== then);
+  if (then) form.opens.push(then);
   // And the keyboard is `popDrawForm`'s to place: it re-opens what was open, or
   // hands it to `popFirstSlot` when this was the last control.
   popDrawForm();
+  return true;
+}
+
+// Tab walks the card the way it walks a web form: into the next field, open and
+// ready to be typed over, with the answer in the one it left taken onto the card
+// exactly as Enter takes it. jcanton, 2026-10-07: "the new create child / create
+// record pop window doesn't allow for tab-bing between fields to fill them in in
+// order as in a web form. can we have that somehow? even though enter/escape are
+// special keys?" Enter and Escape keep their meanings; this is the third key of
+// the set, and like Enter it stages and never writes.
+//
+// **Every stop is answered here, and the browser's own Tab is never left to
+// run**, for two reasons. A field's part is `.card-fact`, which is `display:
+// contents` — no box, and Chrome will not focus an element without one (see
+// `popFirstSlot`), so the browser's walk skips every row of the list and goes
+// from the status chip straight to Create. And a control Tab leaves is
+// a control that has to be staged and drawn as a word, which redraws the card,
+// which replaces the element the browser was about to move to.
+//
+// **The walk wraps, and it was asked which way.** Past Cancel is the title
+// again, and Shift+Tab from the title is Cancel — the dialog pattern, and
+// jcanton's pick over letting Tab leave the box like an ordinary form's. This
+// box already refuses every close that is not a decision (see `popClose`), and
+// a keyboard that fell onto the table behind it is one Escape cannot reach,
+// because this box's listener is on `#pop`.
+//
+// The stops are `.popopens` in document order, which is the card's reading
+// order — title, the two chips, then the list left to right and down, because
+// `.card-facts` is a row-major grid. A locked field carries `.poplocked` and is
+// not a stop: it is drawn to be read, and a field that cannot be opened is not
+// one Tab can fill. A date box's own segments are walked by the arrows, and
+// Chrome advances them as digits are typed.
+function popTab(event) {
+  const form = POP_FORM;
+  if (!form || event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
+  const stops = [...POP.querySelectorAll('.popopens'), form.save, form.cancel];
+  const here = stops.findIndex(stop => stop.contains(document.activeElement));
+  // Somewhere that is not a stop — the refusal list, which takes the keyboard
+  // when a refusal arrives — and the browser's own next is the right one: it is
+  // Create, the next thing in the document.
+  if (here < 0) return;
+  event.preventDefault();
+  const next = stops[(here + (event.shiftKey ? -1 : 1) + stops.length) % stops.length];
+  const leaving = stops[here].dataset.field;
+  const going = next.matches('.popopens') ? next.dataset.field : null;
+  // Asked before the redraw replaces both buttons, and answered after it.
+  const button = next === form.save ? 'save' : 'cancel';
+  if (leaving && form.controls.has(leaving)) {
+    // A half-written date refuses, says so, and keeps the keyboard — Tab is not
+    // a way round the one answer Enter may not take.
+    if (!popTakeField(leaving, going)) return;
+  } else if (going) {
+    popOpenField(going);
+  }
+  if (!going) form[button].focus();
 }
 
 function popShutField(name, slot, was) {
@@ -2564,13 +2662,20 @@ function popComplete(input, name, field) {
   list.id = 'pop-list-' + (++POP_FIELD_N);
   input.setAttribute('list', list.id);
   const many = (POP_SCHEMA.types || {})[name] === 'list';
+  // Record ids read as their titles here exactly as on the record page
+  // (`refChips`, in the shell). The box then holds only the one being added, so
+  // an option is a bare id with no prefix carried through, and the chips are
+  // what is already taken.
+  const refs = source === 'records' ? refChips(input, options, many) : null;
   const fill = () => {
     const at = input.value.lastIndexOf(',');
-    const lead = many && at !== -1 ? input.value.slice(0, at + 1) + ' ' : '';
+    const lead = !refs && many && at !== -1 ? input.value.slice(0, at + 1) + ' ' : '';
     // Already chosen, so not offered again: picking a name that is in the list
     // is a slip and not an intent to have it twice, which is the same
     // deduplication `coerce` (`table.py`) does at the other end.
-    const taken = many ? input.value.split(',').map(one => one.trim()) : [];
+    let taken = [];
+    if (refs) taken = refs.ids();
+    else if (many) taken = input.value.split(',').map(one => one.trim());
     list.replaceChildren(...options
       .filter(one => !taken.includes(one.value))
       .map(one => {
@@ -2583,7 +2688,13 @@ function popComplete(input, name, field) {
       }));
   };
   fill();
-  if (many) input.addEventListener('input', fill);
+  if (many || refs) input.addEventListener('input', fill);
+  // Every chip added or taken away moves the card's bottom edge, and the card is
+  // placed once, against the pointer: jcanton, 2026-10-20, "adding several
+  // manages to move the bottom of the popup card outside the bottom of the page,
+  // making it impossible to save/cancel the edit". Placed again on each change,
+  // so `placeFloat` keeps Save and Cancel inside the window.
+  if (refs) input.addEventListener('input', popPlace);
   field.append(list);
 }
 
@@ -2678,7 +2789,7 @@ async function popSave() {
   const status = 'status' in values ? popRawOf(values.status) : popRawOf(popStartOf('status'));
   // **And only when the status is MOVING.** The gate is a rule about arriving at
   // a status, not about standing in one: `validate_all` reports a record that is
-  // already `in_progress` without assignees as a problem beside it, and the plan
+  // already `in_progress` without developers as a problem beside it, and the plan
   // is full of records in exactly that state because that is what a problem list
   // is for. Gating on the standing value instead would refuse every edit to every
   // one of them.

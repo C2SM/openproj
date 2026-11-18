@@ -47,14 +47,14 @@ import threading
 import time
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 import pygit2
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
-from pages import elements, render_source
+from pages import elements, render_source, tags
 
 # `test_remote` owns the vocabulary for a plan with a remote on the other end of
 # it — what a fork looks like, how to take the remote away without a socket, and
@@ -64,7 +64,8 @@ from test_remote import contains, pushed_from_a_terminal, tree_now, unplugged
 from test_store import commit_directly
 
 from openproj.auth import User, sign_session
-from openproj.web import create_app
+from openproj.model import KIND_NAMES, OPTIONAL_KINDS, VIEW_NEEDS, VIEWS, _an
+from openproj.web import STATE_LOOKUPS, STATE_RESERVE, create_app
 
 ORG = "kilnlab"
 SECRET = "a-real-signing-secret-for-tests"
@@ -83,6 +84,8 @@ CLIENT_SECRET = "s3cr3t-client-secret"
 SESSION_COOKIE = "__Host-openproj_session"
 SESSION_COOKIE_INSECURE = "openproj_session"
 STATE_COOKIE = "op_state"
+NEXT_COOKIE = "op_next"
+RENEWING_COOKIE = "op_renewing"
 
 ANN = User(login="ann", member=True)
 MALLORY = User(login="mallory", member=False)
@@ -524,8 +527,10 @@ def test_every_route_says_which_nav_item_it_is(client: TestClient):
     # controls, so the tab went and the page stayed — every title links to it,
     # and in the export `detail.html` is the whole corpus in one file. A page
     # that lights nothing is a state the nav must draw, not a page that forgot
-    # to say where it is. `/new` has always been in that position.
-    for route in ("/detail", f"/detail/{TASK}", "/new?kind=task"):
+    # to say where it is. `/new` has always been in that position. `/help` is in it
+    # since Help moved to the footer, where its own link carries the mark instead —
+    # `test_help_is_in_the_footer_of_every_page_and_marks_itself_there` holds that half.
+    for route in ("/detail", f"/detail/{TASK}", "/new?kind=task", "/help"):
         assert lit(client.get(route).text) == [], route
 
 
@@ -542,7 +547,7 @@ def test_a_detail_route_serves_one_record_and_not_the_whole_corpus(client: TestC
     # happen is a second record being *served*.
     article = body.split("<article", 1)[1].split("</article>")[0]
     assert "Downgrade numpy for global sums" not in article
-    assert body.count("<article") == 1
+    assert len([one for one in elements(body) if one.tag == "article"]) == 1
 
 
 def test_a_record_that_does_not_exist_is_a_404_and_not_an_empty_page(client: TestClient):
@@ -550,10 +555,62 @@ def test_a_record_that_does_not_exist_is_a_404_and_not_an_empty_page(client: Tes
 
 
 @pytest.mark.parametrize(
+    ("address", "says"),
+    [
+        ("/detail/task-ffffff", "No record 'task-ffffff'."),
+        ("/cycle/99999", "A cycle is numbered 0 to 9999."),
+        ("/records", "There is no page at /records."),
+    ],
+)
+def test_an_address_with_nothing_at_it_answers_a_page(
+    client: TestClient, address: str, says: str
+):
+    """A browser asking for a page that is not there gets a page, and a 404.
+
+    It got FastAPI's default — `{"detail": "no record 'task-ffffff'"}` as the
+    whole document, with no viewport tag, so a stale link opened on a phone was a
+    980px line of JSON in tiny type and no way back into the plan but Back.
+
+    Asked of the parsed document: the shell's viewport tag, the nav, a heading,
+    the route's own reason as a sentence, and the way out. A program asking the
+    same address for JSON still gets JSON, and an `/api/` address gets JSON
+    whatever it asks for — the handler is about addresses a person types.
+    """
+    answer = client.get(address, headers={"Accept": "text/html,*/*;q=0.8"})
+    assert answer.status_code == 404
+    assert answer.headers["content-type"].startswith("text/html")
+    found = elements(answer.text)
+    assert any(
+        one.tag == "meta" and one.attrs.get("name") == "viewport" for one in found
+    ), "the not-found page has no viewport tag, so a phone lays it out at 980px"
+    assert any(one.tag == "nav" for one in found), "the not-found page has no nav"
+    assert any(one.tag == "h1" and one.text == "Not in this plan" for one in found)
+    assert any(one.tag == "p" and one.text == says for one in found), (
+        f"the page does not say {says!r}: {[one.text for one in found if one.tag == 'p']}"
+    )
+    assert any(one.tag == "a" and one.text == "Go to Records" for one in found)
+
+    program = client.get(address, headers={"Accept": "application/json"})
+    assert program.status_code == 404
+    assert program.headers["content-type"] == "application/json"
+
+
+def test_an_api_address_with_nothing_at_it_stays_json_for_a_browser(client: TestClient):
+    answer = client.get("/api/body/task-ffffff", headers={"Accept": "text/html"})
+    assert answer.status_code == 404
+    assert answer.json() == {"detail": "no such record"}
+
+
+@pytest.mark.parametrize(
     "route",
     [
         "/",
         f"/detail/{TASK}",
+        # The slide editor, which is its own renderer on the record's address and
+        # inlines three blocks written for other pages — the combobox, the Ace
+        # surface and the whole of `controls.py`'s editor toolkit. Three imported
+        # scripts and one of its own is exactly the shape this test is about.
+        f"/detail/{TASK}?view=slide",
         "/detail",
         "/graph",
         "/timeline",
@@ -606,7 +663,22 @@ def test_no_page_declares_one_name_twice(client: TestClient, route: str):
     # `assert fetches` below exists precisely to keep a page with nothing to
     # announce from satisfying the count vacuously.
     "route",
-    ["/table", f"/detail/{TASK}", "/graph", "/cycles", "/cycle/1", "/new?kind=task"],
+    [
+        "/table",
+        f"/detail/{TASK}",
+        # The slide editor. It was NOT in this list, and that is the whole of
+        # jcanton's 2026-09-21 report from the deployed service: its Save
+        # announced neither end of the write, so the server's own news of the
+        # commit came back down the stream as "This was just changed by somebody
+        # else" over the slide he had just saved. Every other write path on this
+        # page — the asset upload, the drawing save — already had its pair, which
+        # is what a census is for.
+        f"/detail/{TASK}?view=slide",
+        "/graph",
+        "/cycles",
+        "/cycle/1",
+        "/new?kind=task",
+    ],
 )
 def test_every_write_a_page_makes_is_announced_before_and_after_it(client: TestClient, route: str):
     """Otherwise the server's own news comes back as somebody else's.
@@ -631,7 +703,16 @@ def test_every_write_a_page_makes_is_announced_before_and_after_it(client: TestC
         for url, _ in re.findall(
             r"fetch\(\s*(`[^`]*`|'[^']*')[^)]*?method: '(POST|PATCH|PUT)'", scripts, re.S
         )
-        if "/api/preview" not in url
+        # `/api/preview` renders markdown and `/api/slide/preview` renders a
+        # slide; both answer with html and commit nothing. Two spellings because
+        # they are two routes, and the substring that covers the first does not
+        # cover the second — which would have counted the slide editor's preview
+        # as a write and demanded a pair of announcements for a GET in a POST's
+        # clothing.
+        if "/api/preview" not in url and "/api/slide/preview" not in url
+        # Chooses who a shared tailnet device writes as: a cookie, no commit,
+        # and so no news of its own to tell apart from anybody else's.
+        and url != "'/api/as'"
     ]
     # The one path here where "how many fetch call sites does the source hold"
     # and "how many writes can happen per press" genuinely differ: `openDrawing`
@@ -1156,7 +1237,7 @@ def test_a_rule_newer_than_the_record_reaches_the_client_as_a_warning(client: Te
     repository at once. The pitch predates the somebody-assigned rule, so it
     warns."""
     problems = index_of(client)["problems"]
-    assigned = [p for p in problems if p["record_id"] == PITCH and p["field"] == "assignees"]
+    assigned = [p for p in problems if p["record_id"] == PITCH and p["field"] == "developers"]
 
     assert [p["severity"] for p in assigned] == ["warning"]
 
@@ -1698,7 +1779,7 @@ def test_a_field_the_client_did_not_send_is_not_rewritten(client: TestClient, re
     assert "person_weeks: 1.5          # measured on firebrick, not guessed" in stored
     assert "owner: ann                 # ann has the upstream contacts" in stored
     assert "reviewers: [bo, cy]" in stored  # still one line, still flow style
-    assert "assignees" not in stored  # an untouched default is not materialised
+    assert "developers" not in stored  # an untouched default is not materialised
 
 
 # --------------------------------------------------------------------------- #
@@ -1710,7 +1791,7 @@ def test_a_field_the_client_did_not_send_is_not_rewritten(client: TestClient, re
 # --------------------------------------------------------------------------- #
 
 
-# A create that breaks no rule. `assignees` is here for the reason `owner` and
+# A create that breaks no rule. `developers` is here for the reason `owner` and
 # `reviewers` are: a `ready` record is refused without it, and a create fixture
 # that trips a gate makes every test using it a test about that gate.
 VALID_TASK = {
@@ -1719,7 +1800,7 @@ VALID_TASK = {
     "parent": PITCH,
     "status": "ready",
     "owner": "ann",
-    "assignees": ["ann"],
+    "developers": ["ann"],
     "reviewers": ["bo"],
     "person_weeks": 1.0,
 }
@@ -1805,7 +1886,7 @@ def test_a_new_record_is_held_to_the_current_rules(client: TestClient, repo_path
     """Grandfathering protects the corpus that already exists, not the record being
     created right now. The seeded pitch only warns about having nobody on it; a
     pitch created today is created at the repository's `schema_version` and is
-    blocked without assignees. This is the mechanism working end to end rather
+    blocked without developers. This is the mechanism working end to end rather
     than in a unit test, and it is the reason a required field can ever be added
     at all — the version 2 rule refuses this create while it breaks no file
     already in the corpus."""
@@ -1823,7 +1904,7 @@ def test_a_new_record_is_held_to_the_current_rules(client: TestClient, repo_path
     )
 
     assert response.status_code == 422
-    assert [p["field"] for p in response.json()["problems"]] == ["assignees"]
+    assert [p["field"] for p in response.json()["problems"]] == ["developers"]
     assert git_head(repo_path) == base
 
 
@@ -2390,6 +2471,191 @@ def test_a_sign_in_somebody_cancelled_says_so(secure_client: TestClient):
     assert SESSION_COOKIE not in response.headers.get("set-cookie", "")
 
 
+# What a browser sends when somebody opens a page, as against a script fetching
+# one. The renewal answers only the first: a fetch cannot follow GitHub's sign-in.
+OPENING_A_PAGE = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"}
+
+
+def _signed_hours_ago(monkeypatch: pytest.MonkeyPatch, hours: float) -> str:
+    """A session as the callback would have signed it `hours` ago. The clock is
+    moved rather than the test slept, as `test_auth.py` does: `time.time()` is
+    what a timestamped signer stamps."""
+    now = time.time()
+    with monkeypatch.context() as clock:
+        clock.setattr(time, "time", lambda: now - hours * 3600)
+        return sign_session(ANN, SECRET)
+
+
+@pytest.fixture
+def served(repo_path: Path):
+    """The deployment's shape — GitHub sign-in, over TLS — with nobody signed in."""
+    app = create_app(
+        repo_path,
+        auth="github",
+        org=ORG,
+        secret=SECRET,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+    )
+    with TestClient(app, base_url="https://openproj.example") as client:
+        yield client
+
+
+@pytest.mark.parametrize("hours", [13, 25, 24 * 29])
+def test_opening_a_page_on_an_old_session_goes_round_github_and_back(
+    served: TestClient, monkeypatch: pytest.MonkeyPatch, hours: int
+):
+    """The sign-outs jcanton reported as random, 2026-10-12. The Cloud Run log
+    had the pattern: a session lasted exactly 24 hours from sign-in, the browser
+    dropped the cookie at the same moment, and the next page drew signed out at
+    whatever time of day the last sign-in had been. Four of those were found by a
+    save refused with a 401.
+
+    So a page opened on a session past half its day is sent through the sign-in,
+    which GitHub completes without showing anything to somebody who has
+    authorised the app before. The 25-hour case is the one that used to be lost
+    outright, and the 29-day one is the far edge of the cookie the browser now
+    keeps: no session (writes are still refused), still renewable.
+    """
+    served.cookies.set(SESSION_COOKIE, _signed_hours_ago(monkeypatch, hours))
+
+    response = served.get(
+        f"/detail/{TASK}?view=slide", headers=OPENING_A_PAGE, follow_redirects=False
+    )
+
+    assert response.status_code == 307
+    location = urlparse(response.headers["location"])
+    assert location.path == "/login"
+    assert parse_qs(location.query)["next"] == [f"/detail/{TASK}?view=slide"]
+    assert RENEWING_COOKIE in response.headers["set-cookie"]
+
+    # And `/login` keeps the destination for the callback.
+    onward = served.get(response.headers["location"], follow_redirects=False)
+    assert onward.headers["location"].startswith("https://github.com/login/oauth/authorize")
+    # Quoted in the jar: `/`, `?` and `=` are not cookie-safe, and Starlette unquotes.
+    assert served.cookies.get(NEXT_COOKIE, "").strip('"') == f"/detail/{TASK}?view=slide"
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["fresh", "not-a-page", "nobody-signed-in", "not-our-signature", "just-renewed"],
+)
+def test_nothing_else_is_sent_round_github(
+    served: TestClient, monkeypatch: pytest.MonkeyPatch, case: str
+):
+    """Each of these answered with the page it asked for, untouched.
+
+    A session under half a day has nothing to renew. A `fetch` — a save, the
+    card's body, `/api/me` — cannot follow a redirect to GitHub, and a save
+    turned into one would be a save that quietly did not happen. A reader who
+    never signed in has nothing to renew, and a cookie this server did not sign
+    is a reader who never signed in. And a browser sent round in the last ten
+    minutes is not sent again: a jar that will not take the new cookie would
+    otherwise go round until the browser says "too many redirects".
+    """
+    headers = dict(OPENING_A_PAGE)
+    if case == "fresh":
+        served.cookies.set(SESSION_COOKIE, _signed_hours_ago(monkeypatch, 11))
+    elif case == "not-a-page":
+        served.cookies.set(SESSION_COOKIE, _signed_hours_ago(monkeypatch, 25))
+        headers = {"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors"}
+    elif case == "not-our-signature":
+        served.cookies.set(SESSION_COOKIE, sign_session(ANN, "somebody-elses-secret"))
+    elif case == "just-renewed":
+        served.cookies.set(SESSION_COOKIE, _signed_hours_ago(monkeypatch, 25))
+        served.cookies.set(RENEWING_COOKIE, "1")
+
+    response = served.get("/", headers=headers, follow_redirects=False)
+
+    assert response.status_code == 200, response.headers.get("location")
+
+
+def test_an_expired_session_still_cannot_write(
+    served: TestClient, repo_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The browser keeps the cookie for a month now, so it can be recognised and
+    renewed. That must not stretch what it grants: the signature's day is still
+    how long somebody who left the org keeps write access."""
+    served.cookies.set(SESSION_COOKIE, _signed_hours_ago(monkeypatch, 25))
+
+    assert "login" not in served.get("/api/me").json()
+    assert save(served, TASK, {"priority": "high"}).status_code == 401
+
+
+def test_a_sign_in_comes_back_to_the_page_it_started_on(
+    served: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Both sign-ins in the log on 2026-10-12 landed on `/`, and both readers then
+    clicked their way back to the pitch they had been reading. And the cookie it
+    sets is the month-long one, or the renewal has nothing to recognise tomorrow."""
+
+    async def exchanged(*_):
+        return "a-token"
+
+    async def identified(*_):
+        return ANN
+
+    monkeypatch.setattr("openproj.web.exchange_code", exchanged)
+    monkeypatch.setattr("openproj.web.identify", identified)
+
+    login = served.get(f"/login?next=/detail/{TASK}", follow_redirects=False)
+    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+    response = served.get(f"/auth/callback?code=c0de&state={state}", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/detail/{TASK}"
+    session = next(
+        line for line in response.headers.get_list("set-cookie") if SESSION_COOKIE in line
+    )
+    assert f"Max-Age={30 * 86400}" in session, session
+
+
+@pytest.mark.parametrize(
+    "elsewhere",
+    ["//evil.example/", "https://evil.example/", "/\\evil.example", "javascript:alert(1)"],
+)
+def test_a_sign_in_never_comes_back_to_somewhere_else(
+    served: TestClient, monkeypatch: pytest.MonkeyPatch, elsewhere: str
+):
+    """`next` is an allowlist of this server's own paths. A sign-in link that
+    could name any destination is the redirect a phishing page borrows to look
+    like it came from here, and GitHub's own sign-in in the middle of it would
+    lend it the rest of the credibility it needed."""
+
+    async def exchanged(*_):
+        return "a-token"
+
+    async def identified(*_):
+        return ANN
+
+    monkeypatch.setattr("openproj.web.exchange_code", exchanged)
+    monkeypatch.setattr("openproj.web.identify", identified)
+
+    login = served.get("/login", params={"next": elsewhere}, follow_redirects=False)
+    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+    response = served.get(f"/auth/callback?code=c0de&state={state}", follow_redirects=False)
+
+    assert response.headers["location"] == "/"
+
+
+def test_turning_a_renewal_down_signs_the_browser_out(
+    served: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Cancel on GitHub's page means no. The old cookie is what sends a page round
+    GitHub, so leaving it in place would ask the same question again ten minutes
+    later, every ten minutes, of somebody who has already answered it."""
+    served.cookies.set(SESSION_COOKIE, _signed_hours_ago(monkeypatch, 25))
+    login = served.get("/login", follow_redirects=False)
+    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+
+    response = served.get(
+        f"/auth/callback?error=access_denied&state={state}", follow_redirects=False
+    )
+
+    assert response.status_code == 400
+    assert response.headers["set-cookie"].startswith(f'{SESSION_COOKIE}=""')
+
+
 # --------------------------------------------------------------------------- #
 # 7. The writable surface is a closed set
 # --------------------------------------------------------------------------- #
@@ -2498,6 +2764,80 @@ def live_server(repo_path: Path):
     """
     with serving(create_app(repo_path, auth="dev", secret=SECRET)) as url:
         yield url
+
+
+def test_a_tab_can_open_more_pages_than_one_host_gets_sockets(live_server: str, tmp_path: Path):
+    """Nine pages in one tab, on one HTTP/1.1 server, each of them answered.
+
+    Every served page opens an `EventSource`, and Chrome keeps a page it has
+    navigated away from alive in its back/forward cache — stream and all. Six
+    open streams is Chrome's whole allowance of connections to one HTTP/1.1 host,
+    so the seventh page asked for a socket that was never coming and the tab sat
+    blank for as long as anybody waited. Found driving the demo at a phone's
+    width on 2026-10-08 (it was never about phones: it hangs at any width), and
+    proved by `--disable-features=BackForwardCache` making it go away.
+
+    It needs a real server and a real browser and nothing less: the limit is the
+    browser's, the cache is the browser's, and HTTP/1.1 is uvicorn's — Cloud Run
+    speaks HTTP/2 to the browser and multiplexes, which is why the deployed
+    service never showed it and why a test against the deployment would pass.
+
+    Distinct addresses, because a page is cached per entry: walking one URL over
+    and over keeps replacing the same entry and never fills anything. And a
+    second on each, because a reader stays that long and a walk that does not is
+    not this defect: measured, the same nine pages left the instant each one
+    finished loading never hang, and left 0.8s later hang at the ninth.
+    """
+    from browser import _devtools, _evaluated, chrome
+
+    walk = ["/", "/issues", "/notes", "/table", "/graph", "/timeline", "/cycles", "/help"]
+    walk.append("/people")
+    with _devtools(chrome(), live_server + "/help?start", tmp_path / "profile") as (call, _):
+        call("Page.enable")
+        for step, path in enumerate(walk, 1):
+            try:
+                call("Page.navigate", {"url": live_server + path})
+            except TimeoutError:
+                pytest.fail(
+                    f"page {step} of the walk, {path}, never answered: the tab ran out of "
+                    f"connections to the server before it got there"
+                )
+            deadline = time.monotonic() + 10
+            arrived = None
+            while time.monotonic() < deadline and not arrived:
+                arrived = _evaluated(
+                    call,
+                    f"document.readyState === 'complete' && location.pathname === {path!r}",
+                    patient=True,
+                )
+                time.sleep(0.1)
+            assert arrived, f"page {step} of the walk, {path}, did not finish loading in 10s"
+            # A mark in this page's own heap, which survives only if Back brings
+            # back this very page rather than loading it again.
+            _evaluated(call, f"window.walked = {step}")
+            time.sleep(1)
+
+        # And Back brings a page out of the cache with its stream open again —
+        # closing it on the way in is only half of the fix. The mark is how this
+        # knows it was the cache that answered: a page loaded afresh opens a new
+        # stream anyway, and would pass for the wrong reason.
+        history = call("Page.getNavigationHistory")["result"]
+        previous = history["entries"][history["currentIndex"] - 1]
+        call("Page.navigateToHistoryEntry", {"entryId": previous["id"]})
+        deadline = time.monotonic() + 10
+        back = None
+        while time.monotonic() < deadline and not back:
+            back = _evaluated(
+                call,
+                f"window.walked === {len(walk) - 1} && ({{state: source && source.readyState}})",
+                patient=True,
+            )
+            time.sleep(0.1)
+        assert back, "Back loaded the page again instead of bringing it out of the cache"
+        assert back["state"] in (0, 1), (
+            f"the page Back brought out of the cache has no live stream (readyState "
+            f"{back['state']}), so nothing that changes the plan reaches it"
+        )
 
 
 def test_a_record_page_goes_back_to_the_view_a_real_browser_came_from(
@@ -2769,7 +3109,7 @@ def test_a_nonsense_window_falls_back_instead_of_failing(client: TestClient):
     for query in ("from=yesterday", "to=2026-13-01", "zoom=lots", "zoom=0", "from=x&to=y&zoom=z"):
         response = client.get(f"/timeline?{query}")
         assert response.status_code == 200, query
-        assert "<svg" in response.text, query
+        assert "svg" in tags(response.text), query
 
 
 def test_a_backwards_window_does_not_invert_the_drawing(client: TestClient):
@@ -3012,7 +3352,7 @@ def test_a_cycle_record_reaches_the_pages_it_is_for(client: TestClient, repo_pat
 def test_the_cycle_page_shows_load_against_capacity(client: TestClient, repo_path: Path):
     """The number the team's own sheet does not have. Their HackMD records
     availability and staffing and never adds them up."""
-    save(client, TASK, {"cycle": 37, "assignees": ["ann"], "person_weeks": 3.0})
+    save(client, TASK, {"cycle": 37, "developers": ["ann"], "person_weeks": 3.0})
     client.put(
         "/api/cycle/37",
         json={
@@ -3076,7 +3416,7 @@ def test_the_bet_table_wears_no_class_the_page_cannot_draw(client: TestClient):
     they must not disturb.
 
     Wiring it would have been worse than leaving it inert: every appetite,
-    assignees and reviewers box in this table opens a suggestion popup that
+    developers and reviewers box in this table opens a suggestion popup that
     `attachSuggest` inserts as the input's own next sibling, so an `overflow` on
     an ancestor cuts the list off against the bottom of the table on the last
     rows. A page that scrolls sideways is a nuisance; an autocomplete cut in half
@@ -3086,8 +3426,8 @@ def test_the_bet_table_wears_no_class_the_page_cannot_draw(client: TestClient):
 
     assert 'class="table-scroll"' not in page
     # The class still exists, on the one table with a sticky header to hold up.
-    assert 'class="table-scroll"' in client.get("/table").text
-    assert re.search(r'<input class="live wide" data-field="assignees"[^>]*data-suggest', page), (
+    assert 'class="table-scroll carded"' in client.get("/table").text
+    assert re.search(r'<input class="live wide" data-field="developers"[^>]*data-suggest', page), (
         "and this is the reason: the popups live inside the cells"
     )
 
@@ -3107,7 +3447,7 @@ def test_only_the_named_are_in_a_cycle(client: TestClient, repo_path: Path):
     deliberately rather than appearing because somebody was assigned something —
     which would make the roster a report instead of a decision."""
     save(client, PITCH, {"cycle": 44})
-    save(client, TASK, {"owner": "cy", "assignees": ["cy"], "person_weeks": 1.0})
+    save(client, TASK, {"owner": "cy", "developers": ["cy"], "person_weeks": 1.0})
     client.put(
         "/api/cycle/44",
         json={
@@ -3181,6 +3521,52 @@ def test_the_bet_table_names_a_status_in_the_colour_every_other_page_uses(
     assert ">in_progress<" not in page, "the identifier is the class, never the word"
 
 
+def test_a_task_bet_on_its_own_leaves_its_pitch_for_the_project_and_is_a_bet(
+    client: TestClient, repo_path: Path
+):
+    """jcanton, 2026-10-12: betting `task-46ea60` into cycle 39 out of
+    `pitch-370004`, which was bet in an earlier one.
+
+    The button stages two fields and Save sends them as one PATCH, so this is
+    that PATCH, sent with what the button carries: where the markup says the
+    task goes is read off the page and not written down here, and it has to be
+    the pitch's project — out of the pitch, not out of the plan. Then the task
+    is a bet of its own on the next page, ticked into this cycle, and the commit
+    names both fields."""
+    client.put(
+        "/api/cycle/48",
+        json={
+            "base_commit": git_head(repo_path),
+            "fields": {"starts_on": "2027-04-05", "build_weeks": 4},
+            "body": None,
+        },
+    )
+    page = client.get("/cycle/48").text
+    button = re.search(
+        rf'<tr data-id="{TASK}"[^>]*>.*?<button type="button" class="ownbet" '
+        r'data-out="([^"]*)"\s+data-holder="([^"]*)"',
+        page,
+        re.S,
+    )
+    assert button, f"{TASK} sits under {PITCH} and has no Bet on its own"
+    assert (button.group(1), button.group(2)) == (PROJECT, PITCH_TITLE)
+    assert TASK not in [record_id for record_id, _, _ in bet_rows(page)]
+
+    answer = save(client, TASK, {"parent": button.group(1), "cycle": 48})
+    assert answer.status_code == 200, answer.text
+    assert commit_at(repo_path, answer.json()["commit"]).message == f"{TASK}: parent, cycle"
+    written = file_at(repo_path, answer.json()["commit"], PATH)
+    assert "parent: proj-a10000" in written and "pitch-b20000" not in written
+
+    page = client.get("/cycle/48").text
+    assert TASK in [record_id for record_id, _, _ in bet_rows(page)], "it is not a bet of its own"
+    tick = re.search(
+        rf'<tr data-id="{TASK}"[^>]*>\s*<td><input type="checkbox" class="bet"[^>]*>', page
+    )
+    assert tick and "checked" in tick.group(0), "it is a bet, and not in this cycle"
+    assert f'<tr data-id="{TASK}" data-rung=""' in page
+
+
 def test_every_cycle_the_plan_names_is_on_the_index(client: TestClient, repo_path: Path):
     """F25. The index listed the cycles with a record, which are the ones somebody
     has already thought about. A cycle holding work and holding no record is the
@@ -3194,15 +3580,16 @@ def test_every_cycle_the_plan_names_is_on_the_index(client: TestClient, repo_pat
         },
     )
     save(client, PITCH, {"cycle": 48})
-    save(client, TASK, {"owner": "bo", "assignees": ["bo"], "person_weeks": 2.0})
+    save(client, TASK, {"owner": "bo", "developers": ["bo"], "person_weeks": 2.0})
     page = client.get("/cycles").text
     cards = re.findall(r'<h2><a href="/cycle/(\d+)">Cycle \d+</a></h2>', page)
 
     assert cards == ["48", "47"], "newest first, record or not"
-    # 2.5: bo's two weeks plus the half-week sibling task under the same pitch.
-    # A cycle with no record still says what it is holding, which is the whole
-    # reason it is on this list.
-    assert re.search(r">2\.5</b> weeks bet against\s+no roster", page), "48 holds work"
+    # 2.0: bo's two weeks. The half-week sibling task under the same pitch has an
+    # owner and nobody assigned, so it charges nobody (2026-09-23). A cycle with
+    # no record still says what it is holding, which is the whole reason it is on
+    # this list.
+    assert re.search(r">2\.0</b> weeks bet against\s+no roster", page), "48 holds work"
 
 
 def test_a_cycle_card_says_the_bet_against_the_capacity(client: TestClient, repo_path: Path):
@@ -3219,17 +3606,18 @@ def test_a_cycle_card_says_the_bet_against_the_capacity(client: TestClient, repo
         },
     )
     save(client, PITCH, {"cycle": 49})
-    save(client, TASK, {"owner": "cy", "assignees": ["cy"], "person_weeks": 3.0})
+    save(client, TASK, {"owner": "cy", "developers": ["cy"], "person_weeks": 3.0})
     card = re.search(
         r'<li class="card([^"]*)">\s*<h2><a href="/cycle/49".*?</li>',
         client.get("/cycles").text,
         re.S,
     ).group(0)
 
-    # 3.5, not 3.0: betting the pitch bets everything under it, so cy's three
-    # weeks and bo's half-week sibling task both land in the cycle. That is what
-    # "the pitch is the unit of the bet" means for a capacity sum.
-    assert '<b class="num">3.5</b> of' in card, "cy is not on the roster and still counts"
+    # cy's three weeks, although cy is not on the roster: betting the pitch bets
+    # everything under it, which is what "the pitch is the unit of the bet" means
+    # for a capacity sum. The half-week sibling is bo's to answer for and nobody's
+    # to do — owner, no developers — so it charges nobody (2026-09-23).
+    assert '<b class="num">3.0</b> of' in card, "cy is not on the roster and still counts"
     assert '<b class="num">2.0</b> weeks bet' in card, "ann at half of four weeks"
     assert re.search(r'<span class="bar"><span style="width: 100%">', card)
     assert card.startswith('<li class="card over">'), "3.0 bet against 2.0 of capacity"
@@ -3755,8 +4143,8 @@ def test_the_preview_still_refuses_html(client: TestClient):
         json={"body": '<script>alert(1)</script>\n\n<img src="assets/deadbeefdeadbeef.png">\n'},
     ).json()["html"]
 
-    assert "<script>" not in smuggled
-    assert "<img" not in smuggled
+    assert "script" not in tags(smuggled)
+    assert "img" not in tags(smuggled)
 
 
 def test_every_control_on_the_cycle_page_has_a_name(client: TestClient):
@@ -3778,7 +4166,7 @@ def test_every_control_on_the_cycle_page_has_a_name(client: TestClient):
     # is promised and cannot reach.
     for derived in ("Builds until", "Cool-down ends"):
         assert f'<dt class="derived">{derived}</dt>' in setup, derived
-    assert "<label" not in setup.split("Builds until")[1]
+    assert "label" not in tags(setup.split("Builds until")[1])
     assert '<label for="joining"' in page and 'id="joining"' in page
 
     # This table's rows and no other's. The page draws three tables and two of
@@ -3797,7 +4185,7 @@ def test_every_control_on_the_cycle_page_has_a_name(client: TestClient):
         if '<input type="checkbox"' in row:
             assert f'aria-label="Bet {title} into cycle 37"' in row, title
         assert f'aria-label="{title} appetite in weeks"' in row, title
-        assert f'aria-label="{title} assignees"' in row, title
+        assert f'aria-label="{title} developers"' in row, title
         assert f'aria-label="{title} reviewers"' in row, title
 
     # Every control on the page is named one way or the other. A checkbox with no
@@ -5493,6 +5881,9 @@ def test_every_write_route_refuses_in_words_while_the_plan_is_forked(forked: For
         ("POST", "/api/slide/preview"),
         # Clears a cookie.
         ("POST", "/logout"),
+        # Sets or clears one: which listed person a shared tailnet device
+        # writes as. Reaches no store.
+        ("POST", "/api/as"),
     }
     answers = wedged_writes(forked.client, forked.note)
     driven = {
@@ -6079,10 +6470,51 @@ def test_the_banner_appears_with_nobody_calling_showpile_by_hand(client: TestCli
     # can have raised it — and with the third body's numbers, so a stale
     # sentence cannot pass for a fresh read.
     assert got["polled"]["hidden"] is False, (
-        "the pile grew back and the minute poll never noticed: "
-        "setInterval(readPile, PILE_POLL_MS) is gone"
+        "the pile grew back and the minute poll never noticed: the poll is gone"
     )
     assert "7 saves" in got["polled"]["said"], got["polled"]["said"]
+
+
+def test_a_hidden_tab_lets_its_stream_go_and_catches_up_when_shown(client: TestClient):
+    """An open stream is billed instance time on Cloud Run, so a tab left in the
+    background kept the service billed all night. Hidden, the page lets the
+    stream go when the server closes it and does not poll. Shown again, it
+    listens again and says if the plan moved meanwhile."""
+    from test_injection import run_js
+
+    quiet = {"ok": True, "unpushed": 0, "oldest_unpushed_age": None, "parked": 0, "detail": None}
+    answer = run_js(
+        client.get("/table").text,
+        "(async () => {"
+        "  const settle = async () => { for (let i = 0; i < 10; i++) await null; };"
+        "  const look = () => ({streams: __streams(), moved: !moved.hidden,"
+        "                       said: moved.innerHTML});"
+        "  await settle();"
+        "  __drop();"
+        "  const visible = look();"
+        "  __hide();"
+        "  __drop();"
+        "  __interval();"
+        "  await settle();"
+        "  const hidden = look();"
+        "  __show();"
+        "  await settle();"
+        "  return {visible, hidden, shown: look()};"
+        "})()",
+        page=True,
+        health=[{**quiet, "head": "a" * 40}, {**quiet, "head": "b" * 40}],
+    )
+
+    assert not answer["errors"], answer["errors"]
+    got = answer["value"]
+    # A visible tab leaves the reconnect to the browser
+    assert got["visible"]["streams"] == {"opened": 1, "open": 1}, got["visible"]
+    assert got["hidden"]["streams"]["open"] == 0, "a hidden tab kept its stream open"
+    # The second head is only read by a poll, so a hidden poll would raise the banner here
+    assert not got["hidden"]["moved"], "a hidden tab polled /api/health"
+    assert got["shown"]["streams"] == {"opened": 2, "open": 1}, got["shown"]
+    assert got["shown"]["moved"], "the plan moved while the tab was hidden and nobody said so"
+    assert "The plan changed." in got["shown"]["said"], got["shown"]["said"]
 
 
 # --- the open pull requests, live -------------------------------------------
@@ -6104,7 +6536,7 @@ def _github_answering(pulls: dict[str, list[dict]], asked: list[str]):
     def answer(request: httpx.Request) -> httpx.Response:
         asked.append(request.url.path)
         for repository, open_now in pulls.items():
-            if request.url.path == f"/repos/{repository}/pulls":
+            if request.url.path == f"/repos/{repository}/issues":
                 return httpx.Response(200, json=open_now)
         return httpx.Response(404, json={"message": "Not Found"})
 
@@ -6143,7 +6575,9 @@ def test_the_open_pull_requests_come_from_the_plan_and_are_cached(tmp_path: Path
         secret=SECRET,
         github_transport=_github_answering(
             {
-                "kilnlab/kiln4py": [{"number": 1403, "title": "Halo exchange drops a rank"}],
+                "kilnlab/kiln4py": [
+                    {"number": 1403, "title": "Halo exchange drops a rank", "pull_request": {}}
+                ],
                 "griddle/griddle": [{"number": 1877, "title": "Scan carry"}],
             },
             asked,
@@ -6155,8 +6589,8 @@ def test_the_open_pull_requests_come_from_the_plan_and_are_cached(tmp_path: Path
         assert first.status_code == 200, first.text
         assert first.json() == {
             "prs": [
-                {"value": "kilnlab/kiln4py#1403", "label": "Halo exchange drops a rank"},
-                {"value": "griddle/griddle#1877", "label": "Scan carry"},
+                {"value": "kilnlab/kiln4py#1403", "label": "PR · Halo exchange drops a rank"},
+                {"value": "griddle/griddle#1877", "label": "issue · Scan carry"},
             ],
             "stale": False,
         }
@@ -6168,7 +6602,7 @@ def test_the_open_pull_requests_come_from_the_plan_and_are_cached(tmp_path: Path
         assert elsewhere.json() == first.json(), (
             "a query string reached the repositories this server will fetch"
         )
-    assert asked == ["/repos/kilnlab/kiln4py/pulls", "/repos/griddle/griddle/pulls"], (
+    assert asked == ["/repos/kilnlab/kiln4py/issues", "/repos/griddle/griddle/issues"], (
         f"three requests cost {len(asked)} calls to GitHub: {asked}"
     )
 
@@ -6222,6 +6656,156 @@ def test_the_open_pull_requests_are_not_offered_to_a_signed_out_visitor(tmp_path
     )
     with TestClient(app) as client:
         assert client.get("/api/prs").status_code == 403
+    assert asked == [], "a signed-out visitor made this server call GitHub"
+
+
+def _plan_citing(tmp_path: Path, cited: dict[str, list[str]]) -> Path:
+    """The corpus with these references in `prs:`, and `kilnlab/kiln4py` named."""
+    path = tmp_path / "states.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    seeded = dict(SEED)
+    seeded["config/defaults.yaml"] += "repositories: [kilnlab/kiln4py]\n"
+    for name, text in seeded.items():
+        record = next((rid for rid in cited if name.endswith(f"/{rid}.md")), None)
+        if record is None:
+            continue
+        lines = [line for line in text.split("\n") if not line.startswith("prs:")]
+        at = next(i for i, line in enumerate(lines) if line.startswith("status:"))
+        lines.insert(at + 1, f"prs: {json.dumps(cited[record])}")
+        seeded[name] = "\n".join(lines)
+    commit_directly(path, seeded, "seed the corpus")
+    return path
+
+
+def _github_with_states(states: dict[int, dict], asked: list[str], left: int = 50):
+    """A GitHub whose open list is empty and which answers `/issues/N` from a dict."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.path)
+        if request.url.path.endswith("/issues"):
+            return httpx.Response(200, json=[])
+        number = int(request.url.path.rsplit("/", 1)[1])
+        return httpx.Response(
+            200,
+            json={"number": number, **states[number]},
+            headers={"x-ratelimit-remaining": str(left)},
+        )
+
+    return httpx.MockTransport(answer)
+
+
+_MERGED = {"state": "closed", "closed_at": "2026-11-03T09:00:00Z",
+           "pull_request": {"merged_at": "2026-11-03T09:00:00Z"}}
+_UNMERGED = {"state": "closed", "closed_at": "2026-10-20T09:00:00Z",
+             "pull_request": {"merged_at": None}}
+
+
+def test_a_record_whose_pull_requests_landed_is_offered_done_and_nothing_is_written(
+    tmp_path: Path,
+):
+    """jcanton, 2026-11-11: done once its pull requests are merged, shelved once
+    they are all closed unmerged, and "go with the suggested version" — so the
+    route says which records disagree with GitHub and writes nothing.
+
+    One landed and one dropped is landed: a pull request closed and replaced by
+    one that merged is the ordinary case. A record already done is not offered
+    anything, nor is one with a pull request still open, and a reference to a
+    repository the plan does not name is never looked up at all.
+    """
+    asked: list[str] = []
+    repo = _plan_citing(
+        tmp_path,
+        {
+            TASK: ["kilnlab/kiln4py#1", "kilnlab/kiln4py#2"],
+            OTHER: ["kilnlab/kiln4py#3"],
+            DONE: ["kilnlab/kiln4py#4"],
+            PITCH: ["kilnlab/kiln4py#4", "kilnlab/kiln4py#5"],
+            "proj-a10000": ["acme/elsewhere#9"],
+        },
+    )
+    states = {1: _MERGED, 2: _UNMERGED, 3: _UNMERGED, 4: _MERGED, 5: {"state": "open"}}
+    app = create_app(
+        repo, auth="dev", secret=SECRET, github_transport=_github_with_states(states, asked)
+    )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        before = head(client)
+        first = client.get("/api/pr-states")
+        assert first.status_code == 200, first.text
+        assert first.json() == {
+            "records": {
+                TASK: {"verdict": "landed", "count": 2, "at": "2026-11-03"},
+                OTHER: {"verdict": "dropped", "count": 1, "at": "2026-10-20"},
+            },
+            "pending": False,
+        }
+        looked_up = sorted(path for path in asked if not path.endswith("/issues"))
+        again = client.get("/api/pr-states")
+        assert again.json() == first.json()
+        assert head(client) == before, "asking where the pull requests stand wrote to the plan"
+    assert looked_up == [f"/repos/kilnlab/kiln4py/issues/{n}" for n in (1, 2, 3, 4, 5)], asked
+    assert not any("acme" in path for path in asked), "an unnamed repository was asked about"
+    assert sorted(p for p in asked if not p.endswith("/issues")) == looked_up, (
+        "a closed reference was looked up a second time instead of being cached"
+    )
+
+
+def test_the_pull_request_states_spend_a_budget_and_say_what_is_left(tmp_path: Path):
+    """Sixty calls an hour is what a deployment gets for a repository the App is
+    not installed on. So a request looks up at most a few references, none once
+    GitHub says the reserve is reached, and reports `pending` for the rest —
+    which the next page that asks resolves."""
+    asked: list[str] = []
+    repo = _plan_citing(tmp_path, {TASK: [f"kilnlab/kiln4py#{n}" for n in range(1, 13)]})
+    states = {n: _MERGED for n in range(1, 13)}
+    app = create_app(
+        repo, auth="dev", secret=SECRET, github_transport=_github_with_states(states, asked)
+    )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        first = client.get("/api/pr-states").json()
+        spent = len([p for p in asked if not p.endswith("/issues")])
+        second = client.get("/api/pr-states").json()
+    assert first == {"records": {}, "pending": True}, first
+    assert spent == STATE_LOOKUPS, f"one request looked up {spent} references"
+    assert second["pending"] is False and TASK in second["records"], second
+
+    asked.clear()
+    (tmp_path / "starved").mkdir()
+    cited = {TASK: ["kilnlab/kiln4py#1", "kilnlab/kiln4py#2"]}
+    starved = _plan_citing(tmp_path / "starved", cited)
+    app = create_app(
+        starved,
+        auth="dev",
+        secret=SECRET,
+        github_transport=_github_with_states(
+            {1: _MERGED, 2: _MERGED}, asked, left=STATE_RESERVE - 1
+        ),
+    )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        assert client.get("/api/pr-states").json() == {"records": {}, "pending": True}
+    assert len([p for p in asked if not p.endswith("/issues")]) == 1, (
+        f"it went on spending under the reserve: {asked}"
+    )
+
+
+def test_where_the_pull_requests_stand_is_not_told_to_a_signed_out_visitor(tmp_path: Path):
+    """The same reason `/api/prs` gives: a route that spends rate-limit calls for
+    anybody who asks can be made to spend them all."""
+    asked: list[str] = []
+    repo = _plan_citing(tmp_path, {TASK: ["kilnlab/kiln4py#1"]})
+    app = create_app(
+        repo,
+        auth="github",
+        org=ORG,
+        secret=SECRET,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        github_transport=_github_with_states({1: _MERGED}, asked),
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/pr-states").status_code == 403
     assert asked == [], "a signed-out visitor made this server call GitHub"
 
 
@@ -6978,3 +7562,578 @@ def test_a_row_carries_the_end_date_so_the_table_can_tell_what_it_still_needs(
     # a reader of that row is actually looking at: a finished record was a dot,
     # with its End cell showing the day it began.
     assert (rows[DONE]["start"], rows[DONE]["end"]) == ("2026-08-03", "2026-08-20")
+
+
+# --------------------------------------------------------------------------- #
+# 15. A plan says which views and kinds it has
+#
+# `views` and `kinds` in `config/defaults.yaml` (design/views-and-kinds.md). What
+# is held here is the server's half: a view the plan does not list still answers
+# its address, and nothing else the server draws leads to it; a list of a kind
+# that is off answers the switched-off page; a kind that is off is refused at
+# every door that writes one. Every fixture is derived
+# — the views off `VIEWS`, the dependants off `VIEW_NEEDS`, the gated routes off
+# `web.SWITCHED` — so a ninth view is swept on the commit that adds it.
+# --------------------------------------------------------------------------- #
+
+# Every record in `SEED`, each of which has its own page.
+SEED_IDS = (PROJECT, PITCH, TASK, OTHER, DONE)
+# The one address each gated route with a value in it is opened at. Cycle 37 is in
+# no calendar `SEED` has, which is fine: an unrecorded cycle is a page like any
+# other, and the nav test above opens the same one.
+_OPENED_AT = {"/cycle/{number}": "/cycle/37", "/deck/{number}": "/deck/37"}
+
+
+def _plan_saying(tmp_path: Path, setting: str) -> Path:
+    """The corpus, with `setting` written into its `config/defaults.yaml` — the
+    file a plan's switches are documented to live in."""
+    path = tmp_path / "switched.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    commit_directly(
+        path,
+        {**SEED, "config/defaults.yaml": SEED["config/defaults.yaml"] + setting},
+        "seed a plan that switches something off",
+    )
+    return path
+
+
+def _opened_at(template: str) -> str:
+    assert "{" not in template or template in _OPENED_AT, (
+        f"{template} is gated and this file has no address to open it at — add one to _OPENED_AT"
+    )
+    return _OPENED_AT.get(template, template)
+
+
+def _off_with(view: str) -> set[str]:
+    """This view and every view that cannot be listed without it: Cycles takes the
+    deck with it. Off `VIEW_NEEDS`, so a second dependant is swept too."""
+    return {view, *(other for other, need in VIEW_NEEDS.items() if need == view)}
+
+
+def _dead_ends(
+    client: TestClient, url: str, page: str, views, kinds, own: str | None = None
+) -> list[str]:
+    """Every link and form on `page` that leads to a view this plan does not list.
+
+    `own` is the view `page` IS, when it is one: an unlisted view reached by its
+    address links to itself — `/cycles` to each `/cycle/<n>` — and that is the
+    page working, not a link that gives the view away.
+
+    Resolved the way a browser and then Starlette would, not as a substring: the
+    href is joined to the address the page was served at, so a relative `?owner=`
+    or a blank field lands where it really lands, and the path is walked against
+    `app.routes` in order to the first GET route that matches — the one the
+    request would reach. That route's row in the gate table says whether it is on.
+
+    `SWITCHED_BY_QUERY` is read by what each of its two rows means, and held to
+    being exactly those two, so a third query-gated page fails here until this
+    has been taught to read it.
+
+    **Resolving is also what hides a blanked field.** A view that is off has its
+    `Links` field set to `""`, so a link site that forgot its guard draws the
+    suffix alone — `<a href="37">Review deck →</a>` on `/cycle/37` — and that
+    joins to `/cycle/37`, which is on. So a target that is empty, or relative
+    without being a query or a fragment, is a dead end by its shape: that is
+    what `{{ links.X }}{{ suffix }}` writes when `X` is off, and no page this
+    server draws writes one on purpose.
+    """
+    from fastapi.routing import APIRoute
+
+    from openproj.web import SWITCHED, SWITCHED_BY_QUERY
+
+    assert SWITCHED_BY_QUERY == {"/new": "kind"}
+    found = []
+    for one in elements(page):
+        target = one.attrs.get({"a": "href", "form": "action"}.get(one.tag, ""))
+        if target is None:
+            continue
+        if not re.match(r"[/?#]|[a-zA-Z][a-zA-Z0-9+.-]*:", target):
+            found.append(f"<{one.tag}> {target!r} on {url} is a blanked link")
+            continue
+        where = urlparse(urljoin(f"http://testserver{url}", target))
+        if where.netloc != "testserver":
+            continue
+        route = next(
+            (
+                route
+                for route in client.app.routes
+                if isinstance(route, APIRoute)
+                and "GET" in route.methods
+                and route.path_regex.match(where.path)
+            ),
+            None,
+        )
+        if route is None:
+            continue
+        asked = parse_qs(where.query)
+        switch = SWITCHED.get(route.path)
+        if switch is not None and switch not in views and switch != own:
+            found.append(
+                f"<{one.tag}> {target!r} on {url} reaches {route.path}: {switch} is unlisted"
+            )
+        kind = asked.get("kind", ["task"])[0]
+        if route.path == "/new" and kind in KIND_NAMES and kind not in kinds:
+            found.append(f"<{one.tag}> {target!r} on {url} creates {_an(kind)}, which is off")
+        slide = asked.get("view") == ["slide"]
+        if route.path == "/detail/{record_id}" and slide and "deck" not in views and own != "deck":
+            found.append(f"<{one.tag}> {target!r} on {url} opens a slide, and the deck is unlisted")
+    return found
+
+
+def _says(page: str, setting: str) -> bool:
+    """Whether the page names this setting the way the switched-off page does."""
+    return any(one.tag == "code" and one.text == setting for one in elements(page))
+
+
+@pytest.mark.parametrize("view", VIEWS)
+def test_an_unlisted_view_answers_at_its_address_and_nothing_else_links_to_it(
+    tmp_path: Path, view: str
+):
+    """Each view left out of `views` on its own, and swept.
+
+    jcanton, 2026-10-20: "the derived-only views actually exist but are hidden in
+    the nav". Its own addresses answer 200 — the slide view of a record too, when
+    the deck is the one left out — with the nav the plan lists and nothing more,
+    and nothing on the page leads anywhere unlisted but back into the view itself.
+    Every page that is listed answers 200 as well, and nothing on any of them — the
+    nav, a filter link, a Review deck link, the slide button — leads to the view
+    left out. That half is the one that needs a DOM: an unlisted view linked from
+    a page is no longer unlisted, and no status code says so.
+
+    Every kind is on here, so the Issues and Notes lists are swept like the
+    rest; with their kind off they are not unlisted but gone, which is
+    `test_a_kind_that_is_off_is_refused_at_every_door`.
+    """
+    from pages import nav_of, unusable_banner_says
+
+    from openproj.render.shell import _NAV
+    from openproj.web import SWITCHED
+
+    off = _off_with(view)
+    views = tuple(one for one in VIEWS if one not in off)
+    repo = _plan_saying(tmp_path, f"views: [{', '.join(views)}]\n")
+    kinds = frozenset(KIND_NAMES)
+    listed_nav = [label for key, label in _NAV if key == "records" or key in views]
+
+    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+
+        unlisted = [
+            (_opened_at(template), one) for template, one in SWITCHED.items() if one in off
+        ]
+        if "deck" in off:
+            unlisted.append((f"/detail/{PITCH}?view=slide", "deck"))
+        assert unlisted, f"{view} has no address to leave out"
+        for url, own in unlisted:
+            got = client.get(url)
+            assert got.status_code == 200, f"{url}: {got.status_code}"
+            assert unusable_banner_says(got.text) == "", url
+            # The nav the plan lists and nothing extra — jcanton chose that over
+            # adding the page to the nav while somebody stands on it. Nothing is
+            # marked but what the page already belongs to: the deck lights the
+            # Cycles it is of, listed or not, as it always has.
+            nav = nav_of(got.text)
+            assert [label for label, _, _ in nav] == listed_nav, f"{url} draws {nav}"
+            belongs = {"Cycles"} if own == "deck" else set()
+            assert {label for label, _, marked in nav if marked} <= belongs, f"{url} marks {nav}"
+            assert _dead_ends(client, url, got.text, views, kinds, own=own) == [], url
+
+        listed = [
+            "/",
+            "/help",
+            "/detail",
+            *(f"/detail/{one}" for one in SEED_IDS),
+            "/new?kind=task",
+            *(_opened_at(template) for template, one in SWITCHED.items() if one in views),
+            *([f"/detail/{PITCH}?view=slide"] if "deck" in views else []),
+        ]
+        for url in listed:
+            got = client.get(url)
+            assert got.status_code == 200, f"{url}: {got.status_code}"
+            # The setting was written right, so nothing is drawn around it: a
+            # banner here would mean the sweep is of whatever the tool made of a
+            # typo, not of the plan this test meant.
+            assert unusable_banner_says(got.text) == "", url
+            assert _dead_ends(client, url, got.text, views, kinds) == [], url
+
+        if "deck" in off:
+            record = client.get(f"/detail/{PITCH}").text
+            assert not [
+                one
+                for one in elements(record)
+                if one.tag == "a" and "slide-view" in one.attrs.get("class", "").split()
+            ], "the record page offers a slide in a plan that does not list the deck"
+        if "deck" in off and "cycles" in views:
+            # By its words as well as by where it leads: the sweep above would
+            # see a guard dropped as a blanked link, and this says which one.
+            cycle = elements(client.get("/cycle/37").text)
+            assert not [one for one in cycle if one.tag == "a" and "deck" in one.text.lower()], (
+                "/cycle/37 offers a Review deck in a plan that does not list the deck"
+            )
+
+
+@pytest.mark.parametrize("kind", OPTIONAL_KINDS)
+def test_a_kind_that_is_off_is_refused_at_every_door(tmp_path: Path, kind: str):
+    """The create form, the create route and the target of Change kind, each asked
+    for a kind the plan has turned off.
+
+    The form is the switched-off page, naming `kinds`; the routes answer 422 with
+    `kind_refusal`'s sentence, which is `openproj new`'s word for word. Neither the
+    create form's picker nor the kind chip's menu offers it, because every one of
+    those choices would end in that 422.
+
+    A file of that kind that is already there is not what this switches off: it
+    still loads, is listed on Records and opens on its own page. Hiding it would be
+    a list that drops rows and looks normal.
+    """
+    from pages import selects
+
+    from openproj.model import RUNG, Config, kind_off_warning, kind_refusal
+    from openproj.web import SWITCHED
+
+    kinds = [one for one in OPTIONAL_KINDS if one != kind]
+    repo = _plan_saying(tmp_path, f"kinds: [{', '.join(kinds)}]\n")
+    record_id = f"{RUNG[kind].prefix}-f00001"
+    commit_directly(
+        repo,
+        {
+            **tree_now(repo),
+            f"{RUNG[kind].directory}/{record_id}.md": (
+                f"---\nid: {record_id}\nkind: {kind}\ntitle: Written before the switch\n---\n"
+            ),
+        },
+        f"{_an(kind)} somebody wrote before the plan turned them off",
+    )
+    sentence = kind_refusal(kind, Config(kinds=frozenset(KIND_NAMES) - {kind}))
+    # Bare, because the record page and the 422 banner draw it as text, and a
+    # backtick there is a backtick.
+    assert sentence is not None and "kinds in config/defaults.yaml" in sentence
+    assert "`" not in sentence
+
+    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+
+        form = client.get(f"/new?kind={kind}")
+        assert form.status_code == 404, form.status_code
+        assert _says(form.text, "kinds"), "the create form does not say which setting it was"
+        # And Records bare as its way out: `kind=` is what was to be created, and
+        # handed to Records it would promise the same rows on a page with none.
+        assert [
+            (one.text, one.attrs.get("href"))
+            for one in elements(form.text)
+            if one.tag == "a" and one.text in ("Go to Records", "Show the same filters on Records")
+        ] == [("Go to Records", "/")]
+        # And the list of that kind with it, although `views` was never written:
+        # a list of a kind the plan does not have is a list of nothing. Its page
+        # names `kinds` for the same reason, and not `views` — this plan never
+        # wrote `views`, and `views: [issues]` would not bring the list back.
+        listing = [template for template, view in SWITCHED.items() if VIEW_NEEDS.get(view) == kind]
+        assert listing, f"no view lists {kind}s"
+        for template in listing:
+            got = client.get(template)
+            assert got.status_code == 404, template
+            assert _says(got.text, "kinds") and not _says(got.text, "views"), template
+
+        for url in ("/new?kind=task", f"/detail/{TASK}"):
+            offered = {value for options in selects(client.get(url).text) for value, _ in options}
+            assert kind not in offered, f"{url} offers {_an(kind)}"
+
+        made = create(client, {"kind": kind, "title": "Halo exchange feels slow"})
+        assert made.status_code == 422, made.text
+        assert made.json()["detail"] == sentence
+
+        moved = rekind(client, TASK, kind)
+        assert moved.status_code == 422, moved.text
+        assert moved.json()["detail"] == sentence
+
+        # And a save that names the kind outright, which is not a way to change
+        # one at all (D5): refused whether or not the plan has it.
+        saved = save(client, TASK, {"kind": kind})
+        assert saved.status_code == 422, saved.text
+
+        opened = client.get(f"/detail/{record_id}")
+        assert opened.status_code == 200
+        # With the warning beside it: the words every door uses, and then how to
+        # settle it, which a door has no reason to say and a file already there does.
+        warned = [one.text for one in elements(opened.text) if one.tag == "li"]
+        said = kind_off_warning(kind, Config(kinds=frozenset(KIND_NAMES) - {kind}))
+        assert said is not None and said.startswith(sentence)
+        assert said in warned, "the record page does not say its kind is off"
+        listed = [
+            one.attrs["data-id"]
+            for one in elements(client.get("/").text)
+            if one.tag == "tr" and "data-id" in one.attrs
+        ]
+        assert record_id in listed, listed
+
+        # And swept, every page still on, the way a view that is off is swept:
+        # nothing may offer to create one. What would fail here is a "New issue"
+        # somewhere other than the inbox that went off with its kind — a Table,
+        # a cycle page, the deck — which no status code would say.
+        views = tuple(one for one in VIEWS if VIEW_NEEDS.get(one) != kind)
+        on = frozenset(KIND_NAMES) - {kind}
+        still = [
+            "/",
+            "/help",
+            "/detail",
+            *(f"/detail/{one}" for one in (*SEED_IDS, record_id)),
+            "/new?kind=task",
+            *(_opened_at(template) for template, one in SWITCHED.items() if one in views),
+            f"/detail/{PITCH}?view=slide",
+        ]
+        for url in still:
+            got = client.get(url)
+            assert got.status_code == 200, f"{url}: {got.status_code}"
+            assert _dead_ends(client, url, got.text, views, on) == [], url
+
+    # The create form asks the switch after the word and before the sign-in: a
+    # signed-out reader told to sign in would sign in and then be told the kind
+    # is off. Only a GitHub-authenticated app can say "sign in" — under `dev`
+    # every request may write — and nobody is signed in to this one.
+    signed_out = create_app(
+        repo,
+        auth="github",
+        org=ORG,
+        secret=SECRET,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+    )
+    with TestClient(signed_out) as client:
+        form = client.get(f"/new?kind={kind}")
+        assert form.status_code == 404, form.status_code
+        assert _says(form.text, "kinds")
+        assert client.get("/new?kind=task").status_code == 403, "nobody is signed in"
+        assert client.get("/new?kind=milestone").status_code == 422, "a typo is a typo"
+
+
+@pytest.mark.parametrize("kind", OPTIONAL_KINDS)
+def test_a_kind_change_from_a_page_drawn_before_the_switch_is_refused(
+    repo_path: Path, client: TestClient, kind: str
+):
+    """The tab was drawn while the kind was on, so its chip still offers it, and
+    `kinds` was committed while the tab sat open. Its Change kind carries the
+    base it was drawn at, and the gate is asked at HEAD all the same, which is
+    what the new record would land on.
+
+    Asked at `base`, this went through: `write_all` compares only the paths it
+    writes, the config is never one of them, and the record was committed into
+    a plan that had turned its kind off. `confirming` walks the drops question,
+    so that the answer without the gate is the write and not a 409; and the task
+    is under nothing, because an issue or a note under a pitch is a 409 of its own.
+    """
+    from openproj.model import RUNG, Config, kind_refusal
+
+    loose = "task-f00009"
+    commit_directly(
+        repo_path,
+        {
+            **tree_now(repo_path),
+            f"tasks/{loose}.md": f"---\nid: {loose}\nkind: task\ntitle: Under nothing\n---\n",
+        },
+        "a task under nothing",
+    )
+    drawn_at = head(client)
+    kinds = [one for one in OPTIONAL_KINDS if one != kind]
+    tree = tree_now(repo_path)
+    assert not any(path.startswith(f"{RUNG[kind].directory}/") for path in tree)
+    setting = f"kinds: [{', '.join(kinds)}]\n"
+    commit_directly(
+        repo_path,
+        {**tree, "config/defaults.yaml": tree["config/defaults.yaml"] + setting},
+        f"turn {RUNG[kind].directory} off",
+    )
+    assert head(client) != drawn_at
+
+    moved = rekind(client, loose, kind, base=drawn_at, confirming=True)
+    assert moved.status_code == 422, moved.text
+    assert moved.json()["detail"] == kind_refusal(kind, Config(kinds=frozenset(kinds)))
+    assert not any(path.startswith(f"{RUNG[kind].directory}/") for path in tree_now(repo_path))
+
+
+def _offered_by(page: str, which) -> list[str]:
+    """The values of the options in every `<select>` whose attributes `which`
+    accepts, in document order.
+
+    Off `elements`, which is flat, so an option is the select's that precedes it
+    most closely — the only element an `<option>` can be inside here, bar a
+    `<datalist>`, which is counted as the container it is so that its options are
+    never read as the select's before it.
+    """
+    offered: list[str] = []
+    inside = False
+    for one in elements(page):
+        if one.tag in ("select", "datalist"):
+            inside = one.tag == "select" and which(one.attrs)
+        elif one.tag == "option" and inside:
+            offered.append(one.attrs.get("value", one.text))
+    return offered
+
+
+# `kinds` absent, empty, and naming each optional kind alone.
+@pytest.mark.parametrize("listed", [None, (), *((one,) for one in OPTIONAL_KINDS)])
+def test_the_create_form_and_the_kind_chip_offer_only_kinds_that_are_on(
+    tmp_path: Path, listed: tuple[str, ...] | None
+):
+    """The create form's picker and a record's Change kind menu, each asked for
+    exactly what it offers: every kind the plan has, in the ladder's order, and
+    nothing else. The chip leaves out the kind the record already is.
+
+    Exact lists rather than "not the one that is off": a picker that dropped a
+    planned kind along with the optional one, or offered them out of order, passes
+    a test that only looks for what should be missing.
+    """
+    on = [
+        one
+        for one in KIND_NAMES
+        if one not in OPTIONAL_KINDS or listed is None or one in listed
+    ]
+    repo = _plan_saying(tmp_path, "" if listed is None else f"kinds: [{', '.join(listed)}]\n")
+    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+
+        form = client.get("/new?kind=task")
+        assert form.status_code == 200, form.status_code
+        assert _offered_by(form.text, lambda attrs: attrs.get("id") == "kind") == on
+
+        record = client.get(f"/detail/{TASK}")
+        assert record.status_code == 200, record.status_code
+        chip = _offered_by(record.text, lambda attrs: "becomes" in attrs.get("class", "").split())
+        assert chip == ["", *(one for one in on if one != "task")]
+
+
+def test_nothing_but_records_is_still_a_whole_app(tmp_path: Path):
+    """`views: []` and `kinds: []`: the least a plan can list, which is Records,
+    every record's page, the create form for the four planned kinds, and Help.
+
+    Every one of those still draws, with a nav of one item and not a single link
+    to a view it does not list — the case where a guard missing anywhere shows,
+    since everything it could lead to is unlisted at once. Every unlisted view
+    still answers at its address, with that same nav of one; only the Issues and
+    Notes lists are gone, with their kinds.
+    """
+    from pages import nav_of
+
+    from openproj.web import SWITCHED
+
+    repo = _plan_saying(tmp_path, "views: []\nkinds: []\n")
+    kinds = frozenset(one for one in KIND_NAMES if one not in OPTIONAL_KINDS)
+    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+
+        for url in ("/", "/help", "/detail", *(f"/detail/{one}" for one in SEED_IDS), "/new"):
+            got = client.get(url)
+            assert got.status_code == 200, f"{url}: {got.status_code}"
+            assert [label for label, _, _ in nav_of(got.text)] == ["Records"], url
+            assert _dead_ends(client, url, got.text, (), kinds) == [], url
+
+        for template, view in SWITCHED.items():
+            got = client.get(_opened_at(template))
+            if VIEW_NEEDS.get(view) in OPTIONAL_KINDS:
+                assert got.status_code == 404, template
+                continue
+            assert got.status_code == 200, f"{template}: {got.status_code}"
+            assert [label for label, _, _ in nav_of(got.text)] == ["Records"], template
+            assert _dead_ends(client, template, got.text, (), kinds, own=view) == [], template
+        for kind in OPTIONAL_KINDS:
+            assert client.get(f"/new?kind={kind}").status_code == 404, kind
+
+
+def test_a_committed_views_setting_changes_the_next_page(client: TestClient, repo_path: Path):
+    """A `defaults.yaml` committed while the server runs is the plan on the very
+    next request — the nav, on every page, the unlisted ones included.
+
+    The links ride the per-commit memo beside the index, so this is the test that
+    a cache of them could not be keyed on anything else: one built once, or keyed
+    on the day, would go on drawing the Table in the nav until a restart.
+    """
+    from pages import nav_of
+
+    assert "Table" in [label for label, _, _ in nav_of(client.get("/").text)]
+    assert client.get("/table").status_code == 200
+    commit_directly(
+        repo_path,
+        {
+            **tree_now(repo_path),
+            "config/defaults.yaml": SEED["config/defaults.yaml"] + "views: [graph]\n",
+        },
+        "the plan keeps the graph and nothing else",
+    )
+
+    assert [label for label, _, _ in nav_of(client.get("/").text)] == ["Records", "Graph"]
+    table = client.get("/table")
+    assert table.status_code == 200, "an unlisted Table is still at its address"
+    assert [label for label, _, _ in nav_of(table.text)] == ["Records", "Graph"]
+    assert client.get("/graph").status_code == 200
+
+
+def test_a_switched_off_list_hands_its_filters_to_records(tmp_path: Path):
+    """`/issues?owner=ann` in a plan without issues: the switched-off page, and one
+    link to Records carrying the same filters and the kind — Records reads every
+    filter the other views do, so it lands on the same rows. Without a filter the
+    way out is Records bare, and the answer is a page like any other: HTML, with
+    the headers every response here carries.
+
+    Only the filters: a sort is not one. And only a list of a kind that is off:
+    every other view the plan does not list answers at its address instead, which
+    is held here for the one most often bookmarked with a filter on it.
+    """
+    from openproj.web import SWITCHED
+
+    assert "/issues" in SWITCHED
+    repo = _plan_saying(tmp_path, "views: [graph]\nkinds: [note]\n")
+    out = {"Show the same filters on Records", "Go to Records"}
+    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as client:
+
+        def ways_out(url: str) -> list[tuple[str, str]]:
+            got = client.get(url)
+            assert got.status_code == 404, f"{url}: {got.status_code}"
+            assert got.headers["content-type"].startswith("text/html"), url
+            assert "content-security-policy" in got.headers, url
+            return [
+                (one.text, one.attrs.get("href", ""))
+                for one in elements(got.text)
+                if one.tag == "a" and one.text in out
+            ]
+
+        assert ways_out("/issues?owner=ann&zoom=weeks") == [
+            ("Show the same filters on Records", "/?kind=issue&owner=ann")
+        ]
+        assert ways_out("/issues") == [("Go to Records", "/")]
+        assert ways_out("/issues?sort=title&desc=1") == [("Go to Records", "/")]
+        assert client.get("/table?owner=ann").status_code == 200
+        assert client.get("/notes?owner=ann").status_code == 200
+
+
+def test_a_records_kind_changes_through_change_kind_and_nowhere_else(
+    client: TestClient, repo_path: Path
+):
+    """`kind` is a field every rung declares, so a save could set it, and nothing
+    asked. The id carries the kind, so what that committed was a task's id over a
+    pitch's frontmatter — a blocker the plan woke up with, on a protected branch —
+    and it went past everything Change kind does: no new id, no children
+    repointed, and no kind gate.
+
+    Both save doors refuse it, and write nothing. The record's own kind is let
+    through, because a form that sends every field back is not asking for
+    anything; the co-editing room is the third door, and `test_coedit` holds it.
+    """
+    before = git_head(repo_path)
+    said = (
+        "A record's kind changes through Change kind, which gives it a new id, not through a save."
+    )
+
+    one = save(client, TASK, {"kind": "pitch"})
+    assert one.status_code == 422, one.text
+    assert one.json()["detail"] == said
+
+    # One record in the selection that is not a task refuses all of it: the
+    # batch is one commit.
+    many = save_many(client, [TASK, PITCH], {"kind": "task"})
+    assert many.status_code == 422, many.text
+    assert many.json()["detail"] == said
+    assert git_head(repo_path) == before, "a refusal writes nothing"
+
+    same = save(client, TASK, {"kind": "task", "priority": "low"})
+    assert same.status_code == 200, same.text
+    both = save_many(client, [TASK, OTHER], {"kind": "task", "priority": "high"})
+    assert both.status_code == 200, both.text

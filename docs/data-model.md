@@ -9,7 +9,7 @@ has the pages these structures are drawn on; this file is the structures.
 ## One type, six kinds
 
 There is one record type. `Record` (`model.py`) carries what every kind shares — `id`, `kind`,
-`title`, `parent`, `status`, `owner`, `assignees`, `reviewers`, `review_waived`, `start_date`,
+`title`, `parent`, `status`, `owner`, `developers`, `reviewers`, `review_waived`, `start_date`,
 `end_date`, `priority`, `depends_on`, `cycle`, `tags`, `prs`, `body` — and `kind` says which rung it is on. The
 six rungs are subclasses that add fields. They are not six different things: one model, one parser,
 one write path, one page.
@@ -32,7 +32,7 @@ Each kind is one thing and says so:
 
 - A **pitch** is the unit of the bet: what the betting table offers, and the only kind whose body the
   shaping hints read. Its `owner` is who shaped it and holds it — there is no `shaped_by` field;
-  `assignees` build it, `reviewers` read the PR.
+  `developers` build it, `reviewers` read the PR.
 
 - A **task** is a piece of a pitch, with its own size and its own people, taking its cycle from the
   pitch. A task with **no** parent is a chore nobody pitched: bettable in its own right.
@@ -111,8 +111,8 @@ flowchart LR
 
 ## Sizes, dependencies, requiredness
 
-A size is `person_weeks` on a pitch and on a task, and the people on it divide it, each at their own
-availability. **There is no default.** A record nobody has sized is not scheduled, weighs nothing in
+A size is `person_weeks` on a pitch and on a task, and the people on it — its `developers` — divide
+it, each at their own availability. **There is no default.** A record nobody has sized is not scheduled, weighs nothing in
 its parent's progress and charges nobody's capacity, and every page that adds weeks up says how many
 records it could not count — a number the tool invented is a number that arrives everywhere looking
 like one somebody estimated. Shaping and thinking work is unsized by definition and stays that way;
@@ -136,7 +136,9 @@ the team writing `High+` in the margin of its own table.
 **A reviewer is named when the bet is made, not when a PR appears**: a bet nobody will review is a
 bet that should not be made. `review_waived` is a deliberate act, for work with nothing to review,
 and it is a facet and a count, so a team that waives everything sees itself doing it. **A reviewer is
-not a worker**: review is never charged against capacity.
+not a worker**: review is never charged against capacity. **Neither is an owner**: the owner's job
+is to see the work done, and they are booked, scheduled around and charged capacity only if they
+are also among the `developers`. A record with an owner and no developers is work nobody is on.
 
 **Parse permissively, validate strictly, and grandfather.** Every field is optional at the type level
 and `status` and `priority` are plain `str`, so a hand-edited file with a missing field or a retired
@@ -162,8 +164,19 @@ filename and is not a field**: nothing points at a person, so a second copy woul
 halves of the app something to disagree about.
 
 **`Config`** — `config/*.yaml`: `schema_version`, `nominal_availability`, `cooldown_weeks`,
-`holidays`, the cycle windows, and `known_people`, the **roster**. Empty means the
-check is off; when it does name people, somebody who is not on it is a warning and never a blocker.
+`repositories`, `views`, `kinds`, `holidays`, the cycle windows, and `known_people`, the **roster**.
+Empty means the check is off; when it does name people, somebody who is not on it is a warning and
+never a blocker. `repositories` is the `owner/repo`s the PRs box and the body complete from —
+`icon4py 1403` becomes `C2SM/icon4py#1403`, a pasted GitHub link becomes the reference it names, and
+the server offers their open pull requests and issues by title; a repository not listed is typed in
+full. They are also what the GitHub mark is read from: a record whose listed PRs have all landed
+wears a green one beside its title in the table and a **Mark done** button under its Status, and one
+whose PRs were all closed unmerged a struck-through red one and **Mark shelved**. Nothing is written
+until somebody presses Save. `views` is the views this plan has, in nav order after Records, and it is held
+**resolved** — every name it could not use left out and reported — so nothing past reading the
+config ever sees the list as written. `kinds` is which of the unplanned kinds, `issue` and `note`,
+the plan has; a record of a kind that is off still loads, is listed and warns, because a list that
+drops rows and looks normal is worse than one that says a row is wrong.
 
 **`Problem` and `Unreadable`** — a `Problem` is keyed by record id, so every page hangs it on that
 record's row. An `Unreadable` is keyed by a path: a file that will not parse has no record, which is

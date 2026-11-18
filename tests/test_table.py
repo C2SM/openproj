@@ -61,6 +61,7 @@ import pygit2
 import pytest
 from browser import chrome, measured_in, measured_on_a_phone, pressed_in, screenshot
 from fastapi.testclient import TestClient
+from pages import elements, tags
 from test_store import commit_directly
 from test_web import (
     ANN,
@@ -109,6 +110,7 @@ from openproj.render import (
     render_static,
     render_table,
 )
+from openproj.render.env import PHONE
 from openproj.render.rows import _row
 from openproj.render.tokens import _SIZE_FIELD_NAME
 from openproj.web import SESSION_COOKIE, create_app
@@ -1014,7 +1016,7 @@ def test_a_page_that_never_advances_its_base_collides_with_itself(client: TestCl
     assert save(client, TASK, {"priority": "low"}, base=stale).status_code == 409
 
 
-# A create that breaks no rule. `assignees` is here for the reason `owner` and
+# A create that breaks no rule. `developers` is here for the reason `owner` and
 # `reviewers` are: a `ready` record is refused without it, and a create fixture
 # that trips a gate makes every test using it a test about that gate.
 NEW_TASK = {
@@ -1023,7 +1025,7 @@ NEW_TASK = {
     "parent": PITCH,
     "status": "ready",
     "owner": "ann",
-    "assignees": ["ann"],
+    "developers": ["ann"],
     "reviewers": ["bo"],
     "person_weeks": 1.0,
 }
@@ -1091,7 +1093,7 @@ def test_a_create_that_waives_review_is_accepted(client: TestClient):
             "parent": PITCH,
             "status": "ready",
             "owner": "cy",
-            "assignees": ["cy"],
+            "developers": ["cy"],
             "review_waived": True,
             "person_weeks": 0.5,
         },
@@ -1160,7 +1162,13 @@ def test_the_table_sizes_itself_to_its_contents_and_the_window(page: str):
         "a width belongs to a column — not to a position in the row, and not to "
         "the word printed above it"
     )
-    assert re.search(r"function refit\(\) \{\s*if \(automatic\) fitWidths\(\);", page), (
+    # After the card list's early return, which stands the fit down and leaves
+    # WIDTHS — what was dragged — exactly as it found it.
+    assert re.search(
+        r"function refit\(\) \{.*?\n    return;\n  \}\n  if \(automatic\) fitWidths\(\);",
+        page,
+        re.S,
+    ), (
         "a width somebody dragged must survive the automatic fit"
     )
     assert re.search(r"remembered\.set\(WIDTH_KEY[^\n]*\n\s*automatic = false;", page), (
@@ -1188,9 +1196,9 @@ def test_the_table_draws_its_rows_in_a_browser_that_refuses_storage(page: str):
     working = run_js(page)
     denied = run_js(page, storage="denied")
 
-    drawn = [written for written in denied["written"] if "<tr" in written]
+    drawn = [written for written in denied["written"] if "tr" in tags(written)]
     assert drawn, f"storage denied and the table drew nothing: {denied['errors']}"
-    assert drawn == [written for written in working["written"] if "<tr" in written], (
+    assert drawn == [written for written in working["written"] if "tr" in tags(written)], (
         "a browser that refuses storage draws different rows from one that allows it"
     )
     for record_id in payload(page)["rows"]:
@@ -1229,7 +1237,7 @@ def test_the_fit_is_measured_again_once_the_real_typeface_has_landed(page: str):
 # left out of the arithmetic.
 #
 # Re-read once the clamped columns stopped being able to overflow their badge:
-# `assignees` and `reviewers` are one login and a `+N` now, not a whole list, and
+# `developers` and `reviewers` are one login and a `+N` now, not a whole list, and
 # `prs` is `#2211` rather than `kilnlab/kiln4py#2211` — three columns that were
 # written down here at 198, 161 and 172 and had not needed that much for two
 # rounds.
@@ -1238,13 +1246,19 @@ def test_the_fit_is_measured_again_once_the_real_typeface_has_landed(page: str):
 # control is out of flow and the room for it is `padding-right` on the header, so
 # `reviewers` went from 111 to 116 — the first of the four whose header, not its
 # widest cell, is what the column needs.
+#
+# And `developers` re-read alone on 2026-10-12, when it got a floor of its own
+# (126) above the 124 written here: that number had gone stale — the demo's
+# widest login measures 140 on main and on this branch alike — and a column
+# written down under its own floor is one the arithmetic says has nothing to
+# give, which is not what the page does.
 MEASURED = {
     "id": 110,
     "title": 304,
     "priority": 79,
     "status": 107,
     "owner": 100,
-    "assignees": 124,
+    "developers": 140,
     "reviewers": 116,
     "cycle": 63,
     "size": 81,
@@ -1280,11 +1294,13 @@ def _arithmetic(page: str, expression: str, args: list) -> object:
         re.search(r"^const SHED = \[\.\.\.LOOKUPS, 'id'\];$", page, re.M),
         re.search(r"^const FLOOR = \d+;", page, re.M),
         re.search(r"^const TITLE_FLOOR = \d+;$", page, re.M),
-        # The title's floor is a share of the room below about 556px of it, so it
+        # The title's floor is a share of the room below about 533px of it, so it
         # is a function and comes with the constant it is capped by.
         re.search(r"^const titleFloor = room =>.*?;$", page, re.M),
         re.search(r"^const PROGRESS_FLOOR = \d+;$", page, re.M),
         re.search(r"^const CLAMP_FLOOR = \d+;", page, re.M),
+        # And the clamped columns whose label needs more than that.
+        re.search(r"^const CLAMP_FLOORS = \{[^}]*\};$", page, re.M),
         re.search(r"^const CLAMPED = new Set\(\[[^\]]*\]\);$", page, re.M),
         # The floors are per column now — a sentence and a login cannot share one
         # — so the lookup that decides which comes with them.
@@ -1313,7 +1329,7 @@ def _fit(page: str, natural: list[int], keys: list[str], room: int) -> list[int]
 def _minimum(page: str, keys: list[str], room: int = 10_000) -> int:
     """The narrowest these columns can be drawn, by the page's own reckoning.
 
-    `room` because the title's floor is the smaller of 250 and 45% of it, so "the
+    `room` because the title's floor is the smaller of 240 and 45% of it, so "the
     narrowest" is a question about the window as well as about the columns. The
     default is a window wider than any floor is a share of, which is the number
     this used to answer with when there was only one.
@@ -1339,7 +1355,7 @@ def _floor(page: str, key: str, room: int = 10_000) -> int:
     """The narrowest this column may be drawn, by the page's own reckoning.
 
     `room` for the same reason `_minimum` takes one: the title's floor is a share
-    of it below about 556px, and 250 above.
+    of it below about 533px, and 240 above.
     """
     return _arithmetic(page, "floorFor(ARGS[0], ARGS[1])", [key, room])
 
@@ -1391,7 +1407,6 @@ def test_the_default_fit_never_needs_a_horizontal_scrollbar(page: str):
         .replace(" ", "")
         .split(",")
     )
-    clamp_floor = int(re.search(r"const CLAMP_FLOOR = (\d+);", page).group(1))
     clamped = set(
         re.search(r"const CLAMPED = new Set\(\[([^\]]*)\]\)", page)
         .group(1)
@@ -1426,7 +1441,7 @@ def test_the_default_fit_never_needs_a_horizontal_scrollbar(page: str):
         if key in clamped:
             # Clamped: already one item and a `+N`, so a narrower one hides an
             # item behind a badge that is right there and says how many.
-            assert width[key] == MEASURED[key] or width[key] >= clamp_floor, key
+            assert width[key] == MEASURED[key] or width[key] >= _floor(page, key, WINDOW), key
         elif key in squeezable:
             # Squeezed, but never past the width at which a column stops being
             # readable — below the floor it scrolls instead, which is honest.
@@ -1447,7 +1462,7 @@ def test_the_default_fit_never_needs_a_horizontal_scrollbar(page: str):
     # The two that are wider than the clamp floor here are the two that pay;
     # `prs` and `reviewers` are already under it and have nothing to give.
     assert width["tags"] < MEASURED["tags"], "a clamped column pays"
-    assert width["assignees"] < MEASURED["assignees"], "and so does a list of logins"
+    assert width["developers"] < MEASURED["developers"], "and so does a list of logins"
     # The sentence pays only what is left after they are spent — so if `title` gave
     # anything up, every clamped column must already be as narrow as it is allowed
     # to be. On a window this tight it does pay; on a real one it keeps its width.
@@ -1455,7 +1470,7 @@ def test_the_default_fit_never_needs_a_horizontal_scrollbar(page: str):
         # Only the ones still drawn: a column the fit shed has no width to be on
         # its floor. `reviewers` is the first thing `SHED` gives up now.
         for key in clamped & set(drawn):
-            assert width[key] == min(MEASURED[key], clamp_floor), key
+            assert width[key] == min(MEASURED[key], _floor(page, key, WINDOW)), key
     assert width["title"] >= _floor(page, "title", WINDOW), (
         "and never past the width at which it stops being readable"
     )
@@ -1464,7 +1479,7 @@ def test_the_default_fit_never_needs_a_horizontal_scrollbar(page: str):
     # narrowest one does, rather than every column losing the same proportion.
     # Asked of two columns that are both still drawn — at this window the fit
     # sheds `reviewers` and `prs`, and a column that is gone has paid everything.
-    paying = [key for key in ("assignees", "reviewers", "prs", "tags") if key in width]
+    paying = [key for key in ("developers", "reviewers", "prs", "tags") if key in width]
     assert len(paying) >= 2, f"too few clamped columns left to compare: {paying}"
     widest = max(paying, key=lambda k: MEASURED[k])
     narrowest = min(paying, key=lambda k: MEASURED[k])
@@ -1535,7 +1550,7 @@ const at = () => ({
   }).length,
 });
 const asDrawn = at();
-for (const key of CLAMPED) WIDTHS[key] = CLAMP_FLOOR;
+for (const key of CLAMPED) WIDTHS[key] = floorFor(key, 10000);
 applyWidths();
 const onFloor = at();
 for (const td of cells) td.querySelector('.first').textContent = 'a'.repeat(60);
@@ -1784,7 +1799,7 @@ def test_an_expanded_column_is_a_way_of_reading_and_not_a_setting(demo_page: str
 
 # The header at the two widths it is ever drawn at: what the fit gave it with
 # room to spare, and the floor it is squeezed to when there is none. Four
-# columns, two shapes — `assignees` and `reviewers` sort and hold a button,
+# columns, two shapes — `developers` and `reviewers` sort and hold a button,
 # `prs` and `tags` are bare text — and all four carry the control and the grip.
 #
 # Both widths, because they fail for different reasons. The control is out of
@@ -1810,7 +1825,6 @@ function labelBox(th) {
   return range.getBoundingClientRect();
 }
 const clamped = headers.filter(th => CLAMPED.has(keyOf(th)));
-const line = Math.round(labelBox(clamped[0]).height);
 const measure = () => clamped.map(th => {
   const box = th.getBoundingClientRect();
   const label = labelBox(th);
@@ -1819,7 +1833,7 @@ const measure = () => clamped.map(th => {
   return {
     column: keyOf(th),
     width: Math.round(box.width),
-    wrapped: Math.round(label.height) > line + 1,
+    height: Math.round(label.height),
     overLabel: Math.round(label.right - control.left),
     overGrip: Math.round(control.right - grip.left),
     // What the header sets aside for the control, against what the control and
@@ -1828,15 +1842,23 @@ const measure = () => clamped.map(th => {
     needs: Math.round(control.width + (box.right - control.right)),
   };
 });
+// Every clamped column at `width(key)` — its own floor, or that less something.
 const at = width => {
-  for (const key of CLAMPED) WIDTHS[key] = width;
+  for (const key of CLAMPED) WIDTHS[key] = width(key);
   automatic = false;
   applyWidths();
   return measure();
 };
+const floor = key => floorFor(key, 10000);
 // The fit's own answer first, before anything here has touched a width.
 const asFitted = measure();
-return {floor: CLAMP_FLOOR, asFitted, atFloor: at(CLAMP_FLOOR), below: at(CLAMP_FLOOR - 8)};
+// Then each header's own one line, where nothing can wrap: a button label and a
+// bare text label are different heights, so no one header's line is another's.
+const line = Object.fromEntries(at(() => 320).map(column => [column.column, column.height]));
+const judged = columns => columns.map(column =>
+  ({...column, wrapped: column.height > line[column.column] + 1}));
+return {asFitted: judged(asFitted), atFloor: judged(at(floor)),
+        below: judged(at(key => floor(key) - 8))};
 """
 
 
@@ -1847,9 +1869,16 @@ def test_the_header_fits_at_the_width_the_fit_may_squeeze_it_to(demo_page: str, 
     glyph, the column's `+` and a drag grip.
 
     At 112 — the floor before the control existed — `ASSIGNEES` and `REVIEWERS`
-    wrap over two lines, which is a narrower column and a taller header: exactly
-    what the clamp was for, undone. The floor went up to 116 to pay for the
-    control rather than the control shrinking to fit under the old one.
+    wrapped over two lines, which is a narrower column and a taller header:
+    exactly what the clamp was for, undone. The floor went up to 116 to pay for
+    the control rather than the control shrinking to fit under the old one, and
+    `developers` has a floor of its own since its label became the longest.
+
+    A header's one line is measured per column, at a width nothing wraps in.
+    It was the first clamped header's height as fitted, and the day that header
+    was the one wrapping — `DEVELOPERS` at 116 — every header was judged against
+    two lines, nothing could count as wrapped, and only the self-check below
+    noticed.
 
     The fitted width is the other half and fails differently. The control is
     positioned, so it is in no measurement of its own accord: what puts it into
@@ -1870,7 +1899,7 @@ def test_the_header_fits_at_the_width_the_fit_may_squeeze_it_to(demo_page: str, 
     assert len(got["atFloor"]) == 4, "the four clamped columns are the four with a control"
     for where, columns in (
         ("as the fit drew it", got["asFitted"]),
-        (f"at the {got['floor']}px floor", got["atFloor"]),
+        ("at each column's floor", got["atFloor"]),
     ):
         for column in columns:
             assert not column["wrapped"], (
@@ -1891,9 +1920,9 @@ def test_the_header_fits_at_the_width_the_fit_may_squeeze_it_to(demo_page: str, 
             )
 
     assert any(column["wrapped"] or column["overLabel"] > 0 for column in got["below"]), (
-        f"{got['floor'] - 8}px fits four headers, a label, a glyph, a control and a "
-        f"grip — so this measurement cannot tell a header that fits from one that "
-        f"does not, and the floor above is unproven"
+        "eight pixels under every floor fits four headers, a label, a glyph, a control "
+        "and a grip — so this measurement cannot tell a header that fits from one that "
+        "does not, and the floors above are unproven"
     )
 
 
@@ -2082,13 +2111,18 @@ def test_creating_is_the_detail_page_with_nothing_in_it(new_page: str, client: T
     for shape in (
         '<dl id="facts">',
         'class="field title-field"',
-        'class="field bodybar"',
+        # The toolbar's row, which both pages draw. Plain `field bodybar` was
+        # the create form's template picker until 2026-10-09, when the picker
+        # became a button on that row; on the record page it is the seat bar,
+        # which the create form has no room for.
+        'class="field bodybar markbar"',
         'class="field body-field"',
         'id="preview"',
     ):
         assert shape in new_page, shape
         assert shape in detail, shape
-    assert "<label>" not in new_page, "the old flat list of labelled controls is gone"
+    bare = [one for one in elements(new_page) if one.tag == "label" and not one.attrs]
+    assert not bare, "the old flat list of labelled controls is gone"
 
     # And they agree about where the control that commits the form is — jcanton,
     # 2026-08-20, "consistency!". The two pages had it at opposite ends of the
@@ -2147,7 +2181,8 @@ def test_a_new_pitch_starts_from_the_teams_own_shaping_template(new_page: str):
     # renderer drops them rather than printing them at the reader.
     assert "<!--" in pitch
 
-    assert '<select id="template">' in new_page
+    # The menu that offers it is drawn by script, and is driven in Chrome by
+    # `test_a_template_goes_on_the_end_of_a_document_and_over_an_untouched_one`.
     assert "const TEMPLATES = " in new_page
     # Through `|tojson`, so the `<` opening every comment reaches the script block
     # as `\\u003c` rather than as markup the page's own tokeniser can read.
@@ -2155,19 +2190,8 @@ def test_a_new_pitch_starts_from_the_teams_own_shaping_template(new_page: str):
     assert "<!-- The raw idea" not in new_page
 
 
-def test_a_template_never_overwrites_something_somebody_typed(new_page: str):
-    """Switching kind switches template, because picking "pitch" and getting a
-    task's headings is the wrong default in the one place the tool can teach the
-    shape of a pitch. Once the box holds anything but a template, it is theirs."""
-    apply_fn = re.search(r"function applyTemplate\(name\) \{.*?\n\}", new_page, re.S).group(0)
-    assert "if (!untouched())" in apply_fn
-    assert "the body has been edited" in apply_fn
-    untouched = re.search(r"function untouched\(\) \{.*?\n\}", new_page, re.S).group(0)
-    assert "Object.values(TEMPLATES).some" in untouched
-
-
 def test_every_reference_on_the_create_form_is_offered_and_not_remembered(new_page: str):
-    """owner, assignees, reviewers, parent, cycle and blocked_by all point at
+    """owner, developers, reviewers, parent, cycle and blocked_by all point at
     something that already exists. Typed from memory a login is a typo, an id is a
     dangling reference the validator rejects after the save rather than before it,
     and a cycle number is off by one as often as it is right.
@@ -2177,7 +2201,7 @@ def test_every_reference_on_the_create_form_is_offered_and_not_remembered(new_pa
     above — was six free-text boxes."""
     for field, source in (
         ("owner", "people"),
-        ("assignees", "people"),
+        ("developers", "people"),
         ("reviewers", "people"),
         ("parent", "records"),
         ("cycle", "cycles"),
@@ -2371,7 +2395,7 @@ def test_a_column_header_is_the_label_map_s_word_for_the_field(page: str):
         assert LABELS[name] in re.sub(r"<[^>]*>", "", header), name
 
 
-def test_assignees_is_a_column_and_a_filter_and_a_value(page: str, client: TestClient):
+def test_developers_is_a_column_and_a_filter_and_a_value(page: str, client: TestClient):
     """Three sites, and missing any one of them fails quietly rather than loudly:
     a column with no payload key renders blank on every row until somebody edits
     it, and a dropdown missing from the client-side filter changes the URL and
@@ -2383,9 +2407,9 @@ def test_assignees_is_a_column_and_a_filter_and_a_value(page: str, client: TestC
     offered = re.findall(r'<div class="facet" data-field="([^"]+)"', page)
     filtered = re.search(r"const FILTERS = \[(.*?)\];", page, re.S).group(1)
 
-    assert "assignees" in columns(page)
-    assert "assignees" in row
-    assert "assignees" in offered
+    assert "developers" in columns(page)
+    assert "developers" in row
+    assert "developers" in offered
     assert set(offered) - {"predicate"} <= set(re.findall(r"'([^']+)'", filtered))
 
 
@@ -2701,7 +2725,7 @@ def test_a_title_somebody_typed_never_becomes_markup():
     for interpolation in (
         "${esc(row.title)}",  # the title cell, which is also a link
         "${esc(row.id)}",  # and the href it is a link to
-        "return esc(stored(row, key));",  # owner, assignees, reviewers, dates
+        "return esc(stored(row, key));",  # owner, developers, reviewers, dates
         "${esc(human(row.status))}",  # the kind is no longer drawn in any cell
         "${esc(ref)}",  # a PR reference, repo and number both
         "${esc(was)}",  # and the value the editor opens with
@@ -2826,7 +2850,7 @@ def test_the_header_and_the_two_identity_columns_stay_put(page: str):
     # What that bound actually produces is checked in a browser, by
     # `test_render.test_the_box_each_view_fills_stops_where_the_window_does`.
     assert "max-height: var(--room)" in page, "the body scrolls in the container"
-    assert '<div class="table-scroll" data-fills>' in page, (
+    assert '<div class="table-scroll carded" data-fills>' in page, (
         "and the shell is told which box that is"
     )
     assert "thead th {\n  position: sticky; top: 0; z-index: 3; background: var(--surface);" in page
@@ -2881,6 +2905,14 @@ def test_the_narrow_layout_drops_the_columns_that_are_lookups(page: str):
         # rather than its reason.
         if not prelude.startswith("@media") or "width" not in prelude:
             continue
+        # The card list's query, and the one width query that MAY name the
+        # table: on a phone the rows are cards and the fit stands down, and it
+        # stands down on `CARDS = matchMedia(env.PHONE)` — the same string this
+        # block is written under, asserted below. A breakpoint and a fit that read
+        # one query cannot drift from each other, which is the whole of what this
+        # test exists to prevent.
+        if prelude == f"@media {PHONE}":
+            continue
         for rule in body.split("}"):
             # `.unfitted` is the one table selector a width query may carry, and
             # it is allowed because of what the class MEANS: these are the four
@@ -2900,6 +2932,9 @@ def test_the_narrow_layout_drops_the_columns_that_are_lookups(page: str):
         assert f'.shed-{column} [data-col="{column}"]' in rule, column
 
     body = script(page)
+    assert f"const CARDS = matchMedia({json.dumps(PHONE)});" in body, (
+        "the fit stands down on the query the card list is written under"
+    )
     assert "SHED.forEach(key => table.classList.toggle(shedClass(key), !kept.has(key)));" in body
     assert "const drawn = drawnColumns(natural, keys, room);" in body, (
         "the fit decides it, from the same floors it fits by"
@@ -3013,7 +3048,7 @@ def test_the_tags_cell_is_one_line_with_the_rest_behind_a_count(page: str):
     # column left: a task with three merged PRs stood 128px tall beside a 50px row.
     assert "clamped((value || []).map(esc), 'tag', 'tags')" in body
     assert "clamped((value || []).map(prLink), 'pull request', 'pull requests')" in body
-    # Every list column, not three of four: assignees and reviewers were the last
+    # Every list column, not three of four: developers and reviewers were the last
     # that wrapped, and they were most of the height left in the table.
     assert "clamped((value || []).map(esc), 'person', 'people')" in body
     assert "CLAMPED.has(key) ? 'clamp' : ''" in body
@@ -3069,7 +3104,7 @@ def _tips(page: str, rows: list[dict], key: str, marks: dict | None = None) -> l
 def test_a_clamped_cell_says_what_it_is_hiding_before_it_says_how_to_edit_it(page: str):
     """Four columns draw one value and a `+N`, and the only way to read the rest
     was to click the badge — while hovering the cell answered a question nobody
-    had asked: "Double-click to edit assignees".
+    had asked: "Double-click to edit developers".
 
     So the hidden values go first and the instruction under them, and a cell that
     is hiding nothing gets no extra line at all — every tooltip in the table
@@ -3078,15 +3113,15 @@ def test_a_clamped_cell_says_what_it_is_hiding_before_it_says_how_to_edit_it(pag
     one, two, none = _tips(
         page,
         [
-            {"id": "task-000001", "assignees": ["merganserly", "nightjarelli"]},
-            {"id": "task-000002", "assignees": ["Oxpeckerly", "nightjarelli", "jackdawrie"]},
-            {"id": "task-000003", "assignees": ["sanderlingly"]},
+            {"id": "task-000001", "developers": ["merganserly", "nightjarelli"]},
+            {"id": "task-000002", "developers": ["Oxpeckerly", "nightjarelli", "jackdawrie"]},
+            {"id": "task-000003", "developers": ["sanderlingly"]},
         ],
-        "assignees",
+        "developers",
     )
-    assert one == "+1 more: nightjarelli\nDouble-click to edit assignees"
-    assert two == "+2 more: nightjarelli, jackdawrie\nDouble-click to edit assignees"
-    assert none == "Double-click to edit assignees", "nothing is hidden, so nothing is revealed"
+    assert one == "+1 more: nightjarelli\nDouble-click to edit developers"
+    assert two == "+2 more: nightjarelli, jackdawrie\nDouble-click to edit developers"
+    assert none == "Double-click to edit developers", "nothing is hidden, so nothing is revealed"
 
     # A `title` takes newlines and this is two lines, not a run-on sentence: the
     # answer and the instruction are different kinds of thing.
@@ -3126,10 +3161,10 @@ def test_a_problem_still_comes_first_and_a_long_list_is_capped(page: str):
     as a line and says how many it did not print.
     """
     marks = {
-        "task-000001": {"assignees": {"severity": "blocker", "messages": ["nobody is on this"]}}
+        "task-000001": {"developers": {"severity": "blocker", "messages": ["nobody is on this"]}}
     }
-    tip = _tips(page, [{"id": "task-000001", "assignees": ["a", "b"]}], "assignees", marks)[0]
-    assert tip == "nobody is on this\n+1 more: b\nDouble-click to edit assignees"
+    tip = _tips(page, [{"id": "task-000001", "developers": ["a", "b"]}], "developers", marks)[0]
+    assert tip == "nobody is on this\n+1 more: b\nDouble-click to edit developers"
 
     many = [f"tag-{n:02d}" for n in range(60)]
     capped = _tips(page, [{"id": "task-000001", "tags": many}], "tags")[0]
@@ -3331,7 +3366,7 @@ def test_the_editor_discards_on_escape_and_commits_on_tab(page: str):
 _ESCAPE_WITH_A_LIST_OPEN = """
 window.__wrote = 0;
 window.fetch = () => { window.__wrote++; return new Promise(() => {}); };
-const cell = document.querySelector('td.edit[data-field="assignees"]');
+const cell = document.querySelector('td.edit[data-field="developers"]');
 openEditor(cell);
 const box = cell.querySelector('input');
 box.value = 'b';
@@ -4002,7 +4037,9 @@ return {scrolls: scroller.scrollWidth > scroller.clientWidth,
 """
 
 
-def test_an_editor_opens_clear_of_the_frozen_column_on_a_phone(page: str, tmp_path: Path):
+def test_an_editor_opens_clear_of_the_frozen_column_on_a_narrow_screen(
+    page: str, tmp_path: Path
+):
     """**A picker is not a place to park a column over.**
 
     Focusing a control inside a horizontal scroller makes Chrome scroll it into
@@ -4014,7 +4051,7 @@ def test_an_editor_opens_clear_of_the_frozen_column_on_a_phone(page: str, tmp_pa
     running to x=177 — 34.5px of its left end painted over by a column that is
     opaque by design, and `elementFromPoint` at the box's own left edge answering
     the title's link rather than the box. `owner` went under by 16.5px and
-    `assignees` by 39.5, so it was never only the one column. With the call back
+    `developers` by 39.5, so it was never only the one column. With the call back
     in every one of them clears it: the text boxes at x=177.5 and the date box at
     x=185.5, which is the cell's `.5rem` of padding a date control sits inside.
 
@@ -4030,21 +4067,22 @@ def test_an_editor_opens_clear_of_the_frozen_column_on_a_phone(page: str, tmp_pa
     reason — it paints over the column to its right and still passes under the
     frozen pair, which is what leaves anything here to clear.
 
-    Asked at a phone's width, through the override rather than a window, because
-    Chrome will not open a window narrower than 500px — see `measured_on_a_phone`
-    — and 500 is above the one breakpoint these pages have. Asked of every
-    editable column and not of the two date ones: the frozen pair covers whatever
-    is scrolled under it, and a fix that only cleared a picker would leave the
-    same gesture broken one column to the left.
+    Asked at 700px with a touch screen — a tablet held upright — and no longer at
+    a phone's 390: since 2026-10-08 a phone draws this table as cards, which have
+    no frozen column and do not scroll sideways, so there is nothing there for an
+    editor to open under. 700 is where the table is still a table and still
+    scrolls. Asked of every editable column and not of the two date ones: the
+    frozen pair covers whatever is scrolled under it, and a fix that only cleared
+    a picker would leave the same gesture broken one column to the left.
     """
     got = measured_on_a_phone(
-        chrome(), {"table": page}, tmp_path / "frozen", _UNDER_THE_FROZEN_COLUMN
+        chrome(), {"table": page}, tmp_path / "frozen", _UNDER_THE_FROZEN_COLUMN, width=700
     )
     table = got["table"]
 
     # Not vacuous: nothing can be scrolled under a frozen column on a table that
     # does not scroll, and at a desktop width this one does not.
-    assert table["scrolls"], "the table fits at 390px, so nothing here was asked"
+    assert table["scrolls"], "the table fits at 700px, so nothing here was asked"
     assert table["boxes"], "no editable column outside the frozen pair, so nothing was opened"
     for box in table["boxes"]:
         assert box["left"] >= box["edge"], (
@@ -4074,7 +4112,7 @@ def dated_page() -> str:
             title="Verify the aroma transport port",
             status="ready",
             owner="ann",
-            assignees=["ann"],
+            developers=["ann"],
             reviewers=["bo"],
             person_weeks=3.0,
         ),
@@ -4095,7 +4133,7 @@ def dated_page() -> str:
             parent=PITCH,
             status="ready",
             owner="ann",
-            assignees=["ann"],
+            developers=["ann"],
             reviewers=["bo"],
             person_weeks=1.0,
         ),
@@ -4177,7 +4215,7 @@ def rollup_plan(bet: float | None, kids: tuple[tuple[float | None, str], ...]) -
             id="pitch-000001",
             kind="pitch",
             title="Q",
-            assignees=["ann"],
+            developers=["ann"],
             **({"person_weeks": bet} if bet is not None else {}),
         )
     ]
@@ -4189,7 +4227,7 @@ def rollup_plan(bet: float | None, kids: tuple[tuple[float | None, str], ...]) -
                 title="T",
                 parent="pitch-000001",
                 status=status,
-                assignees=["ann"],
+                developers=["ann"],
                 **({"person_weeks": size} if size is not None else {}),
             )
         )
@@ -4660,7 +4698,7 @@ def test_every_control_on_the_create_form_has_a_name(new_page: str):
         # A label points at a control that is on the page, or it is a name the
         # reader is told about and cannot reach.
         assert re.search(rf'<(?:input|select|textarea)[^>]*\bid="{control_id}"', new_page), word
-    for field in ("owner", "assignees", "reviewers", "cycle", "priority"):
+    for field in ("owner", "developers", "reviewers", "cycle", "priority"):
         assert f"new-{field}" in named, field
         assert named[f"new-{field}"] == LABELS[field]
 
@@ -5047,7 +5085,7 @@ def test_what_the_server_refuses_a_row_with_is_shown_beside_it(page: str):
                         {
                             "severity": "blocker",
                             "record_id": "pitch-000000",
-                            "field": "assignees",
+                            "field": "developers",
                             "message": "a ready record needs somebody on it",
                             "drawn": "a ready record needs somebody on it",
                         },
@@ -5336,6 +5374,11 @@ def test_a_row_can_be_taken_out_of_what_holds_it(page: str):
     sticky against the bottom of the scroll box. It offers itself only while
     something is being moved, and only when there is something to take it out of;
     a row that belongs to nothing is not offered a way to belong to less.
+
+    Out of the pitch is INTO the project the pitch is in — jcanton, 2026-10-12,
+    "move-out should always move to the upper parent". It sent `parent: null`,
+    which took the task out of the project as well, and the bar said nothing
+    about where it would land.
     """
     answer = drive_table(
         page,
@@ -5360,11 +5403,11 @@ def test_a_row_can_be_taken_out_of_what_holds_it(page: str):
     got = answer["value"]
 
     assert got["offered"]["hidden"] is False
-    assert got["offered"]["said"] == f"Take {TASK_TITLE} out of {PITCH_TITLE}"
+    assert got["offered"]["said"] == f"Take {TASK_TITLE} out of {PITCH_TITLE}, into {PROJECT_TITLE}"
     assert got["allowed"] is True
     sent = json.loads(answer["calls"][0]["body"])
-    assert sent["fields"] == {"parent": None}, "null, which is what no parent is stored as"
-    assert "no longer" in got["said"]
+    assert sent["fields"] == {"parent": PROJECT}, "out of the pitch and into its project"
+    assert got["said"] == f"{TASK_TITLE} is now in {PROJECT_TITLE}"
 
 
 def test_a_reparent_leaves_no_derived_column_stale(client: TestClient, page: str):
@@ -5430,7 +5473,12 @@ def test_a_reparent_leaves_no_derived_column_stale(client: TestClient, page: str
     # DOM does not gather a nested span's text into its parent's `textContent`
     # the way a browser does, so the year may or may not be in what comes back.
     assert got["start"].startswith(f"{day}.{month}"), got["start"]
-    assert year[:2] not in got["start"], "the century is still being drawn"
+    # Asked of what FOLLOWS the day and month, never of the whole cell: the
+    # start here is derived from today, and on the twentieth of any month the
+    # day itself is `20` — so `'20' not in '20.10'` failed on 2026-10-20 with
+    # nothing drawn wrong. A century, if one were drawn, can only be after it.
+    trailing = got["start"][len(f"{day}.{month}") :]
+    assert year[:2] not in trailing, "the century is still being drawn"
 
 
 def test_a_column_is_dragged_in_the_header_and_a_row_in_the_body(page: str):
@@ -5666,7 +5714,7 @@ def test_a_redraw_in_the_middle_of_a_move_leaves_the_last_row_saying_what_it_say
     )
     got = answer["value"]
 
-    assert got["held"]["said"] == f"Take {TASK_TITLE} out of {PITCH_TITLE}"
+    assert got["held"]["said"] == f"Take {TASK_TITLE} out of {PITCH_TITLE}, into {PROJECT_TITLE}"
     assert got["redrawn"] == got["held"], "a redraw mid-move does not change what it offers"
     assert got["loose"]["rootless"] == f"{TASK_TITLE} is not inside anything"
     assert got["looseRedrawn"] == got["loose"]
@@ -5758,7 +5806,9 @@ def test_the_row_a_drop_would_land_in_is_named_beside_the_cursor(page: str):
     assert got["refused"] == {"said": "", "hidden": True}, (
         "a task holds nothing, so it is not named as anywhere this could land"
     )
-    assert got["out"]["said"] == "→ out of Verify the aroma transport port"
+    assert got["out"]["said"] == f"→ out of {PITCH_TITLE}, into {PROJECT_TITLE}", (
+        "out of the pitch is into the project the pitch is in, and the label says so"
+    )
     assert got["after"] is True, "and the label goes when the move does"
     assert "#into {" in page and "position: fixed" in page
     assert "table.moving tr.over > td {\n  background: var(--drop);" in page, (
@@ -6260,7 +6310,7 @@ def test_a_row_that_names_no_reviewer_shows_the_ones_under_it(tmp_path: Path):
 
 _CONTAINER_PEOPLE = """
 const found = {};
-for (const key of ['assignees', 'reviewers']) {
+for (const key of ['developers', 'reviewers']) {
   const cell = tbody.querySelector(`tr[data-id="PROJECT"] td[data-col="${key}"]`);
   found[key] = {
     text: cell.textContent.trim(),
@@ -6274,9 +6324,9 @@ for (const key of ['assignees', 'reviewers']) {
 }
 // The pitch between the project and the tasks, which reads BOTH fields itself.
 const pitch = tbody.querySelector('tr[data-id="pitch-000001"]');
-found.pitchAssignees = {
-  text: pitch.querySelector('td[data-col="assignees"]').textContent.trim(),
-  from: (DATA.rows['pitch-000001'].assignees_from || []).length,
+found.pitchDevelopers = {
+  text: pitch.querySelector('td[data-col="developers"]').textContent.trim(),
+  from: (DATA.rows['pitch-000001'].developers_from || []).length,
 };
 found.pitchReviewers = {
   text: pitch.querySelector('td[data-col="reviewers"]').textContent.trim(),
@@ -6292,7 +6342,7 @@ def test_a_project_shows_the_people_on_the_work_under_it(tmp_path: Path):
     stopped at.
 
     Two claims a substring could not make and a DOM test could not make either.
-    The first is that the cells are not empty: a project's own `assignees` is
+    The first is that the cells are not empty: a project's own `developers` is
     nulled by `rows.read`, and until the rollup was gated on `schedules` instead
     of on `unread` the very act of marking the field unread blanked the cell this
     key exists to fill. The second is the tooltip, which is a different sentence
@@ -6334,7 +6384,7 @@ def test_a_project_shows_the_people_on_the_work_under_it(tmp_path: Path):
             parent="pitch-000001",
             status="ready",
             owner="ann",
-            assignees=["ann"],
+            developers=["ann"],
             reviewers=["bo"],
             person_weeks=2,
             start_date=date(2026, 8, 10),
@@ -6346,7 +6396,7 @@ def test_a_project_shows_the_people_on_the_work_under_it(tmp_path: Path):
             parent="pitch-000001",
             status="ready",
             owner="bo",
-            assignees=["bo"],
+            developers=["bo"],
             reviewers=["cy"],
             person_weeks=2,
             start_date=date(2026, 8, 10),
@@ -6363,7 +6413,7 @@ def test_a_project_shows_the_people_on_the_work_under_it(tmp_path: Path):
         _CONTAINER_PEOPLE.replace("PROJECT", "proj-000001"),
     )
 
-    for key in ("assignees", "reviewers"):
+    for key in ("developers", "reviewers"):
         cell = got[key]
         assert cell["own"] == 0, f"the project is carrying {key} of its own"
         assert cell["from"], f"nothing reached {key} from the work under the project"
@@ -6383,7 +6433,7 @@ def test_a_project_shows_the_people_on_the_work_under_it(tmp_path: Path):
     # The names themselves, and both tasks reached: `ann, bo` and `bo, cy` rather
     # than whichever one the walk happened to stop on. Read off the payload and
     # not the cell, whose text is clamped to the column's width.
-    assert got["assignees"]["from"] == 2
+    assert got["developers"]["from"] == 2
     assert got["reviewers"]["from"] == 2
 
     # **And the pitch in between is not drawn the same way, which is the half of
@@ -6391,22 +6441,22 @@ def test_a_project_shows_the_people_on_the_work_under_it(tmp_path: Path):
     # to different rules. A pitch that names no reviewer and has reviewed tasks
     # under it IS reviewed — `_status_problems` takes `reviewers_under` and stops
     # asking — so its reviewers cell shows them. Nothing says that about
-    # assignees, and nothing should: the scheduler prices a record by the people
+    # developers, and nothing should: the scheduler prices a record by the people
     # on it, so a pitch has to name its own. Drawn on the same terms, this row
     # showed two inherited names in a pale cell beside the warning triangle for
     # "a ready record needs somebody on it" — the page contradicting itself
     # inside one row, which is exactly what a reader cannot act on.
     assert got["pitchReviewers"]["from"] == 2, "the reviewers rule stopped reaching the pitch"
     assert got["pitchReviewers"]["text"]
-    assert got["pitchAssignees"]["from"] == 0, (
-        "the pitch is shown assignees from its tasks while the gate still demands its own"
+    assert got["pitchDevelopers"]["from"] == 0, (
+        "the pitch is shown developers from its tasks while the gate still demands its own"
     )
     # Asserted on the NAMES and not on an empty cell: what the pitch does draw
     # there is the warning mark for the gate it is failing, which is the whole
     # point — the cell says "nobody is on this", and it would be saying it beside
     # two names if the rollup reached here.
-    assert not {"ann", "bo"} & set(got["pitchAssignees"]["text"].split()), (
-        got["pitchAssignees"]["text"]
+    assert not {"ann", "bo"} & set(got["pitchDevelopers"]["text"].split()), (
+        got["pitchDevelopers"]["text"]
     )
 
 
@@ -6650,7 +6700,7 @@ def test_a_complaint_about_a_date_lands_on_the_date_cell(client: TestClient, rep
     drawn = answer["value"]
 
     # The whole set, so that a mark left behind on the id cell fails here too.
-    assert set(drawn[DRIFTED]) == {"assignees", "start"}, drawn[DRIFTED]
+    assert set(drawn[DRIFTED]) == {"developers", "start"}, drawn[DRIFTED]
     assert set(drawn[DONE]) == {"prs", "end"}, drawn[DONE]
     # And it is the validator's own sentence on the cell, not some other row's.
     assert drawn[DRIFTED]["start"] == said[(DRIFTED, "start_date")]
@@ -7836,7 +7886,7 @@ def test_a_plain_click_puts_the_selection_down(page: str, tmp_path: Path):
 #
 # The gate demands `end_date` at `done`, and that field is empty on every row
 # anybody is about to mark done — which is a different shape from every gate
-# before it. `owner`, `assignees` and `person_weeks` are answered once and then
+# before it. `owner`, `developers` and `person_weeks` are answered once and then
 # stay answered, so a bulk status change met the refusal rarely; this one would
 # have met it every single time, about every single row.
 # --------------------------------------------------------------------------- #
@@ -7859,7 +7909,7 @@ def finishing_page(demo_root: Path) -> str:
         parent=PITCH,
         status="in_progress",
         owner="ann",
-        assignees=["ann"],
+        developers=["ann"],
         reviewers=["bo"],
         person_weeks=1.0,
         start_date=date(2026, 8, 3),
@@ -7872,7 +7922,7 @@ def finishing_page(demo_root: Path) -> str:
             title="Verify the aroma transport port",
             status="ready",
             owner="ann",
-            assignees=["ann"],
+            developers=["ann"],
             reviewers=["bo"],
             person_weeks=3.0,
         ),
@@ -8005,7 +8055,7 @@ def reviving_page() -> str:
         kind="task",
         parent=PITCH,
         owner="ann",
-        assignees=["ann"],
+        developers=["ann"],
         reviewers=["bo"],
         person_weeks=1.0,
         prs=["kilnlab/kiln4py#1"],
@@ -8017,7 +8067,7 @@ def reviving_page() -> str:
             title="Verify the aroma transport port",
             status="ready",
             owner="ann",
-            assignees=["ann"],
+            developers=["ann"],
             reviewers=["bo"],
             person_weeks=3.0,
         ),

@@ -53,17 +53,21 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 import pygit2
 from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.websockets import WebSocketDisconnect
 
-from . import __version__, coedit, render, vendor
+from . import __version__, coedit, render, tailnet, vendor
 from .auth import (
+    COOKIE_SECONDS,
+    RENEW_AFTER_SECONDS,
     OAuthError,
     User,
     exchange_code,
@@ -71,6 +75,7 @@ from .auth import (
     login_url,
     read_session,
     sign_session,
+    signed_at,
 )
 from .index import Index, build_index, cascade_of
 from .model import (
@@ -86,6 +91,7 @@ from .model import (
     MAX_SLIDE_BYTES,
     PEOPLE_DIR,
     RUNG,
+    STATUS_ORDER,
     Config,
     Cycle,
     Person,
@@ -97,6 +103,7 @@ from .model import (
     edited_by_id,
     ends_before_it_starts,
     in_model_order,
+    kind_refusal,
     loop_made,
     mint_id,
     named,
@@ -108,6 +115,7 @@ from .model import (
     patch_text,
     person_path,
     promoted_from,
+    reachable,
     read_config,
     readable,
     record_paths_in,
@@ -178,6 +186,19 @@ _WHOLE_PLAN = (
 # WARNING and above on stderr, which is what Cloud Run collects, and a deployment
 # that does configure logging can route `openproj.web` without this file knowing.
 _LOG = logging.getLogger(__name__)
+
+# A whole reference, `owner/repo#N`, which is what `/api/pr-states` looks up.
+# Anything else somebody put in `prs:` — a link, a branch, a note — is not a
+# pull request to ask GitHub about.
+_REF = re.compile(r"[\w.-]+/[\w.-]+#[0-9]+")
+# The budget `/api/pr-states` spends, against sixty calls an hour. At most this
+# many lookups per request; none while GitHub says fewer than the reserve are
+# left, which is the completion's; an open reference re-asked at this age, and
+# a landed or dropped one at this.
+STATE_LOOKUPS = 8
+STATE_RESERVE = 20
+STATE_OPEN_TTL = 15 * 60
+STATE_CLOSED_TTL = 6 * 60 * 60
 
 
 def _refusal(error: Exception) -> HTTPException:
@@ -411,16 +432,22 @@ _SOCKET_REFUSALS = {
 _CLOSE_REASON_BYTES = 123
 
 
-async def _refuse_socket(socket: WebSocket, refused: HTTPException | None, record_id: str) -> None:
+async def _refuse_socket(
+    socket: WebSocket, refused: HTTPException | None, record_id: str, said: str = ""
+) -> None:
     """Turn a co-editing socket away, saying which of the reasons it was.
 
     `refused` is None when `_path_for` simply found no file, which is not an
-    exception and is the one refusal that names the record back.
+    exception and is the one refusal that names the record back. `said`
+    replaces the sentence and keeps the code, for a refusal whose reason only
+    the caller has: the 403 sentence above is about a GitHub org, and under
+    `--auth tailscale` there is no org — there is the tailnet's own reason.
     """
     code, why = _SOCKET_REFUSALS.get(
         refused.status_code if refused is not None else 404,
         (4404, f"{record_id} is not in the plan any more — reload the page"),
     )
+    why = said or why
     await socket.accept()
     # The frame first and the close code second, because they answer two
     # different vintages of this page and only one of them is deployable.
@@ -465,6 +492,39 @@ async def _refuse_socket(socket: WebSocket, refused: HTTPException | None, recor
 SESSION_COOKIE = "__Host-openproj_session"
 SESSION_COOKIE_INSECURE = "openproj_session"
 STATE_COOKIE = "op_state"
+# How long a sign-in may sit on GitHub's side before coming back. It was ten
+# minutes, and on 2026-10-12 a sign-in started at 13:50 came back at 14:07 — a
+# second factor, a tab left open, somebody walking off — to a 400 saying "that
+# sign-in did not start here", when it had. An hour costs nothing: the state is a
+# nonce bound to this browser, and its lifetime is not what makes it one.
+STATE_SECONDS = 3600
+# Where the browser was when the sign-in started, so the callback can put it
+# back there. Beside the state rather than in the redirect URI, because GitHub
+# compares that against the one the OAuth app registered.
+NEXT_COOKIE = "op_next"
+# Set on the way out to a renewal and read on the way back in: a browser that
+# was sent to GitHub in the last few minutes is not sent again. Without it, a
+# browser that keeps the old session cookie and refuses the new one — a full
+# jar, a policy — would go round GitHub and back until it gave up with "too many
+# redirects", and a reader who abandoned GitHub's sign-in page would be put back
+# on it by every link they clicked.
+RENEWING_COOKIE = "op_renewing"
+RENEWING_SECONDS = 600
+# What a `next` may be: a path on this server, and nothing that could become
+# somebody else's. A leading `/` and then no second one, so `//evil.example` —
+# which a browser reads as a host — is refused, and no backslash, which some
+# browsers read as a slash. The rest is the characters this app's own paths and
+# queries are made of.
+_NEXT_PATTERN = re.compile(r"\A/(?![/\\])[A-Za-z0-9/_.~%?=&+:,-]*\Z")
+# Under `--auth tailscale`, which listed person a shared device is writing as.
+# Not a session: the tailnet still decides whether this request may write at
+# all, and this only picks between names the same list already gave write to.
+# See `acting_as`.
+AS_COOKIE = "openproj_as"
+# A month, because a shared tablet is shared for weeks at a time, and a choice
+# that lapsed overnight would put the next morning's edits under the wrong name
+# with nothing on screen having changed.
+AS_SECONDS = 30 * 24 * 3600
 
 # `ID_PATTERN` is imported from `model.py`, where its comment carries the whole
 # argument: one KINDS-derived pattern for every rung, `\A`/`\Z` anchored so a
@@ -967,7 +1027,7 @@ def _as_positive(value: object, name: str, most: float = math.inf) -> float:
 
 
 _NUMERIC = ("cycle", "person_weeks")
-_LISTS = ("assignees", "reviewers", "tags", "prs", "depends_on", "pitched_into", "became")
+_LISTS = ("developers", "reviewers", "tags", "prs", "depends_on", "pitched_into", "became")
 
 
 def _deletion_message(record_id: str, doomed: list[str], edited: list[str]) -> str:
@@ -1303,6 +1363,104 @@ def _reject_undeclared_fields(fields: dict, known: tuple[str, ...], what: str) -
             422,
             f"{what} has no field called {unknown[0]!r}; it holds {', '.join(known)}",
         )
+
+
+def _reject_a_new_kind(record_id: str, fields: dict) -> None:
+    """A save that would change what kind a record is, refused.
+
+    `kind` is a field every rung declares, so `_reject_undeclared_fields` lets it
+    through, and nothing else on a save ever asked about it. But the id carries
+    the kind — `task-c00001` cannot be a pitch — so a save that wrote `kind:
+    pitch` committed a file whose prefix and kind disagree, which `validate_all`
+    reports as a blocker only once it is in git, on a protected branch. It went
+    past everything Change kind does as well: no new id, no children repointed,
+    and no kind gate, so a kind the plan has turned off came in through the one
+    door that never asked. A kind changes through `POST /api/rekind` and nowhere
+    else.
+
+    Judged against the id's kind and not the file's. They differ only in a file
+    somebody got wrong in git, and a save that writes the id's kind back is the
+    repair, not a change. The same kind is let through, too: a form that sends
+    every field back is not asking for anything.
+    """
+    if "kind" in fields and fields["kind"] != _kind_for(record_id):
+        raise HTTPException(
+            422,
+            "A record's kind changes through Change kind, which gives it a new id, "
+            "not through a save.",
+        )
+
+
+# Methods that change something. Everything else is a read, and a read from
+# another site is a link somebody followed.
+_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _from_elsewhere(scope: dict) -> str:
+    """Why this write was sent by a page on another site, or "" when it was not.
+
+    Under `--auth tailscale` the identity is the device's address, which the
+    browser attaches to every request it makes — including the one a page on
+    any other site makes with a form, or a `fetch` in `no-cors` mode, or a
+    WebSocket, none of which needs to read the answer to have written. A
+    cookie marked SameSite is what stops that under GitHub sign-in; an address
+    has no such flag. `_sent` reads the body whatever its content type, so a
+    `text/plain` form carrying JSON was a save.
+
+    `Sec-Fetch-Site` first, because the browser writes it and no page can, and
+    because it does not depend on the Host header surviving a reverse proxy —
+    plan-d's Synology proxy is the one this was written for. `same-site` is
+    refused with `cross-site`: on a NAS every other app is a sibling subdomain.
+    A browser too old to send it still sends `Origin` on a cross-origin write,
+    and that is compared with the host the request was addressed to. A request
+    carrying neither is not from a browser, and a client that is not a browser
+    is not one a page elsewhere can drive.
+    """
+    headers = {
+        name.decode("latin-1").lower(): value.decode("latin-1")
+        for name, value in scope.get("headers", [])
+    }
+    site = headers.get("sec-fetch-site")
+    if site:
+        if site in ("same-origin", "none"):
+            return ""
+        return f"this change was sent from another site ({site}), and is refused"
+    origin = headers.get("origin")
+    if not origin:
+        return ""
+    hosts = {headers.get("host", ""), headers.get("x-forwarded-host", "")} - {""}
+    if urlsplit(origin).netloc in hosts:
+        return ""
+    return f"this change was sent from {origin}, which is not this server, and is refused"
+
+
+class SameSite:
+    """ASGI middleware: refuse a write, or a co-editing socket, another site sent.
+
+    Pure ASGI for `tailnet.Identify`'s reason: the room is a write path and
+    `@app.middleware("http")` never sees a WebSocket. Refused before anything
+    reads the body or the tailnet is asked, so the answer is the same for a
+    stranger and for somebody on the list — the page is the stranger here.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        writes = scope["type"] == "websocket" or (
+            scope["type"] == "http" and scope.get("method") in _WRITES
+        )
+        refusal = _from_elsewhere(scope) if writes else ""
+        if not refusal:
+            await self.app(scope, receive, send)
+        elif scope["type"] == "websocket":
+            # Closed before it is accepted, which the server answers as a 403
+            # to the handshake. A close reason is capped at 123 bytes, and an
+            # origin is as long as anybody likes, so this says less.
+            closing = {"type": "websocket.close", "code": 1008, "reason": "sent from another site"}
+            await send(closing)
+        else:
+            await JSONResponse({"detail": refusal}, status_code=403)(scope, receive, send)
 
 
 async def _sent(request: Request) -> dict:
@@ -1664,10 +1822,82 @@ class Outbox:
                     await asyncio.sleep(0.01)
 
 
+# Which view each page route IS, by the route's own template — the string FastAPI
+# hands back as `request.scope["route"].path`, so `switched_off` and `own_links`
+# below find the handler's row here, and no handler names its own view. That is
+# what makes the table the gate and not a list beside it, and
+# `test_every_page_route_is_gated_or_always_on` holds it against `app.routes`.
+#
+# Two things are asked of a row. Whether the page exists — only the Issues and
+# Notes lists can be missing, with their kind (`model.reachable`); every other
+# view answers at its address in every plan, listed in `views` or not. And how it
+# is drawn: an unlisted view reached by address is drawn with its own links put
+# back (`own_links`), so `/cycles` still leads to each `/cycle/<n>`.
+#
+# Cycles owns the per-cycle pages as well as the list, and the deck is the one
+# view with no nav slot.
+SWITCHED: dict[str, str] = {
+    "/table": "table",
+    "/graph": "graph",
+    "/timeline": "timeline",
+    "/people": "people",
+    "/issues": "issues",
+    "/notes": "notes",
+    "/cycles": "cycles",
+    "/cycle/{number}": "cycles",
+    "/deck/{number}": "deck",
+}
+# Page routes that are always on and gated by what their query says: the create
+# form by the kind it is asked for. Its handler asks after the question only it can
+# answer first — whether the kind is a word this tool has — because "turned off"
+# is not what is wrong with a typo.
+SWITCHED_BY_QUERY: dict[str, str] = {"/new": "kind"}
+# And the pages no setting reaches. Records is the landing and the only home of
+# the Create button, a record page is what every bar, node and cycle row links
+# to, and Help is in the footer of every page. A record's slide view
+# (`/detail/<id>?view=slide`) went with the deck until the deck could no longer
+# be off; it answers in every plan, and only the button to it follows `views`.
+# Written out so that a page route nobody decided about fails the census on the
+# commit that adds it, rather than being on by omission.
+ALWAYS_ON: frozenset[str] = frozenset({"/", "/detail", "/detail/{record_id}", "/help"})
+
+
+def switched_off(request: Request, index: Index, links: render.Links) -> HTMLResponse | None:
+    """The page a switched-off address answers with, or None when it exists.
+
+    Only the Issues and Notes lists can be switched off, and only with their kind
+    (`model.reachable`): a view `views` leaves out is unlisted, not off, and
+    answers at its address. A 404 with the ordinary shell and a sentence naming
+    the setting, and not a redirect: a bookmarked `/issues` that silently landed on
+    Records would be a page that changed under its reader with nothing saying why.
+    The address's filters go with it, so `/issues?owner=ann` is one click from the
+    same rows on Records.
+
+    Asked first by every handler in `SWITCHED`, so the census holds every gated
+    route to one question even where the answer is always yes.
+    """
+    view = SWITCHED.get(request.scope["route"].path)
+    if view is None or reachable(view, index.kinds):
+        return None
+    return HTMLResponse(
+        render.render_switched_off(index, links, view=view, query=request.url.query),
+        status_code=404,
+    )
+
+
+def own_links(request: Request, links: render.Links) -> render.Links:
+    """The links a gated page is drawn with: the plan's, with the page's own view
+    put back. A no-op for a view the plan lists; for one it does not, this is what
+    makes the page work once somebody has typed its address — see `render.opened`.
+    The other pages go on not linking to it, because they are drawn with `links`."""
+    view = SWITCHED.get(request.scope["route"].path)
+    return render.opened(links, render.ROUTES, view) if view else links
+
+
 def create_app(
     repo: Path,
     *,
-    auth: Literal["dev", "github"] = "dev",
+    auth: Literal["dev", "github", "tailscale"] = "dev",
     org: str = "",
     secret: str = "dev-secret",
     client_id: str = "",
@@ -1677,6 +1907,9 @@ def create_app(
     dev_login: str = "dev",
     today: date | None = None,
     github_transport: httpx.BaseTransport | None = None,
+    tailscale_users: dict[str, str] | None = None,
+    tailscale_socket: str = tailnet.SOCKET,
+    tailscale_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     if auth == "github":
         if secret in _DEV_SECRETS:
@@ -1714,7 +1947,27 @@ def create_app(
             f"{'it' if len(absent) == 1 else 'them'}, or drop OPENPROJ_REMOTE to run "
             "against the local repository."
         )
-    store = Store(Path(repo), remote=remote or None, credentials=credentials)
+    tailscale: tailnet.Tailnet | None = None
+    if auth == "tailscale":
+        if not tailscale_users:
+            # The list is the whole of the write permission, the way the org is
+            # under `github`. Empty, it is not "anybody on the tailnet may
+            # write" — it is a server on which nobody ever can, and which says
+            # so only at the first save.
+            raise ValueError(
+                "refusing to start: auth='tailscale' without OPENPROJ_TAILSCALE_USERS — "
+                "the list of tailnet logins and the plan login each writes as is what "
+                "decides who may write."
+            )
+        tailscale = tailnet.Tailnet(
+            tailscale_users, socket=tailscale_socket, transport=tailscale_transport
+        )
+    store = Store(
+        Path(repo),
+        remote=remote or None,
+        credentials=credentials,
+        addresses=tailscale.addresses() if tailscale else None,
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1778,8 +2031,63 @@ def create_app(
         yield
         pusher.close()
         store.close()
+        if tailscale is not None:
+            await tailscale.close()
 
     app = FastAPI(title="openproj", lifespan=lifespan)
+    if tailscale is not None:
+        app.add_middleware(tailnet.Identify, tailnet=tailscale)
+    # In every mode and not only under Tailscale: a session cookie is SameSite,
+    # but a sibling subdomain is the same site, and one rule is one rule to
+    # keep true. Added after `Identify`, so it is outside it and a refused
+    # write never costs a question to tailscaled.
+    app.add_middleware(SameSite)
+
+    if auth == "github":
+
+        @app.middleware("http")
+        async def renew_on_the_way_in(request: Request, call_next):
+            """A page opened with a session past half its life goes round GitHub first.
+
+            The session is the membership answer GitHub gave at sign-in, signed
+            and good for a day, and it cannot be extended here: the token that
+            could ask again was thrown away on purpose (`auth.py`). So it is asked
+            again the only way it can be — a sign-in — and for somebody who is
+            signed in to GitHub and has authorised this app before, GitHub answers
+            that without showing a page: two redirects and back on the page they
+            asked for. Membership is still re-checked at least daily, and nobody
+            meets a signed-out page for having signed in yesterday.
+
+            On the way in to a page and nowhere else. A `fetch` cannot follow a
+            redirect to GitHub and back, and a save that was turned into one would
+            be a save that silently did not happen; `Sec-Fetch-Dest: document` is
+            the browser's own word that this is a page being opened. A browser
+            that sends no such header is not renewed and is no worse off than it
+            was. Never `/login` or the callback, which are the renewal itself.
+            """
+            if (
+                request.method == "GET"
+                and request.headers.get("sec-fetch-dest") == "document"
+                and request.headers.get("sec-fetch-mode") == "navigate"
+                and request.url.path not in ("/login", "/auth/callback")
+                and RENEWING_COOKIE not in request.cookies
+                and due_for_renewal(request)
+            ):
+                where = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+                response = RedirectResponse(
+                    "/login?" + urlencode({"next": where}), status_code=307
+                )
+                response.set_cookie(
+                    RENEWING_COOKIE,
+                    "1",
+                    max_age=RENEWING_SECONDS,
+                    httponly=True,
+                    secure=secure_for(request),
+                    samesite="lax",
+                    path="/",
+                )
+                return response
+            return await call_next(request)
 
     @app.middleware("http")
     async def say_what_this_page_may_do(request: Request, call_next):
@@ -1870,23 +2178,70 @@ def create_app(
     # window to be preempted in. 25 of this app's routes are sync `def` and
     # Starlette dispatches those through anyio's worker threads, so concurrent
     # readers are the normal case rather than the exotic one.
-    held: tuple[str, date, Index] | None = None
+    #
+    # The links ride in the same tuple, and for the same reason. They are a
+    # function of the plan's `views` at that commit — every view that is off has
+    # its field blanked — so a page must take its nav, its gates and its index
+    # from ONE read: a nav from commit B over an index from commit A is a page
+    # linking to a view its own gate would refuse. Links cannot live on `Index`
+    # either, because `index.py` does not import `render`; this memo is the one
+    # place both are in reach. And no second cache for them: keyed on the commit
+    # here, a `defaults.yaml` committed through anything rebuilds both on the
+    # next request, which a cache of its own would have had to be told about.
+    held: tuple[str, date, Index, render.Links] | None = None
 
-    def index_now():
+    def plan_now() -> tuple[str, Index, render.Links]:
         nonlocal held
         commit = store.head()
         drawn = today or date.today()
         memo = held
         if memo is not None and memo[0] == commit and memo[1] == drawn:
-            return commit, memo[2]
-        commit, index = _build_index_at(commit, drawn)
-        held = (commit, drawn, index)
+            return commit, memo[2], memo[3]
+        commit, index, links = _build_index_at(commit, drawn)
+        held = (commit, drawn, index, links)
+        return commit, index, links
+
+    # A 404 is for a person or for a program, and the address says which. These
+    # are the program's: JSON routes, files, the sign-in round trip.
+    not_pages = ("/api/", "/static/", "/assets/", "/drawings/", "/auth/")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def nothing_here(request: Request, exc: StarletteHTTPException) -> Response:
+        """A page address with nothing at it answers a page.
+
+        It answered `{"detail": "no record 'nope'"}` — FastAPI's default, the
+        whole document, with no viewport tag, so a stale link opened on a phone
+        was a 980px line of JSON in tiny type with no way back into the plan.
+
+        Only a GET that asks for HTML and is not under a program's prefix: a
+        script calling `/api/…` reads `detail` out of the JSON and must go on
+        getting it, and every other status keeps the default too — this is
+        about addresses, not about errors in general.
+        """
+        if (
+            exc.status_code != 404
+            or request.method not in ("GET", "HEAD")
+            or request.url.path.startswith(not_pages)
+            or "text/html" not in request.headers.get("accept", "")
+        ):
+            return await http_exception_handler(request, exc)
+        _, index, links = await asyncio.to_thread(plan_now)
+        # Starlette's own 404 for an address no route matches carries the
+        # status phrase and nothing else; a route's raise carries its reason.
+        said = "" if exc.detail == "Not Found" else str(exc.detail)
+        return HTMLResponse(
+            render.render_not_found(index, links, said, request.url.path), status_code=404
+        )
+
+    def index_now() -> tuple[str, Index]:
+        """The commit and its index, for every caller that draws no page."""
+        commit, index, _ = plan_now()
         return commit, index
 
-    def _build_index_at(commit: str, drawn: date):
+    def _build_index_at(commit: str, drawn: date) -> tuple[str, Index, render.Links]:
         config, unreadable_config = _config_at(store, commit)
         records, unreadable_records = _records_at(store, commit)
-        return commit, build_index(
+        index = build_index(
             records,
             config,
             # Pinned only where somebody pinned it, which today is `openproj
@@ -1900,6 +2255,9 @@ def create_app(
             # files and two walks finishing in whatever order is not that order.
             unreadable=sorted([*unreadable_config, *unreadable_records], key=lambda one: one.path),
         )
+        if tailscale is not None:
+            index = index.model_copy(update={"writers": sorted(tailscale.users.values())})
+        return commit, index, render.links_for(index.views, render.ROUTES)
 
     # The last history walk, and the head it walked TO. Keyed on the commit
     # ALONE — deliberately narrower than the index cache's (commit, today)
@@ -1959,12 +2317,59 @@ def create_app(
         after the first costs a session nothing and saves the one case where the
         two disagree: a server that used to be plain HTTP and is now behind TLS,
         where the browser is still holding yesterday's bare cookie.
+
+        Under `tailscale` no cookie is read at all. The tailnet's answer is
+        already in the scope (`tailnet.Identify`), and a session would be a
+        second, forgeable-by-anybody-with-the-secret way of saying who someone
+        is on a server whose whole premise is that the network already said it.
         """
+        if auth == "tailscale":
+            seen = tailnet.seen_in(request.scope)
+            return User(login=acting_as(request, seen.login), member=True) if seen.login else None
         for name in (SESSION_COOKIE, SESSION_COOKIE_INSECURE):
             user = read_session(request.cookies.get(name), secret)
             if user is not None:
                 return user
         return None
+
+    def due_for_renewal(request: Request) -> bool:
+        """Whether this browser holds a session this server signed that is old
+        enough to renew — and none that is not.
+
+        Expired ones included, which is the point of `COOKIE_SECONDS`: a cookie
+        past its day is no session (`viewer` refuses it) but it is still this
+        server's word that the browser signed in. Both names, as `viewer` reads
+        them, and a fresh one under either name means there is nothing to do.
+        """
+        stamps = [
+            stamped
+            for name in (SESSION_COOKIE, SESSION_COOKIE_INSECURE)
+            if (stamped := signed_at(request.cookies.get(name), secret)) is not None
+        ]
+        if not stamps:
+            return False
+        return time.time() - max(stamps).timestamp() >= RENEW_AFTER_SECONDS
+
+    def acting_as(request: Request, device: str) -> str:
+        """The plan login a tailnet-named request writes as.
+
+        The device's own login, unless `AS_COOKIE` names another login on
+        `OPENPROJ_TAILSCALE_USERS` — jcanton, 2026-10-10: two people share one
+        tablet, and the tailnet knows the tablet by one of them. Asked, and the
+        answer was that anybody on the list may pick anybody else on it.
+
+        A plain cookie and not a signed one, which is the argument `viewer`
+        makes against a session turned round: the cookie is read only for a
+        request the tailnet has ALREADY named as somebody on the list, and it can
+        only name somebody else on that list. Anybody able to forge it could pick
+        the same name from the corner. A value off the list is ignored rather
+        than refused, so a list that dropped somebody leaves a device writing as
+        its own owner instead of writing as nobody.
+        """
+        chosen = request.cookies.get(AS_COOKIE, "")
+        if tailscale is not None and chosen in tailscale.users.values():
+            return chosen
+        return device
 
     def writer(request: Request) -> User:
         """Who is allowed to write, decided per request rather than at login.
@@ -1983,6 +2388,19 @@ def create_app(
         user = viewer(request)
         if auth == "dev":
             return user or User(login=dev_login, member=True)
+        if auth == "tailscale":
+            # 403 and not 401: there is no sign-in that would change the answer,
+            # only a different device or a different list. The sentence says
+            # which, and it is the tailnet's own reason rather than a guess.
+            #
+            # The co-editing socket asks this again every `RECHECK_SECONDS` and
+            # gets the answer its handshake got, because the scope is the
+            # handshake's. That is the right answer rather than a stale one: an
+            # address belongs to one node for the node's life, and a node taken
+            # off the tailnet takes its socket with it.
+            if user is None:
+                raise HTTPException(403, tailnet.seen_in(request.scope).refusal)
+            return user
         if user is None:
             raise HTTPException(401, "sign in to make changes")
         if not user.member:
@@ -2069,7 +2487,10 @@ def create_app(
     def record_list(request: Request, only: str | None) -> HTMLResponse:
         """The landing and its two inbox views: one renderer, one page, the
         population decided by the route."""
-        commit, index = index_now()
+        commit, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         # The map may be one commit ahead of `commit` if a write lands between
         # the two reads. The times are display; the rows are the index's; the
         # event stream's reload reconciles them a moment later.
@@ -2077,7 +2498,7 @@ def create_app(
         return page(
             render.render_records(
                 index,
-                render.ROUTES,
+                links,
                 base_commit=commit,
                 edited=edited_by_id(stamps),
                 now=int(time.time()),
@@ -2100,11 +2521,12 @@ def create_app(
 
     @app.get("/table", response_class=HTMLResponse)
     def table(request: Request) -> HTMLResponse:
-        commit, index = index_now()
+        commit, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         return page(
-            render.render_table(
-                index, render.ROUTES, base_commit=commit, may_write=may_write(request)
-            )
+            render.render_table(index, links, base_commit=commit, may_write=may_write(request))
         )
 
     @app.get("/graph", response_class=HTMLResponse)
@@ -2113,25 +2535,33 @@ def create_app(
         # no argument at all until 2026-09-18, which is how it went on serving
         # "Edit dependencies", Save and Reset to a signed-out reader long after
         # `/table`, immediately above, had stopped.
-        commit, index = index_now()
+        commit, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         return page(
-            render.render_graph(
-                index, render.ROUTES, base_commit=commit, may_write=may_write(request)
-            )
+            render.render_graph(index, links, base_commit=commit, may_write=may_write(request))
         )
 
     @app.get("/timeline", response_class=HTMLResponse)
     def timeline(
-        from_: str = Query("", alias="from"), to: str = "", zoom: str = ""
+        request: Request, from_: str = Query("", alias="from"), to: str = "", zoom: str = ""
     ) -> HTMLResponse:
         """The window and the day width come off the URL, so a view is a link.
 
         Every one of the three is typed by hand as easily as it is picked, so all
         three are parsed leniently: a nonsense value falls back to the default view
         rather than turning a bookmark into a 422.
+
+        `request` is for the gate, which needs the route it was reached by and the
+        query to hand on to Records.
         """
+        _, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         window = (_as_date(from_), _as_date(to))
-        return page(render.render_timeline(index_now()[1], render.ROUTES, window, _as_zoom(zoom)))
+        return page(render.render_timeline(index, links, window, _as_zoom(zoom)))
 
     def which_editor(request: Request) -> str:
         """Which editing surface this page is asked to carry.
@@ -2369,12 +2799,15 @@ def create_app(
         )
 
     @app.get("/cycles", response_class=HTMLResponse)
-    def cycles() -> HTMLResponse:
-        commit, index = index_now()
-        return page(render.render_cycles(index, render.ROUTES, commit))
+    def cycles(request: Request) -> HTMLResponse:
+        commit, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
+        return page(render.render_cycles(index, links, commit))
 
     @app.get("/cycle/{number}", response_class=HTMLResponse)
-    def cycle(number: int) -> HTMLResponse:
+    def cycle(number: int, request: Request) -> HTMLResponse:
         """Typed `int`, so nothing that is not a number ever reaches a path.
 
         Stronger than a pattern: FastAPI refuses a non-integral value before the
@@ -2387,10 +2820,13 @@ def create_app(
         which cycles exist, which is a dead end a person can only find by filling
         the form in first.
         """
+        commit, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         if not CYCLE_PATTERN.match(str(number)):
             raise HTTPException(404, "a cycle is numbered 0 to 9999")
-        commit, index = index_now()
-        return page(render.render_cycle(index, number, render.ROUTES, commit))
+        return page(render.render_cycle(index, number, links, commit))
 
     @app.get("/deck/{number}", response_class=HTMLResponse)
     def deck(number: int, request: Request) -> HTMLResponse:
@@ -2406,14 +2842,17 @@ def create_app(
         states of the plan, and this page's whole job is to be handed to somebody
         who cannot check.
         """
+        commit, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         if not CYCLE_PATTERN.match(str(number)):
             raise HTTPException(404, "a cycle is numbered 0 to 9999")
-        commit, index = index_now()
         return page(
             render.render_deck(
                 index,
                 number,
-                render.ROUTES,
+                links,
                 lambda path: store.read_asset(commit, path),
                 # The commit the rail's Save compares against, and whether this
                 # reader may write at all. Both, for the reason `render_deck`
@@ -2432,18 +2871,37 @@ def create_app(
         gets the same page as anybody else, which is the point of documentation —
         so it takes no `Request`. It takes the index all the same, for the one
         thing every page owes: the banner naming plan files that will not parse.
+        And the plan's links, because the nav it draws is this plan's, and so is
+        what it says about which views the guide below describes.
         """
-        return page(render.render_help(index_now()[1], render.ROUTES))
+        _, index, links = plan_now()
+        return page(render.render_help(index, links))
 
     @app.get("/people", response_class=HTMLResponse)
     def people(request: Request) -> HTMLResponse:
+        _, index, links = plan_now()
+        if (off := switched_off(request, index, links)) is not None:
+            return off
+        links = own_links(request, links)
         me = picker_for(request)
-        return page(render.render_people(index_now()[1], render.ROUTES, editable=bool(me), me=me))
+        return page(render.render_people(index, links, editable=bool(me), me=me))
 
     @app.get("/new", response_class=HTMLResponse)
     def new(request: Request, kind: str = "task") -> HTMLResponse:
         if kind not in DIRECTORY:
             raise HTTPException(422, f"kind must be one of {sorted(DIRECTORY)}")
+        commit, index, links = plan_now()
+        # A kind this tool has and this plan has turned off: the switched-off page,
+        # after the word check above and before the sign-in one below. After,
+        # because `milestone` is a typo and not a setting; before, because a
+        # signed-out reader told "sign in to create a record" would sign in and
+        # then be told the kind is off. No query goes with it: `kind=issue` is
+        # what to create, not a filter, and handing it to Records would be a link
+        # promising the same rows on a page that never had any.
+        if kind not in index.kinds:
+            return HTMLResponse(
+                render.render_switched_off(index, links, off_kind=kind), status_code=404
+            )
         # A reader is refused the page rather than shown a hollow one. Every
         # control on the create form is behind `may_write`, so a signed-out
         # visitor who reached it got the heading, the kind picker and nothing to
@@ -2456,12 +2914,11 @@ def create_app(
         # session would refuse the demo its own create form.
         if not may_write(request):
             raise HTTPException(403, "sign in to create a record")
-        commit, index = index_now()
         who = viewer(request)
         return page(
             render.render_detail(
                 index,
-                render.ROUTES,
+                links,
                 base_commit=commit,
                 may_write=may_write(request),
                 editor=which_editor(request),
@@ -2472,11 +2929,12 @@ def create_app(
 
     @app.get("/detail", response_class=HTMLResponse)
     def detail_index() -> HTMLResponse:
-        return page(render.render_detail(index_now()[1], render.ROUTES))
+        _, index, links = plan_now()
+        return page(render.render_detail(index, links))
 
     @app.get("/detail/{record_id}", response_class=HTMLResponse)
     def detail(record_id: str, request: Request, view: str = "") -> HTMLResponse:
-        commit, index = index_now()
+        commit, index, links = plan_now()
         if record_id not in index.records:
             raise HTTPException(404, f"no record {record_id!r}")
         # The page carries the commit it was rendered at, so a save is compared
@@ -2501,12 +2959,18 @@ def create_app(
         # slide editor needs none of it. Anything this route does not recognise
         # is the record page, because a mistyped query should land somebody on
         # the page they asked for rather than on a 404 about a spelling.
+        #
+        # A slide is one record's page in its cycle's deck. It answers whether or
+        # not the plan lists the deck: unlisted is not off (`model.reachable`), and
+        # what `views` decides is only whether the record page offers the button.
+        # Drawn as the deck's own page, with the deck's links put back, so the
+        # Slide control on it still says which view this is.
         if view == "slide":
             return page(
                 render.render_slide_editor(
                     index,
                     record_id,
-                    render.ROUTES,
+                    render.opened(links, render.ROUTES, "deck"),
                     base_commit=commit,
                     may_write=may_write(request),
                     editor=which_editor(request),
@@ -2516,7 +2980,7 @@ def create_app(
         return page(
             render.render_detail(
                 index,
-                render.ROUTES,
+                links,
                 only=record_id,
                 base_commit=commit,
                 may_write=may_write(request),
@@ -2571,7 +3035,9 @@ def create_app(
         nobody can keep.
         """
         payload = await _sent(request)
-        commit, index = index_now()
+        # The plan's links, not every route: a slide links its cycle's page, and
+        # the preview has to draw the slide the deck would, on this plan.
+        commit, index, links = plan_now()
         record_id = payload.get("record_id")
         if not isinstance(record_id, str) or record_id not in index.records:
             raise HTTPException(404, "no such record")
@@ -2589,7 +3055,7 @@ def create_app(
                     render.slide_html(
                         index,
                         record,
-                        render.ROUTES,
+                        links,
                         render.inlined_assets(
                             [record.body, record.slide.body if record.slide else ""],
                             lambda path: store.read_asset(commit, path),
@@ -2625,7 +3091,11 @@ def create_app(
         return JSONResponse({"html": str(render._body_html(record, render.ROUTES))})
 
     # What GitHub last said about each repository the plan names:
-    # `owner/repo -> (good until, entries, whether the last attempt failed)`.
+    # `owner/repo -> (when it was asked, entries, whether the last attempt failed)`.
+    # When it was asked rather than when it expires, because two routes read it
+    # at two ages: the completion wants it five minutes fresh, the PR marks
+    # fifteen, and one expiry would make the slower reader pay the faster one's
+    # calls.
     #
     # On the closure and not at module scope because the repositories are this
     # plan's and the token is this app's — a module-level cache is one every test
@@ -2634,8 +3104,11 @@ def create_app(
     pulls: dict[str, tuple[float, list[dict[str, object]], bool]] = {}
     pulls_lock = threading.Lock()
 
-    def _live_pull_requests(repositories: list[str]) -> tuple[list[dict], bool]:
-        """Every open pull request in these repositories, and whether it is stale.
+    def _live_pull_requests(
+        repositories: list[str], ttl: float | None = None
+    ) -> tuple[list[dict], bool]:
+        """Every open pull request and issue in these repositories, and whether it
+        is stale.
 
         `{value, label}` — the shape the combobox already reads, so the page
         merges this with what the corpus cites and needs no second code path.
@@ -2654,7 +3127,7 @@ def create_app(
         pull request that was open five minutes ago is almost certainly still
         open.
 
-        The exceptions are named rather than caught wholesale: `open_pull_requests`
+        The exceptions are named rather than caught wholesale: `open_references`
         documents itself as raising for a refusal, and around that the failures
         are httpx's transport errors and a body that is not the JSON this reads.
         Anything outside the tuple reaches the route and 500s it, which is the
@@ -2663,7 +3136,7 @@ def create_app(
         """
         import json as _json
 
-        from .github import PULLS_TTL_SECONDS, open_pull_requests
+        from .github import PULLS_TTL_SECONDS, open_references
 
         # `github_transport` is `create_app`'s one test seam for this: an httpx
         # transport a test answers from without a socket, the same shape and the
@@ -2672,14 +3145,15 @@ def create_app(
 
         app_for = credentials if hasattr(credentials, "api_headers") else None
         now = time.monotonic()
+        fresh_for = PULLS_TTL_SECONDS if ttl is None else ttl
         offered: list[dict] = []
         stale = False
         with pulls_lock:
             for repository in repositories:
-                until, entries, failed = pulls.get(repository, (0.0, [], False))
-                if now >= until:
+                asked, entries, failed = pulls.get(repository, (-math.inf, [], False))
+                if now >= asked + fresh_for:
                     try:
-                        entries = open_pull_requests(repository, app_for, github_transport)
+                        entries = open_references(repository, app_for, github_transport)
                         failed = False
                     except (httpx.HTTPError, _json.JSONDecodeError, KeyError, ValueError):
                         # WARNING and not an exception: the operator wants to know
@@ -2688,17 +3162,23 @@ def create_app(
                         # has been renamed.
                         _LOG.warning("could not read open pull requests for %s", repository)
                         failed = True
-                    pulls[repository] = (now + PULLS_TTL_SECONDS, entries, failed)
+                    pulls[repository] = (now, entries, failed)
                 stale = stale or failed
+                # Which of the two leads the label, because `#1403` reads the same
+                # for either and the reader choosing between them is asking which.
                 offered += [
-                    {"value": f"{repository}#{one['number']}", "label": str(one["title"])}
+                    {
+                        "value": f"{repository}#{one['number']}",
+                        "label": f"{'PR' if one['pull'] else 'issue'} · {one['title']}",
+                    }
                     for one in entries
                 ]
         return offered, stale
 
     @app.get("/api/prs")
     def prs(request: Request) -> JSONResponse:
-        """Open pull requests in the repositories the PLAN names, `{value,label}`.
+        """Open pull requests and issues in the repositories the PLAN names,
+        `{value,label}`.
 
         The completion in a shaping document and in the `prs:` field has always
         offered what the corpus already cites, which answers "which of the ones
@@ -2730,6 +3210,134 @@ def create_app(
         _, index = index_now()
         offered, stale = _live_pull_requests(index.repositories)
         return JSONResponse({"prs": offered, "stale": stale})
+
+    # Where each cited pull request or issue stands: `owner/repo#N -> (good until,
+    # {"state", "at"})`. A landed or dropped one is kept for hours, because it
+    # almost never changes back; an open one is asked about again at the
+    # repository's open list, which answers every open one for a single call.
+    states: dict[str, tuple[float, dict[str, object]]] = {}
+    states_lock = threading.Lock()
+
+    def _reference_states(index: Index) -> tuple[dict[str, dict[str, object]], bool]:
+        """What GitHub says about every reference the plan cites, within a budget.
+
+        **Sixty an hour is the budget this is written against**, which is what a
+        deployment gets for a public repository the App is not installed on —
+        and it should not be: installing it there hands this server push access
+        to that repository's code. So:
+
+        * A cited reference that is in its repository's open list is open, for
+          no call of its own. The list is the one the completion already asks
+          for, read here at fifteen minutes rather than five.
+        * Anything else is asked about once, `/issues/N`, and a closed answer is
+          kept for six hours. Only an open one outside the hundred most recently
+          touched is asked about again, at the open list's age.
+        * At most `STATE_LOOKUPS` of those per request, and none once GitHub
+          says fewer than `STATE_RESERVE` calls are left, so the first page
+          after a cold start does not spend the hour the completion needs. What
+          is not resolved yet is reported as `pending` and asked about by the
+          next page that wants it.
+
+        Only the repositories the plan names. A reference to anywhere else is
+        not looked up at all, for the reason `/api/prs` takes no input.
+        """
+        from .github import reference_state
+
+        app_for = credentials if hasattr(credentials, "api_headers") else None
+        wanted = sorted(
+            {
+                ref
+                for record in index.plan.values()
+                for ref in record.prs
+                if _REF.fullmatch(ref) and ref.split("#")[0] in index.repositories
+            }
+        )
+        open_now = {
+            one["value"] for one in _live_pull_requests(index.repositories, STATE_OPEN_TTL)[0]
+        }
+        now = time.monotonic()
+        known: dict[str, dict[str, object]] = {}
+        pending = False
+        spent = 0
+        left: int | None = None
+        with states_lock:
+            for ref in wanted:
+                if ref in open_now:
+                    known[ref] = {"state": "open", "at": None}
+                    continue
+                until, said = states.get(ref, (-math.inf, {}))
+                if now < until:
+                    known[ref] = said
+                    continue
+                if spent >= STATE_LOOKUPS or (left is not None and left < STATE_RESERVE):
+                    pending = True
+                    continue
+                repository, number = ref.split("#")
+                spent += 1
+                try:
+                    said, left = reference_state(
+                        repository, int(number), app_for, github_transport
+                    )
+                except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError):
+                    _LOG.warning("could not read the state of %s", ref)
+                    pending = True
+                    continue
+                ttl = STATE_OPEN_TTL if said["state"] == "open" else STATE_CLOSED_TTL
+                states[ref] = (now + ttl, said)
+                known[ref] = said
+        return known, pending
+
+    @app.get("/api/pr-states")
+    def pr_states(request: Request) -> JSONResponse:
+        """Which records' pull requests have all landed, or all been dropped.
+
+        jcanton, 2026-11-11: mark a record done once its pull requests are
+        merged, shelved once they are all closed unmerged — and, asked whether
+        that should be automatic, "go with the suggested version". So this
+        writes nothing. It says which records disagree with what GitHub says,
+        and the page offers the change for a person to make: the table draws a
+        mark, the record page a button that fills Status and End date for Save.
+
+        Automatic was turned down for three reasons. It would make the server a
+        second writer of frontmatter, which `AGENTS.md` keeps to `derived/` so
+        that people and a bot never fight over one file. A pull request closed
+        unmerged is far more often replaced than abandoned. And `done` asks for
+        an `end_date`, which an automatic write would have to make up.
+
+        `{"records": {id: {"verdict": "landed" | "dropped", "count", "at"}},
+        "pending"}`, and only for a record whose status says otherwise: one with
+        no references, or with any still open, or with any not yet known, is
+        left out. "Landed" wins over "dropped" — a pull request closed and
+        replaced by one that merged is the ordinary case, and the work landed.
+
+        Takes no input, and is for signed-in writers, for the reasons `/api/prs`
+        gives.
+        """
+        if not may_write(request):
+            raise HTTPException(403, "sign in to read where the pull requests stand")
+        _, index = index_now()
+        known, pending = _reference_states(index)
+        verdicts: dict[str, dict[str, object]] = {}
+        for record_id, record in index.plan.items():
+            if record.status not in STATUS_ORDER or record.status in ("done", "shelved"):
+                continue
+            refs = [
+                ref
+                for ref in record.prs
+                if _REF.fullmatch(ref) and ref.split("#")[0] in index.repositories
+            ]
+            said = [known.get(ref) for ref in refs]
+            if not refs or any(one is None or one["state"] == "open" for one in said):
+                continue
+            landed = [one for one in said if one and one["state"] == "landed"]
+            closing = landed or said
+            dates = sorted(str(one["at"]) for one in closing if one and one["at"])
+            verdicts[record_id] = {
+                "verdict": "landed" if landed else "dropped",
+                "count": len(refs),
+                "at": dates[-1] if dates else None,
+            }
+        return JSONResponse({"records": verdicts, "pending": pending})
 
     # Two paths, one answer, because `/healthz` is not ours on Cloud Run.
     #
@@ -2965,6 +3573,7 @@ def create_app(
         # type to be wrong. It used to be written through to the file.
         _reject_undeclared_fields(fields, RECORD_FIELDS, "a record")
         _reject_bad_types(fields)
+        _reject_a_new_kind(record_id, fields)
         # `parse_text` below deliberately takes any word — a file that arrived
         # in git with one must still load — so without this the PATCH door
         # committed a status nobody defined, and the plan woke up with a
@@ -3078,6 +3687,14 @@ def create_app(
             raise HTTPException(422, f"{record_id} is already {_an(kind)}")
 
         base = _base_in(store, payload)
+        # The target is written, so it passes the same kind gate a create does,
+        # and at the same commit: HEAD, which is what the new record lands on.
+        # It was asked at `base`, and a base is whatever sha the caller sends —
+        # a tab drawn before `kinds: [note]` was committed still offers Issue on
+        # its chip, and `write_all` compares only the paths it writes, never the
+        # config, so that tab's rekind committed an issue into a plan with none.
+        if (refused := kind_refusal(kind, _config_at(store, store.head())[0])) is not None:
+            raise HTTPException(422, refused)
         path = _path_for(store, base, record_id)
         if path is None:
             raise HTTPException(404, f"no record {record_id!r}")
@@ -3304,6 +3921,7 @@ def create_app(
                     f"{record_id} is claimed by two files. Resolve it in git and reload — "
                     "a save here would edit a record that is not the one you were shown.",
                 )
+            _reject_a_new_kind(record_id, fields)
             _reject_bad_status(_kind_for(record_id), fields)
             content = _patched(store.read(base, path), fields, None, path)
             try:
@@ -3939,6 +4557,13 @@ def create_app(
         record_id = mint_id(kind)
         commit = store.head()
         config, _ = _config_at(store, commit)
+        # A kind the plan has turned off, refused by name and not left to the
+        # validator: `validate_all` says so as a WARNING — a file of that kind
+        # that is already there still loads — and this route filters to
+        # blockers, so the issue would have been created with a 201. The
+        # sentence is `openproj new`'s, word for word, off the same function.
+        if (refused := kind_refusal(kind, config)) is not None:
+            raise HTTPException(422, refused)
         content = patch_text(
             "---\n---\n",
             in_model_order(
@@ -4058,7 +4683,14 @@ def create_app(
             finally:
                 watchers.discard(queue)
 
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        # `X-Accel-Buffering: no` is nginx's own switch for this one response.
+        # Behind an nginx that buffers what it proxies — a Synology's reverse
+        # proxy does, and offers no setting to stop it — every frame sat in the
+        # buffer until 4 KB of keepalives had piled up behind it, so a save in one
+        # tab reached the next minutes late. Cloud Run's frontend ignores it.
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"}
+        )
 
     # -- co-editing ---------------------------------------------------------
     #
@@ -4381,8 +5013,7 @@ def create_app(
                 # in the author field, so `git log --format='%an'` is unchanged
                 # and `git shortlog` sees both halves.
                 trailers = "\n".join(
-                    f"Co-authored-by: {login} <{login}@users.noreply.github.com>"
-                    for login in others
+                    f"Co-authored-by: {login} <{store.address(login)}>" for login in others
                 )
                 message = f"{message}\n\n{trailers}"
             # Inside the try, which is the whole of this change: the write is
@@ -4553,7 +5184,10 @@ def create_app(
             # merely dropped, and the sentence is how it does.
             refused, path = error, None
         if path is None:
-            await _refuse_socket(socket, refused, record_id)
+            said = ""
+            if auth == "tailscale" and refused is not None and refused.status_code == 403:
+                said = refused.detail
+            await _refuse_socket(socket, refused, record_id, said)
             return
 
         await socket.accept()
@@ -4766,7 +5400,9 @@ def create_app(
                         _reject_bad_types(fields)
                         # The room writes through the same gate as PATCH — the
                         # comment on `writer` above says exactly that — so the
-                        # vocabulary stands here too.
+                        # vocabulary stands here too, and so does the kind, or
+                        # the socket would be the way round Change kind.
+                        _reject_a_new_kind(record_id, fields)
                         _reject_bad_status(_kind_for(record_id), fields)
                     except HTTPException as refused:
                         _to(connection, {"t": "refused", "why": refused.detail})
@@ -4823,20 +5459,95 @@ def create_app(
         it: "not a member" is only useful when it says of what.
         """
         who = viewer(request)
+        if auth == "tailscale":
+            # Its own shape, because the corner has to draw something different:
+            # no Sign in, since there is nothing to sign in to, and no Sign out,
+            # since only leaving the tailnet does that. A reader the tailnet did
+            # not name is told why they may only read, in the tailnet's words.
+            seen = tailnet.seen_in(request.scope)
+            if who is None:
+                return JSONResponse({"auth": "tailscale", "refusal": seen.refusal})
+            return JSONResponse(
+                {"auth": "tailscale", "login": who.login, "member": True, **choosing(seen.login)}
+            )
         if who is None:
             return JSONResponse({"org": org})
         return JSONResponse({"login": who.login, "member": who.member, "org": org})
 
+    def choosing(device: str) -> dict:
+        """What the corner needs to offer a choice of name: who the tailnet says
+        this device is, and everybody it may write as instead. Nothing when the
+        list has one name on it, because a menu of one is not a choice."""
+        logins = sorted(tailscale.users.values()) if tailscale is not None else []
+        return {"device": device, "choices": logins} if len(logins) > 1 else {}
+
+    @app.post("/api/as")
+    async def act_as(request: Request) -> JSONResponse:
+        """Write as somebody else on the list, from this browser, until changed.
+
+        Tailscale only: everywhere else the session already is the person, and
+        a second way of naming them is a second thing to keep true. Choosing the
+        device's own login clears the cookie rather than storing it, so a device
+        whose owner changes on the list follows the list.
+        """
+        if tailscale is None:
+            raise HTTPException(404, "choosing who to write as is a Tailscale server's control")
+        seen = tailnet.seen_in(request.scope)
+        if not seen.login:
+            raise HTTPException(403, seen.refusal)
+        payload = await _sent(request)
+        extra = sorted(set(payload) - {"login"})
+        if extra:
+            raise HTTPException(
+                422, f"this request carries a login and nothing else, not {', '.join(extra)}"
+            )
+        login = payload.get("login")
+        if not isinstance(login, str) or login not in tailscale.users.values():
+            raise HTTPException(
+                422,
+                f"{login!r} is not on this server's list of who may write "
+                "(OPENPROJ_TAILSCALE_USERS)",
+            )
+        response = JSONResponse(
+            {"auth": "tailscale", "login": login, "member": True, **choosing(seen.login)}
+        )
+        if login == seen.login:
+            response.delete_cookie(
+                AS_COOKIE, path="/", secure=secure_for(request), httponly=True, samesite="lax"
+            )
+        else:
+            response.set_cookie(
+                AS_COOKIE,
+                login,
+                max_age=AS_SECONDS,
+                path="/",
+                secure=secure_for(request),
+                httponly=True,
+                samesite="lax",
+            )
+        return response
+
     @app.get("/login")
-    def login(request: Request) -> RedirectResponse:
+    def login(request: Request, next: str = "/") -> RedirectResponse:
         state = secrets.token_urlsafe(32)
         redirect_uri = str(request.url_for("callback"))
         response = RedirectResponse(login_url(client_id, redirect_uri, state))
         # SameSite=Lax, not Strict: the callback is a top-level cross-site GET, and
         # Strict would drop this cookie so every login would fail state validation.
         response.set_cookie(
-            STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax", path="/"
+            STATE_COOKIE, state, max_age=STATE_SECONDS, httponly=True, samesite="lax", path="/"
         )
+        # Back to the page the sign-in started from rather than to `/`, which is
+        # where both of the Edge sign-ins on 2026-10-12 landed before their reader
+        # clicked their way back to the pitch they had been on. Anything that is
+        # not one of this server's own paths is dropped rather than refused: the
+        # sign-in is still wanted, only the destination was not ours to give.
+        if _NEXT_PATTERN.match(next):
+            response.set_cookie(
+                NEXT_COOKIE, next, max_age=STATE_SECONDS, httponly=True, samesite="lax", path="/"
+            )
+        else:
+            response.delete_cookie(NEXT_COOKIE, path="/")
         return response
 
     @app.get("/auth/callback", name="callback")
@@ -4853,11 +5564,24 @@ def create_app(
         # that is broken. `OAuthError` already carries GitHub's own wording.
         denied = request.query_params.get("error")
         if denied:
-            raise HTTPException(
-                400,
-                f"GitHub did not authorise this sign-in ({denied}): "
-                + request.query_params.get("error_description", "no description given"),
+            refusal = JSONResponse(
+                {
+                    "detail": f"GitHub did not authorise this sign-in ({denied}): "
+                    + request.query_params.get("error_description", "no description given")
+                },
+                status_code=400,
             )
+            # A browser that turned the sign-in down keeps its old cookie otherwise,
+            # and an old cookie is what sends a page round GitHub again — so saying
+            # no to a renewal would be asked again ten minutes later, for ever.
+            refusal.delete_cookie(
+                session_name(request),
+                path="/",
+                secure=secure_for(request),
+                httponly=True,
+                samesite="lax",
+            )
+            return refusal
 
         async with httpx.AsyncClient() as client:
             try:
@@ -4869,17 +5593,24 @@ def create_app(
                 raise HTTPException(400, str(exc)) from exc
         # The token established who they are and is now dropped: it is never
         # written to the session and never used to push.
-        response = RedirectResponse("/", status_code=303)
+        back_to = request.cookies.get(NEXT_COOKIE, "/")
+        response = RedirectResponse(
+            back_to if _NEXT_PATTERN.match(back_to) else "/", status_code=303
+        )
+        # `COOKIE_SECONDS` and not the session's own day: how long the browser
+        # keeps the cookie and how long the signature is good for are two
+        # numbers, and `auth.py` says why they differ.
         response.set_cookie(
             session_name(request),
             sign_session(user, secret),
-            max_age=86400,
+            max_age=COOKIE_SECONDS,
             httponly=True,
             secure=secure_for(request),
             samesite="lax",
             path="/",
         )
         response.delete_cookie(STATE_COOKIE, path="/")
+        response.delete_cookie(NEXT_COOKIE, path="/")
         return response
 
     @app.post("/logout")

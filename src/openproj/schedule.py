@@ -11,10 +11,10 @@ that looks plausible and is wrong:
   availability. Three names on a six-week bet is two elapsed weeks, and one
   person at 60% takes a three-week bet five weeks. (D-C4, 2026-08-16. This
   reverses D1, which said a size was already elapsed weeks and must never be
-  divided; D1 was wrong about how the team estimates, and with a single assignee
+  divided; D1 was wrong about how the team estimates, and with a single developer
   at full availability the two readings agree, which is why it went unnoticed.)
 * Only leaves consume a worker's capacity. A parent's span is a rollup of work its
-  children already booked; booking the parent too double-books its owner.
+  children already booked; booking the parent too double-books its developers.
 
 A size is the one input with no substitute. There is no default appetite, so a
 record nobody has sized is not scheduled at all — no span, exactly as a childless
@@ -204,14 +204,25 @@ def _first_working_day(day: date, config: Config) -> date:
 def _working_days(weeks: float) -> int:
     """Whole working days in `weeks`.
 
-    Rounded to six decimals first: 1.2 * 5 is 6.000000000000001 in binary
-    floating point, and a naive ceil would buy a seventh day. Bounded before the
-    ceil, because `math.ceil` raises on infinity: `person_weeks: Infinity` is
-    valid JSON to Python's parser and one PATCH away, and it raised here —
-    inside `_runs_past_the_calendar`, so the guard was the thing that fell over
-    and every page 500'd on a value already committed.
+    Bounded first, because `math.ceil` raises on infinity: `person_weeks:
+    Infinity` is valid JSON to Python's parser and one PATCH away, and it raised
+    here — inside `_runs_past_the_calendar`, so the guard was the thing that fell
+    over and every page 500'd on a value already committed.
+
+    Then rounded to six decimals: 1.2 * 5 is 6.000000000000001 in binary floating
+    point, and a naive ceil would buy a seventh day.
+
+    That order is the fix and not a tidy-up. This line used to round before it
+    bounded, and it survived on an accident of the builtin: two-argument
+    `round(inf, 6)` returns `inf`, where one-argument `round(inf)` raises. So the
+    only thing standing between a committed `.inf` and nine 500ing routes was the
+    `, 6` — an argument that is here for a floating-point artefact and reads like
+    it, and which the next person to tidy this expression deletes. Bounded first,
+    the ceil is handed a finite number no matter what the plan file says, which
+    is what `days_after` and `within_the_calendar` (`model.py`) already promise
+    and what this file's own commits claim twice.
     """
-    return max(1, math.ceil(within_the_calendar(round(weeks * _WORKING_DAYS_PER_WEEK, 6))))
+    return max(1, math.ceil(round(within_the_calendar(weeks * _WORKING_DAYS_PER_WEEK), 6)))
 
 
 def _budget_weeks(duration: float | None) -> float | None:
@@ -317,7 +328,7 @@ def _occupied_weeks(intervals: list[tuple[date, date]], config: Config) -> float
     unsized record, and a finished one written before the end date existed — so
     it drops out of the arithmetic rather than being subtracted from it.
 
-    **Merged and not summed, which is what keeps shared assignees right.** Two
+    **Merged and not summed, which is what keeps shared developers right.** Two
     tasks on one person serialise — `_place` books workers, so a contended person
     queues behind themselves — and their intervals abut, so the union is their
     sum and a bet that does not fit still says so. The same two tasks on two
@@ -435,7 +446,7 @@ def _staffed_at(record: Record, config: Config, by_id: dict[str, Record]) -> flo
     infinity is not a useful forecast for unowned work.
     """
     rates = [_availability_of(who, record, config, by_id) for who in workers_on(record)]
-    return sum(rates) or config.nominal_availability or 1.0
+    return sum(rates) or config.nominal()
 
 
 def _availability_of(who: str, record: Record, config: Config, by_id: dict[str, Record]) -> float:
@@ -454,10 +465,22 @@ def _availability_of(who: str, record: Record, config: Config, by_id: dict[str, 
     # The cycle of the BET, so a task reads the rates of the cycle its pitch was
     # bet into. A task carries no cycle of its own any more, and falling back to
     # nominal here would have quietly undone every per-person rate on the page.
+    # `Cycle.rate` and not a second reading of the same dict: it is the one place
+    # a typed availability becomes a number, and it is where `.inf` and `.nan`
+    # are turned back into the nominal rate. Written out again here, this branch
+    # would be the copy without the guard — which is how the scheduler came to
+    # print "inf full-time between them" under a pitch whose cycle held one.
     number = cycle_of(record, by_id)
     plan = config.plans.get(number) if number is not None else None
-    stated = plan.availability.get(who) if plan else None
-    return stated if stated else config.nominal_availability or 1.0
+    if plan is not None:
+        # `or` on top of `Cycle.rate`, which answers a stated zero as zero: on
+        # the cycle page that is a real rate somebody typed, and here it is the
+        # divisor of `size / staffed_at`. "A rate of zero reads the same way
+        # rather than as a bet nobody can ever finish" is the line this had, and
+        # it stays where it belongs rather than being pushed down into a method
+        # the roster also calls.
+        return plan.rate(who, config.nominal()) or config.nominal()
+    return config.nominal()
 
 
 class Overrun(NamedTuple):
@@ -880,7 +903,7 @@ def schedule(
         # every live child got one; with no default appetite they are not, and a
         # pitch whose children are ALL unsized had an empty `kids` and fell
         # straight through to the leaf path below. It was then placed like a leaf:
-        # it booked its own assignees against a duration derived from its own
+        # it booked its own developers against a duration derived from its own
         # appetite, which double-books whoever owns it the moment one of those
         # children is sized — the second invariant in this module's docstring —
         # while `Index._charged` skips it as a rollup and charges nobody, and

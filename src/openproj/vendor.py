@@ -101,10 +101,39 @@ def _library(name: str) -> Markup:
 
 
 @cache
-def _ace() -> Markup:
-    """Ace and its vim keymap, as the two classic scripts they already are.
+def _notice(name: str, banner: str) -> str:
+    """A licence file in `static/`, as the comment that goes ahead of the bytes.
 
-    594,306 B, inlined only when the address asked for them, and every part of
+    Two libraries here arrive with their notice stripped by upstream's minifier —
+    Ace's BSD block and `vanillajs-datepicker`'s MIT one — and both are inlined
+    into pages this app renders. Every rendered page is a copy, which is the
+    reading Inter's OFL notice already gets in the `@font-face` block, so the
+    notice has to travel in the page and not only in the repository.
+
+    One function rather than the same two lines in two modules: the guard below
+    is the whole reason this is not an f-string at each call site.
+    """
+    notice = _inline(name)
+    # `*/` cannot appear in either licence and does not, but a licence is exactly
+    # the kind of file somebody edits, and a stray one would end the comment and
+    # leave the rest of the text as code.
+    if "*/" in notice:
+        raise ValueError(f"static/{name} would end the comment it is written into")
+    return f"/* {banner}\n\n{notice}*/\n"
+
+
+# Ace, its vim keymap and the three fence languages, in the order they are
+# inlined — one list, which the page, the checksum test and the page-size tests
+# all read, so a file added to one is added to all of them.
+ACE_FILES = ("ace.js", "keybinding-vim.js", "mode-python.js", "mode-sh.js", "mode-yaml.js")
+
+
+@cache
+def _ace() -> Markup:
+    """Ace, its vim keymap and three fence languages, as the classic scripts they
+    already are.
+
+    616,932 B, inlined only when the address asked for them, and every part of
     that sentence is load-bearing.
 
     **Why they are here at all.** Ask 6 of the seven is a vim keymap, and it is
@@ -153,17 +182,13 @@ def _ace() -> Markup:
     # inlines them and says nothing has redistributed the software without the
     # notice BSD-3 clause 2 asks for. Read from the file rather than typed here,
     # so a re-vendoring that changes the licence changes this too.
-    notice = _inline("ace-LICENSE.txt")
-    # `*/` cannot appear in it and does not, but a licence is exactly the kind of
-    # file somebody edits, and a stray one would end the comment and leave the
-    # rest of the text as code.
-    if "*/" in notice:
-        raise ValueError("static/ace-LICENSE.txt would end the comment it is written into")
+    #
+    # The three modes after the keymap, for the fences' highlight rules and nothing
+    # else — `markdownMode` in `render/editor.py` `require`s them, and `VENDOR.md`
+    # records why these three and why not `mode-markdown.js`.
     return Markup(
-        f"/* Ace 1.44.0 (ace.js and keybinding-vim.js), BSD-3-Clause.\n\n{notice}*/\n"
-        + _inline("ace.js")
-        + "\n"
-        + _inline("keybinding-vim.js")
+        _notice("ace-LICENSE.txt", f"Ace 1.44.0 ({', '.join(ACE_FILES)}), BSD-3-Clause.")
+        + "\n".join(_inline(name) for name in ACE_FILES)
     )
 
 

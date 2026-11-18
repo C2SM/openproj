@@ -110,9 +110,18 @@ punctuation, or of so much punctuation that fewer than three letters are left of
 `field:value` narrows to one field — `owner:jackdawrie`, `tag:gpu`, `status:ready`, `cycle:37`. A
 field is still matched whole, so `cycle:3` answers nothing at all rather than standing for every
 cycle whose number starts with a 3, and `status:done` is not a way of asking for every status with
-"done" in it; `title:` and `pr:` are the two that look inside. Two terms beside each other mean
-both; `or`, `not` and brackets are there when you want them. One thing to know about `not`: it
-takes away whatever its word finds, and its word now finds a little more than the letters you
+"done" in it; `title:`, `pr:` and the three below are the ones that look inside.
+
+`product:`, `project:` and `pitch:` ask about an ancestor rather than about the record in front of
+you, so each returns the record named and everything filed under it, however deep:
+`project:warm_bubble` is the project, its pitches and their tasks, and `pitch:reproducibility` is
+that bet and the work under it. Either name works — the title, as the menu above the box draws it,
+or the id it submits. A bare word never does this: `warm_bubble` on its own finds the project
+record and nothing else, which is how you ask for the one rather than the hundred.
+
+Two terms beside each other mean both; `or`, `not` and brackets are there when you want them. One
+thing to know about `not`: it takes away whatever its word finds, and its word finds a little more
+than the letters you
 typed, so `not smcl` hides a little more too. A query the box cannot read matches nothing and says
 why, under the box, while you type the rest of it.
 
@@ -122,6 +131,10 @@ why, under the box, while you type the rest of it.
 comments that never render: Problem, Appetite, Solution, Rabbit holes, No-gos, For later. Those are
 the headings of a pitch note in a wiki, kept as the team it was tailored for already wrote them, so
 a pitch drafted in either place is the same document.
+
+The **Template** button on the editor's toolbar, beside undo and redo, offers every kind's template
+on any record. Over an empty body, or one that is still a template, it replaces it; over anything
+you have written it goes on the end, and one undo takes it back out.
 
 Write prose; nothing validates it. Three headings are read rather than judged:
 
@@ -148,7 +161,7 @@ save and by `openproj check`.
 | ------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `thinking`    | nobody has looked at this yet, and it is where a new record opens | nothing                                                                |
 | `shaping`     | an idea nobody has bet on                                         | nothing — it has no owner and no size by definition                    |
-| `ready`       | shaped, and bettable                                              | an owner, somebody assigned, a reviewer or `review_waived`, and a size |
+| `ready`       | shaped, and bettable                                              | an owner, a developer, a reviewer or `review_waived`, and a size |
 | `in_progress` | being built                                                       | `start_date`, a size, and a reviewer who is not the owner              |
 | `done`        | finished                                                          | at least one PR, and `end_date` — the day it finished                  |
 | `shelved`     | parked                                                            | nothing — parked work is not broken work                               |
@@ -181,6 +194,7 @@ in the same commit that marks the source. **Delete** asks first.
 
 The button beside the image button opens a drawing canvas; what you draw is saved as a PNG in the
 plan repository and referenced from the body, so a sketch on a pitch is versioned with the pitch.
+Save keeps the canvas open, so you can save as you go; Close takes you back to the record.
 You can drop or paste a picture straight into the canvas and draw on top of it — a photograph is
 scaled down to 1440px on the way in, so one fits comfortably inside the 2 MB a drawing may weigh.
 Three or four full-size pictures in the same drawing will not, and the Save button says so and
@@ -215,7 +229,10 @@ openproj serve --repo plan.git --auth dev
 
 `--auth dev` skips sign-in and is for a local run only. `--auth github` is the other, and it refuses
 to start without an org — `--org`, or `OPENPROJ_ORG` — because membership of that org is the whole
-of the write gate and there is no default that could stand in for it. A deployment is described in
+of the write gate and there is no default that could stand in for it. On a server inside a tailnet,
+`--auth tailscale` asks nobody to sign in at all: the tailnet says whose device you are on, and
+`OPENPROJ_TAILSCALE_USERS` says which plan login that is. There is no default among the three —
+`serve` refuses to start until one is named, by the flag or by `OPENPROJ_AUTH`. A deployment is described in
 the plan repository, not here: `deploy/RUNBOOK.md` in the tool's repository is the walk-through.
 To see the tool with no plan to point it at,
 `openproj demo` serves a bundled corpus offline, in a temporary directory it builds for itself.

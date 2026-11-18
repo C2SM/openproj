@@ -19,8 +19,10 @@ from mdit_py_plugins.attrs import attrs_plugin
 from mdit_py_plugins.dollarmath import dollarmath_plugin
 from mdit_py_plugins.tasklists import tasklists_plugin
 from pygments import highlight
+from pygments.filter import Filter
 from pygments.lexer import Lexer
 from pygments.lexers import get_lexer_by_name
+from pygments.token import Name
 from pygments.util import ClassNotFound
 
 from ..model import ID_PATTERN, Record, without_comments
@@ -72,6 +74,58 @@ def _with_unit(value: str) -> str:
     return value + "%" if value.isdigit() else value
 
 
+# A CapWords name, which has a lower-case letter somewhere, and an ALL_CAPS one,
+# which has none: the two patterns tree-sitter's own Python query uses for a type
+# and a constant, because the language itself says neither.
+_TYPE_NAME = re.compile(r"[A-Z]\w*[a-z]\w*")
+_CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+class _PythonShapes(Filter):
+    """What a Python name is, where Pygments calls every one of them `Name`.
+
+    jcanton, 2026-09-24, beside the same record in LazyVim: in the preview only
+    the keywords and the strings had colour, and `Annotated`, `EdgeKField`,
+    `quantity(` and `units=` were all the body ink. Pygments' lexer is a lexer and
+    knows no more than the characters; tree-sitter, which LazyVim draws with,
+    parses, and then still reaches for a regular expression to tell a type from a
+    variable. So the stream is read with one token either side, and a plain
+    `Name` becomes:
+
+    * a keyword argument — after `(` or `,` and before a lone `=`;
+    * a type — CapWords; and a constant — ALL_CAPS;
+    * a call — before `(`.
+
+    Each lands on a branch `_CODE_COLOURS` already colours, so nothing new is
+    asked of a scheme. A bare variable stays ink, which is the argument
+    `_CODE_COLOURS` makes for leaving `Name` out. The editor draws the same four
+    shapes by the same patterns (`markdownMode`, `render/editor.py`), so the two
+    panes of the split agree about a word.
+    """
+
+    def filter(self, lexer, stream):
+        tokens = list(stream)
+        solid = [at for at, (_, value) in enumerate(tokens) if value.strip()]
+        before = {here: tokens[there][1] for there, here in zip(solid, solid[1:], strict=False)}
+        after = {here: tokens[there][1] for here, there in zip(solid, solid[1:], strict=False)}
+        for at, (kind, value) in enumerate(tokens):
+            if kind is Name:
+                kind = _shape_of(value, before.get(at, ""), after.get(at, ""))
+            yield kind, value
+
+
+def _shape_of(name: str, before: str, after: str):
+    if after == "=" and before in ("(", ","):
+        return Name.Variable
+    if _TYPE_NAME.fullmatch(name):
+        return Name.Class
+    if _CONSTANT_NAME.fullmatch(name):
+        return Name.Constant
+    if after == "(":
+        return Name.Function
+    return Name
+
+
 @lru_cache(maxsize=64)
 def _lexer_for(language: str) -> Lexer | None:
     """The lexer for an info string's first word, or None if there is not one.
@@ -86,9 +140,12 @@ def _lexer_for(language: str) -> Lexer | None:
     registry of aliases on a miss.
     """
     try:
-        return get_lexer_by_name(language, stripnl=False)
+        lexer = get_lexer_by_name(language, stripnl=False)
     except ClassNotFound:
         return None
+    if "python" in lexer.aliases:
+        lexer.add_filter(_PythonShapes())
+    return lexer
 
 
 def _highlighted(code: str, language: str, attrs: str) -> str:
@@ -235,8 +292,11 @@ def _math_double(
 
 
 _MD = (
-    MarkdownIt("commonmark", {"html": False, "highlight": _highlighted})
-    .enable(["table", "strikethrough"])
+    MarkdownIt("commonmark", {"html": False, "highlight": _highlighted, "linkify": True})
+    # `linkify`, so a URL pasted bare into a body is a link and not a line of
+    # text somebody has to copy into the address bar — which is how pitches
+    # migrated from HackMD were written, and how GitHub draws them.
+    .enable(["table", "strikethrough", "linkify"])
     .use(tasklists_plugin)
     # `![The driver](assets/0123….png){width=60%}` — jcanton, 2026-08-25, asking
     # for figures that can be sized and stood side by side, on a slide and in a
@@ -345,19 +405,40 @@ def _source_lines(state: StateCore) -> None:
     adds a block. Written as an attribute on the token rather than into a string,
     so it leaves through the same escaper as every other attribute.
 
-    `token.level == 0`, so only the blocks a reader scrolls past are marked. Every
-    paragraph inside every list item would be stamped too, which is bytes on every
-    page for a resolution nothing wants: what a scroll position interpolates
-    between is top-level blocks.
+    **Every block that begins a source line of its own, at any depth.** This was
+    `token.level == 0` — top-level blocks only, on the argument that nothing wants
+    a finer resolution than that — and a shaping document is exactly what wants
+    it. A nine-point `## Problems` list is ONE top-level block, so the scroll
+    sync interpolated across all nine points by line number, while the points
+    themselves wrap to different heights on the two sides: a point that is four
+    rows in the source can be two in the preview. Measured on jcanton's real
+    record at 1675x1400, with the source scrolled into that list, the heading
+    under it sat up to 163px lower in the preview than in the source.
+
+    A block whose first line is its parent's first line is left alone — the
+    paragraph inside a list item, the first item of a list, the first row of a
+    table body — because the parent already carries that line, starts at the same
+    pixel, and a second stamp would be bytes on the page for no point the sync
+    could use. Everything else is a point: each further item, a nested list, a
+    second paragraph, a fence inside an item, each table row.
 
     `map` is [start, end) and zero-based; both numbers here are one-based and
     inclusive, because that is what the editing surface counts in and a second
     convention is a second place to be off by one.
     """
+    # The first line of each block open around the current token, innermost last.
+    # A block with no map of its own (a table cell) stands on its parent's.
+    opened: list[int] = []
     for token in state.tokens:
-        if token.level == 0 and token.nesting >= 0 and token.map:
+        if token.nesting < 0:
+            opened.pop()
+            continue
+        begins = token.map[0] if token.map else (opened[-1] if opened else 0)
+        if token.map and token.type != "inline" and (not opened or begins != opened[-1]):
             token.attrSet("data-startline", str(token.map[0] + 1))
             token.attrSet("data-endline", str(token.map[1]))
+        if token.nesting > 0:
+            opened.append(begins)
 
 
 def _pr_refs(state: StateCore) -> None:
@@ -511,14 +592,19 @@ def _fence(
     since it was written and the Help page drew it as five lines of ASCII-ish
     source.
 
-    **The prefix decides, exactly as it does for `_image` and `_link`.** The
-    bundle is 3.5 MB and is fetched from `/static/mermaid.min.js` rather than
-    inlined (see `static/VENDOR.md`), so a diagram needs a server to ask. The
-    static export has none — its pages are opened over `file://` — and a `<pre>`
-    that sits there empty for ever, or a console full of failed fetches, is worse
-    than the source it replaced. So an exported page keeps the ordinary code
-    block it has always had, and `openproj render` writes the same bytes it did
-    before this rule existed.
+    **Whether a server is behind the page decides — `Links.served`, and not any
+    one link's prefix.** This read `links.table` once, by analogy with `_image` and
+    `_link`, which take a prefix from `links.repo` and `links.record`. For them a
+    prefix only says where a path points; as a mode it was wrong, because a plan
+    that switches its Table off blanks `links.table`, and that would have turned
+    every diagram on a served page back into source. The bundle is 3.5 MB and is
+    fetched from `/static/mermaid.min.js` rather than inlined (see
+    `static/VENDOR.md`), so a diagram needs a server to ask. The static export
+    has none — its pages are opened over `file://` — and a `<pre>` that sits
+    there empty for ever, or a console full of failed fetches, is worse than the
+    source it replaced. So an exported page keeps the ordinary code block it has
+    always had, and `openproj render` writes the same bytes it did before this
+    rule existed.
 
     **The content is escaped by `Markup(...).format`, exactly as it would be in a
     code block.** A mermaid fence in a shaping document is text a member typed,
@@ -531,7 +617,7 @@ def _fence(
     # ` ```mermaid ` and ` ```mermaid something ` are both mermaid, and
     # ` ```mermaidish ` is not.
     language = token.info.strip().split(maxsplit=1)[:1]
-    served = env.get("links", STATIC).table.startswith("/")
+    served = env.get("links", STATIC).served
     if language == ["mermaid"] and served:
         # `<pre>` and not `<div>`: until mermaid has run — and for ever if the
         # bundle never arrives — this element is showing source, and source in a
@@ -668,6 +754,12 @@ def _heading_ids(state: StateCore) -> None:
         found.append({"level": level, "id": identifier, "text": text})
 
 
+# Only a URL that spells its scheme. linkify-it's default also guesses at bare
+# domains, and in a plan about Python code `model.py` is a domain in Paraguay: it
+# was drawn as a link to `http://model.py`. `www.…` is the casualty, and is one
+# `https://` away from working. Email is off for the same reason — a guess about
+# what a person meant is a link nobody asked for.
+_MD.linkify.set({"fuzzy_link": False, "fuzzy_email": False})
 _MD.core.ruler.push("openproj_source_lines", _source_lines)
 _MD.core.ruler.push("openproj_pr_refs", _pr_refs)
 _MD.core.ruler.push("openproj_heading_ids", _heading_ids)

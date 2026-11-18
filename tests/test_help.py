@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from datetime import date
 from html.parser import HTMLParser
+from itertools import takewhile
 from pathlib import Path
 
 import pytest
@@ -200,12 +201,108 @@ def test_the_documents_own_title_line_is_not_drawn_twice(page: str):
 
 def test_the_page_is_the_same_in_both_modes(page: str, index: Index):
     """The one view that renders identically served and exported: it is about the
-    tool and not about a plan, which is why it can be a nav item at all — a nav
+    tool and not about a plan, which is why every page's footer can link to it — a
     link into a file nobody wrote is a dead link on every other exported page.
     """
     exported = render_help(index, STATIC)
     assert parsed(exported).sections == parsed(page).sections
     assert 'class="unread"' not in exported
+
+
+def test_help_says_which_views_this_plan_has_only_when_it_has_fewer(
+    seed_root: Path, tmp_path: Path, page: str
+):
+    """The guide describes every view and every kind openproj has, and is not
+    filtered per plan. So a plan that lists fewer opens its Help with one sentence
+    saying what its nav has, where that was decided, and where each view it leaves
+    out still is — an unlisted view is one no page links to, so its address written
+    out here is how a reader finds it — and a plan that lists everything opens it
+    with nothing, since "this plan has everything" is one more line to read past.
+
+    Through the real resolver, from a `defaults.yaml` saying it, so the file the
+    sentence names is the one `read_config` read it from. The first row is
+    icon4py's, the deployment this was asked for, word for word. A nav item can be
+    missing because `views` left it out or because it lists a kind `kinds` left
+    out, and the sentence names the setting that did it.
+    """
+    import shutil
+
+    from pages import elements
+
+    from openproj.render import links_for
+
+    def scope(setting: str) -> tuple[list[str], list[str]]:
+        root = tmp_path / f"plan-{len(list(tmp_path.iterdir()))}"
+        shutil.copytree(seed_root, root)
+        defaults = root / "config" / "defaults.yaml"
+        defaults.write_text(defaults.read_text(encoding="utf-8") + setting, encoding="utf-8")
+        records, config, unreadable = load_repo(root)
+        index = build_index(records, config, date(2026, 8, 17), unreadable)
+        assert not index.unusable, index.unusable
+        found = elements(render_help(index, links_for(index.views, ROUTES)))
+        at = [n for n, one in enumerate(found) if "scope" in one.attrs.get("class", "")]
+        # The `<code>` spans inside the sentence and nowhere else. `elements()` is
+        # flat, in document order, and the sentence holds nothing but `<code>`, so
+        # its spans are the run of them straight after it — the page-wide list it
+        # used to be went red the day the guide below it mentioned `views` itself.
+        after = found[at[0] + 1 :] if at else []
+        inside = takewhile(lambda one: one.tag == "code", after)
+        return (
+            [found[n].text for n in at],
+            [one.text for one in inside if one.text in ("views", "kinds")],
+        )
+
+    # icon4py: notes are a kind it keeps, so the Notes list is unlisted like the
+    # Table, and still at its address; issues are not a kind it has at all.
+    assert scope("views: [cycles, graph, timeline]\nkinds: [note]\n") == (
+        [
+            "This plan's nav has Records, Cycles, Graph and Timeline. The guide below "
+            "describes every view openproj has; views in config/defaults.yaml leaves the "
+            "others out of the nav, and each still answers at its address: /table, /people "
+            "and /notes. Issues are turned off by kinds."
+        ],
+        ["views", "kinds"],
+    )
+    assert scope("views: []\n") == (
+        [
+            "This plan's nav has Records. The guide below describes every view openproj "
+            "has; views in config/defaults.yaml leaves the others out of the nav, and each "
+            "still answers at its address: /table, /graph, /timeline, /cycles, /people, "
+            "/issues and /notes."
+        ],
+        ["views"],
+    )
+    # `kinds` alone takes the lists of those kinds out of the nav, and the
+    # sentence says so by the key that did it: this plan never wrote `views`.
+    assert scope("kinds: []\n") == (
+        [
+            "Issues and notes are turned off for this plan by kinds in config/defaults.yaml. "
+            "The guide below describes every kind of record openproj has."
+        ],
+        ["kinds"],
+    )
+    assert scope("kinds: [note]\n") == (
+        [
+            "Issues are turned off for this plan by kinds in config/defaults.yaml. The "
+            "guide below describes every kind of record openproj has."
+        ],
+        ["kinds"],
+    )
+    assert scope("views: []\nkinds: []\n") == (
+        [
+            "This plan's nav has Records. The guide below describes every view openproj "
+            "has; views in config/defaults.yaml leaves the others out of the nav, and each "
+            "still answers at its address: /table, /graph, /timeline, /cycles and /people. "
+            "Issues and notes are turned off by kinds."
+        ],
+        ["views", "kinds"],
+    )
+    # Every view named, in another order: the nav moved, nothing is missing.
+    assert scope("views: [notes, issues, people, deck, cycles, timeline, graph, table]\n") == (
+        [],
+        [],
+    )
+    assert [one for one in elements(page) if "scope" in one.attrs.get("class", "")] == []
 
 
 def test_the_container_carries_the_documents():
@@ -260,6 +357,50 @@ def test_the_build_row_hides_a_fact_that_has_not_arrived(page: str):
     assert "Report issue" in page
     row = re.search(r"<footer id=\"build\">.*?</footer>", page, re.S)
     assert row and " · " not in row.group(0), "a separator was written into the markup"
+
+
+def test_the_build_row_draws_the_help_mark_around_the_word_and_not_its_separator(
+    page: str, index: Index, tmp_path: Path
+):
+    """Asked of Chrome, because every rule resolved as it was meant to and the
+    first screenshot of this page still read `openproj 0.64.0 [· Help] · Report
+    issue`, the dot inside the you-are-here box and drawn in its accent.
+
+    The row's separators are each child's own `::before`, and a `::before` is
+    inside the box of the element it belongs to, so a marked link that is a child
+    of the row draws its own separator inside its mark. As a flex item its padding
+    also made the row 31.5px tall here against 26.3 on every other page. The link
+    is inside a `<span>` now, and each reading below failed without it: the link
+    has no `::before` of its own, the element around it still has the dot, and the
+    row is the same height here as on a page that marks nothing in it.
+    """
+    from browser import chrome, measured_in
+
+    from openproj.render import render_table
+
+    script = """
+    const build = document.getElementById('build');
+    const help = [...build.querySelectorAll('a')].find(a => a.textContent.trim() === 'Help');
+    return {
+      marked: help.getAttribute('aria-current'),
+      own: getComputedStyle(help, '::before').content,
+      around: getComputedStyle(help.parentElement, '::before').content,
+      row: build.getBoundingClientRect().height,
+    };
+    """
+    browser = chrome()
+    here = measured_in(browser, page, tmp_path / "help.html", 1280, script, 800)
+    table = render_table(index, ROUTES)
+    elsewhere = measured_in(browser, table, tmp_path / "table.html", 1280, script, 800)
+
+    # The mark really is on this page and on no other, or nothing below is evidence.
+    assert here["marked"] == "page" and elsewhere["marked"] is None, (here, elsewhere)
+    assert here["own"] == "none", f"the separator is inside the mark: {here['own']}"
+    assert here["around"] == '"·"', f"the separator before Help is gone: {here['around']}"
+    assert abs(here["row"] - elsewhere["row"]) < 1, (
+        f"the row is {here['row']}px on the page that marks itself in it and "
+        f"{elsewhere['row']}px elsewhere"
+    )
 
 
 def test_the_banner_is_on_this_page_like_every_other(seed_root: Path):

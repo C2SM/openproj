@@ -27,11 +27,18 @@ from ..model import (
     workers_on,
 )
 from .cycles import _proposed
-from .env import _compiled
+from .env import PHONE, _compiled
 from .markdown import _drop_repeated_title, _inlined_assets, _markdown, _markdown_line, _pr_link
 from .shell import ROUTES, Links, _page
 from .styles import _DETAIL_STYLE
-from .tokens import PRIORITY_GLYPH, STATUS_GLYPH, TEMPLATES, _priority_class, _status_class
+from .tokens import (
+    PRIORITY_GLYPH,
+    STATUS_GLYPH,
+    TEMPLATES,
+    _percent,
+    _priority_class,
+    _status_class,
+)
 
 # --------------------------------------------------------------------------- #
 # The review deck
@@ -112,7 +119,8 @@ _ARTICLE = """
   <ul class="points">
     {% for point in s.points %}
     <li class="{{ 'ticked' if point.done else '' }}"><span class="box"
-      aria-hidden="true">{{ '\u2611' if point.done else '\u2610' }}</span>{{ point.text }}</li>
+      aria-hidden="true">{{ '\u2611' if point.done else '\u2610' }}</span><span
+      class="said">{{ point.text }}</span></li>
     {% endfor %}
   </ul>
   {% endif %}
@@ -140,7 +148,11 @@ _DECK = (
 {#- Screen furniture, and the first thing `@media print` takes away: a deck is
     printed to reach the people who were not in the room, and neither a back link
     nor a Present button is part of it. -#}
-<p class="back deckbar"><a href="{{ links.cycle }}{{ d.number }}">← cycle {{ d.number }}</a></p>
+{#- Asked, because the deck can be reached by its address in a plan that does not
+    list Cycles, and there `links.cycle` is blank: the cycle page answers too, but
+    an unlisted view is one nothing else links to (`render.opened`). -#}
+{% if links.cycle %}<p class="back deckbar"><a href="{{ links.cycle }}{{ d.number }}">← cycle {{
+  d.number }}</a></p>{% endif %}
 {#- The controls on a line of their own, under the way back — jcanton,
     2026-08-25: "I'd like the buttons for present a zoom to be on a newline,
     below <- cycle N". A back link and a verb are two different kinds of thing
@@ -210,7 +222,8 @@ _DECK = (
   <h2>Nothing is bet into cycle {{ d.number }}</h2>
   <p>A deck is one slide per piece of work in the cycle, and this cycle holds
      none yet. Bet something into it on
-     <a href="{{ links.cycle }}{{ d.number }}">the cycle {{ d.number }} page</a>
+     {% if links.cycle %}<a href="{{ links.cycle }}{{ d.number }}">the cycle {{ d.number
+     }} page</a>{% else %}the cycle {{ d.number }} page{% endif %}
      and it will have a slide here.</p>
 </article>
 {% endfor %}
@@ -315,6 +328,13 @@ _DECK_STYLE = """
 .slide a, .slide a:visited { color: var(--paper-link); }
 .slide .doc { border-top: 1px solid var(--paper-line); padding-top: 1rem; }
 .slide .doc code, .slide code { background: var(--paper-tint); }
+/* The same block ground as a record's, in the deck's paper colours. Both halves
+   are needed: `.doc pre` is (0,1,1) and would put the THEME's surface on a white
+   slide, and `.slide .doc code` above is (0,2,1), which outranks `.doc pre code`
+   at (0,1,2) — so without this the per-line tint the block rule exists to remove
+   would come back on a slide and nowhere else. */
+.slide .doc pre { background: var(--paper-tint); }
+.slide .doc pre code { background: none; }
 .slide .meter { background: var(--paper-line); }
 .slide .meter > span { background: var(--paper-link); }
 /* The status, as the word and not as the ladder. The five status fills are a
@@ -365,6 +385,13 @@ _DECK_STYLE = """
    reading it from the third row. */
 .slide .points li.ticked { color: var(--paper-muted); text-decoration: line-through; }
 .slide .points .box { flex: none; text-decoration: none; }
+/* The sentence in ONE box. Without it every text run and every `<code>` in a
+   point was a flex item of its own: none of them could wrap into the next, each
+   was pushed `.5rem` from its neighbour as though it were a separate column, and
+   on a phone's fluid slide "green on `embedded`" ran its last word 75px off the
+   sheet and was clipped. `min-width: 0` so the box may be narrower than its
+   longest word, which `.doc code`'s wrapping then breaks. */
+.slide .points .said { min-width: 0; }
 
 .slide .prs { list-style: none; margin: 0 0 1rem; padding: 0; font-size: 1.15rem; }
 .slide .prs li { margin: .2rem 0; }
@@ -567,6 +594,25 @@ _DECK_STYLE = """
 }
 .zoomer button:hover { color: var(--accent); }
 #zoomfit { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* `flex: none`, or a narrow column squeezes the four buttons below their own
+   text: measured on a phone, each was 26px wide and the readout's "100%" ran
+   out of its box and over the `+` beside it. */
+.zoomer button { flex: none; }
+/* **A phone reads the deck; it does not project it.** The fixed canvas is a
+   1280px slide scaled to the column, and a phone's column is about 350px: the
+   whole slide drawn at a quarter size, its text about 4px tall, beside a rail of
+   thumbnails smaller still. Nothing on it could be read. So on a phone the
+   script leaves the canvas off (see `READING`), and what is left is the fluid
+   slide every reader without JavaScript already gets — the record's own text at
+   the page's own size, one slide under the next. The rail, its handle and the
+   zoom go with the canvas: they navigate and scale a drawing that is not there.
+   Present still puts the canvas back, because a projector is a projector
+   whatever is driving it. The query is `env.PHONE`, joined in because this sheet
+   is inlined rather than rendered. */
+@media """ + PHONE + """ {
+  .rail, .railgrip, .zoomer { display: none; }
+  .slide { min-height: 0; padding: 1rem 1.1rem; }
+}
 .rail .slide { margin: 0; border: 0; border-radius: 3px; pointer-events: none; }
 /* Dropped from the deck: greyed rather than hidden, on the rail and on the page,
    because a slide nobody can see is a slide nobody can put back. Presentation
@@ -591,9 +637,28 @@ _DECK_STYLE = """
    the root rather than a separate page: the deck is already the document, and a
    second route rendering the same slides would be the second copy this file
    argues against on every other line. */
+/* **Everything, and the list is the defect.** Each of these is named because it
+   is one of the things the shell or this page draws AROUND the slides, and the
+   two that were missing were missing for the same reason: nothing here asks
+   "what else is on the page", it asks "what did somebody remember".
+
+   `#build` is the shell's footer — the version, the plan's sha, Help and Report
+   issue — which `@media print` already takes away and this did not, so it was
+   on the wall under every slide. `.railgrip` is the handle beside the rail: the
+   rail itself was hidden and its handle was not, and the handle is a hairline in
+   `--line` against a black screen, which is the vertical white stripe down the
+   left of the projection. Both reported by jcanton, 2026-09-21, from the room.
+
+   `#pile` and `#moved` go too, and they are the reason this is a list of ids
+   rather than "hide `body > *` except the slides": they are `role="status"`
+   live regions, so a plan change during a review would have popped a banner
+   onto the wall — and the deck answers that signal by swapping the sheets
+   underneath the presenter instead, which is the whole of `refresh()` below. */
 :root.presenting body > nav, :root.presenting .deckbar,
 :root.presenting .zoomer,
-:root.presenting .rail, :root.presenting #unreadable,
+:root.presenting .rail, :root.presenting .railgrip,
+:root.presenting #unreadable, :root.presenting #build,
+:root.presenting #pile, :root.presenting #moved,
 :root.presenting body > a.skip { display: none !important; }
 :root.presenting, :root.presenting body { background: #000; overflow: hidden; }
 :root.presenting #main { margin: 0; padding: 0; max-width: none; }
@@ -713,8 +778,14 @@ const PANE_BORDER = 2;
 let ZOOM = 1;
 const ZOOM_MIN = 0.4, ZOOM_MAX = 4;
 
+// The phone's question, from `env.PHONE`: while it matches, the deck is read as
+// fluid slides and not drawn as scaled canvases — see the stylesheet's phone
+// block for why. Presenting is the exception, so it is asked here and not only
+// by the stylesheet, which cannot see the `presenting` class change the answer.
+const READING = matchMedia({{ phone|tojson }});
+
 function fit() {
-  WRAP.classList.add('sized');
+  WRAP.classList.toggle('sized', !READING.matches || presenting());
   // **Measured on a box whose width does not depend on the answer.** The rail's
   // scale was computed from `THUMBS.clientWidth`, and the thumbnails' width is
   // set BY that scale — so every call multiplied its own previous output.
@@ -945,7 +1016,15 @@ THUMBS.addEventListener('keydown', event => {
   const from = rows.indexOf(item);
   const to = from + step;
   if (to < 0 || to >= rows.length) return;
-  if (!event.altKey) { rows[to].focus(); return; }
+  // **The bare arrow moves the focus AND the page under it.** It used to move
+  // only the focus, so walking the rail with the keyboard changed which
+  // thumbnail was outlined and left the slide column exactly where it was —
+  // jcanton, 2026-09-21: "moving up and down with the arrows does move the
+  // selection to other thumbnails but doesn't update the larger view on the
+  // right". A rail is navigation, and the pointer half of it has scrolled the
+  // column since it was written; the keyboard half is the same gesture and gets
+  // the same answer, through the same function so the two cannot drift.
+  if (!event.altKey) { rows[to].focus(); reveal(rows[to]); return; }
   if (!MAY_WRITE || item.dataset.id === 'title' || rows[to].dataset.id === 'title') return;
   THUMBS.insertBefore(item, step < 0 ? rows[to] : rows[to].nextSibling);
   item.focus();
@@ -973,7 +1052,10 @@ THUMBS.addEventListener('dblclick', event => {
   if (item) open(item);
 });
 
-// A single click is navigation, which is what a rail is mostly for.
+// Bringing a thumbnail's slide into the column beside it, which is what a rail
+// is mostly for. One function, because two gestures ask for it — a click and an
+// arrow key — and a second copy of this arithmetic is a second answer to "where
+// is slide four".
 //
 // **`scrollTop`, and never `scrollIntoView`.** That method scrolls every
 // scrollable ancestor until the element is in view, and the document is one of
@@ -981,9 +1063,12 @@ THUMBS.addEventListener('dblclick', event => {
 // taking the nav and the deck bar up with it. Measured: nav top 16 to -14 on one
 // click. jcanton, 2026-08-25: the top bar "should not move (ever)", and the only
 // way to promise that is to move exactly one thing by hand.
-THUMBS.addEventListener('click', event => {
-  const item = event.target.closest('li');
-  if (!item) return;
+//
+// That is also why the keyboard path calls this rather than `focus({preventScroll})`
+// plus a scroll of its own: focusing a thumbnail scrolls the RAIL, which is
+// right, and the column is moved here, which is the second of the two boxes on
+// this page that scroll.
+function reveal(item) {
   const slide = SHEETS.querySelector(`[data-key="${CSS.escape(item.dataset.key)}"]`);
   if (!slide) return;
   // Offsets within the scroller, taken from the two boxes rather than from
@@ -991,6 +1076,11 @@ THUMBS.addEventListener('click', event => {
   // parent's unscaled coordinates while both rects are in the same painted ones.
   const box = slide.getBoundingClientRect(), room = SHEETS.getBoundingClientRect();
   SHEETS.scrollTop += box.top - room.top - Math.max(0, (room.height - box.height) / 2);
+}
+
+THUMBS.addEventListener('click', event => {
+  const item = event.target.closest('li');
+  if (item) reveal(item);
 });
 
 // --- Presenting ---------------------------------------------------------
@@ -1024,10 +1114,13 @@ function present(on) {
     // and nothing else. Swallowed for the same reason: there is nothing a
     // presenter can do about it and a red line in the console is not news.
     document.documentElement.requestFullscreen?.().catch(() => {});
-    show(at);
+    // `fit` and not `show` alone: on a phone the canvas is off until now, and
+    // `fit` is what puts it on before it shows the slide.
+    fit();
   } else {
     for (const slide of slides()) slide.classList.remove('showing');
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    fit();
   }
 }
 
@@ -1227,6 +1320,7 @@ RAILGRIP.hidden = false;
 railed();
 watch();
 addEventListener('resize', fit);
+READING.addEventListener('change', fit);
 // The shell re-measures `--room` on its own schedule — on load, on resize, and
 // again until it settles. The slides are scaled against the box that number
 // sizes, so they have to be re-scaled when it moves.
@@ -1468,16 +1562,32 @@ def _review(
     # room. `chosen` is the whole reason `_resolved` returns a pair.
     if chosen:
         return Markup(""), ""
-    plan, cut = _to_fit(only_sections(said, _PLAN_HEADINGS), _PLAN_WORDS)
-    if plan:
-        return _markdown(plan, links, assets), _PLAN_CUT if cut else ""
+    # **The points count as something on the sheet, and this is where that is
+    # asked.** Everything below is for a slide that would otherwise be blank
+    # paper, and a slide carrying four ticked points and a pull request is not
+    # blank paper — it is the report, which is the one thing a review slide is
+    # for. Printing the Solution under it is printing the bet, which the three
+    # paragraphs above say a review slide must not carry.
+    #
     # `checklist_items` and not a second reading of the same lines: the points at
     # the top of the slide are this exact call, so the sentence and the sheet
     # cannot disagree about whether anything up there has words on it. A box with
     # nothing beside it is what the empty template ships and is not something a
     # person can stand up and read out.
+    #
+    # It was asked one branch lower, of the "nothing is written on this record"
+    # note alone, so a slide with points fell through the plan fallback first and
+    # came out with the shaping argument on it. Six records in the real plan were
+    # in that state; making a wrapped point whole took the count to twelve,
+    # because a `## Progress` holding nothing but its points is empty once they
+    # are lifted and `choosable` stops offering it — which is right, and left the
+    # fallback as the only thing deciding what the sheet says. jcanton,
+    # 2026-09-21: "another has the entire progress section missing".
     if any(text for _, text in checklist_items(record.body)):
         return Markup(""), ""
+    plan, cut = _to_fit(only_sections(said, _PLAN_HEADINGS), _PLAN_WORDS)
+    if plan:
+        return _markdown(plan, links, assets), _PLAN_CUT if cut else ""
     return Markup(""), _NOTHING_SAID
 
 
@@ -1539,7 +1649,11 @@ def slides_of(index: Index, record: Record, links: Links, assets: dict[str, str]
         # panel on the detail page and the meter in the table read the same two,
         # and a third arithmetic is a third answer.
         "text": counted.text if counted is not None else "",
-        "percent": round(100 * counted.fraction) if counted is not None else 0,
+        # The third copy of the record page's expression, through the same
+        # helper so that one function rounds a ratio here. No number moves —
+        # `done <= total` is structural in `_weighed`, and the comment on the
+        # record page's Progress row says why.
+        "percent": _percent(counted.done, counted.total) if counted is not None else 0,
         "skip": slide.skip,
     }
     return [
@@ -1744,6 +1858,7 @@ def render_deck(
         # Same reasoning as `/cycle/<n>`: the item that got you here stays lit.
         "cycles",
         index.unreadable,
+        index.unusable,
         # But it calls ITSELF the deck when a slide editor asks where it came
         # from. The nav word would be "Cycles", which points at a listing this
         # page is not — and "← deck 37" is what somebody who walked here from the

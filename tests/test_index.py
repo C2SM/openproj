@@ -12,14 +12,18 @@ there is: facet values and filter values are always strings, and `apply_filters`
 returns ids sorted by id so that a shared URL renders identically twice.
 """
 
+import math
+import shutil
 from datetime import date
 from pathlib import Path
 
 import pytest
+from pages import elements
 
 from openproj.index import (
     COMPUTED_PREDICATES,
     NO_VALUE,
+    CycleWindow,
     Index,
     _matches_predicate,
     apply_filters,
@@ -34,6 +38,7 @@ from openproj.model import (
     Task,
     cycle_of,
     load_repo,
+    out_to,
     parse_text,
     validate_all,
 )
@@ -252,12 +257,18 @@ def test_facets_cover_every_filterable_field(family_index: Index):
         "kind",
         "status",
         "owner",
-        "assignees",
+        "developers",
         "reviewers",
         "priority",
         "cycle",
         "product",
         "project",
+        # The third holder rung. It has no dropdown — `_PLAN_FACETS` in
+        # `controls.py` is the list the bar draws from, and a real plan's
+        # pitches would fill a select with hundreds of options — but it is a
+        # facet like the two above it, so `?pitch=` narrows a pasted link
+        # exactly as `?project=` does.
+        "pitch",
         "tags",
         "predicate",
     }
@@ -500,7 +511,7 @@ def test_the_missing_required_fields_predicate_reads_the_problems():
     """Severity-agnostic on purpose: a grandfathered rule reports a warning, and a
     field the team has decided it wants is still missing whichever way it reports."""
     records = [
-        # No `assignees` and no `reviewers`: a project reads neither, so a project
+        # No `developers` and no `reviewers`: a project reads neither, so a project
         # carrying them is a project with a problem — and this fixture is here to
         # be the record that has none.
         a_project(
@@ -513,7 +524,7 @@ def test_the_missing_required_fields_predicate_reads_the_problems():
             "pitch-b00001",
             parent="proj-a00001",
             owner="alice",
-            assignees=["alice"],
+            developers=["alice"],
             reviewers=["bob"],
             person_weeks=2.0,
             status="ready",
@@ -523,7 +534,7 @@ def test_the_missing_required_fields_predicate_reads_the_problems():
             parent="pitch-b00001",
             status="ready",
             owner="alice",
-            assignees=["alice"],
+            developers=["alice"],
             reviewers=["bob"],
             person_weeks=1.0,
         ),
@@ -797,7 +808,7 @@ def test_the_seed_facets_are_the_menus_the_table_will_show(seed_index: Index):
         "sanderlingly",
         "stonechatty",
     ]
-    assert seed_index.facets["assignees"] == [
+    assert seed_index.facets["developers"] == [
         "(none)",
         "Dunnocksen",
         "Oxpeckerly",
@@ -874,7 +885,7 @@ def test_the_seed_review_waiver_is_the_only_one(seed_index: Index):
 
 
 def test_the_seed_incomplete_records_are_the_ones_missing_fields(seed_index: Index):
-    """pitch-1b3f9a is missing only the grandfathered `assignees`, so it has to
+    """pitch-1b3f9a is missing only the grandfathered `developers`, so it has to
     show up here despite reporting as a warning.
 
     The corpus's tasks carry a `cycle` their pitch now owns, which is a v4
@@ -890,7 +901,7 @@ def test_the_seed_incomplete_records_are_the_ones_missing_fields(seed_index: Ind
     file. Do not tidy it; the file's own body says so too.
 
     `proj-9a4c25` joined it on 2026-09-21 and is the same case one rung down. It
-    carries `assignees` and `reviewers`, which a project stopped reading when
+    carries `developers` and `reviewers`, which a project stopped reading when
     `Rung.staffed` split off `Rung.schedules` — a project is a grouping, and the
     pitches and tasks under it are what anybody is assigned to. It moved OUT of
     the clean list below rather than being tidied, for `prod-7c2b81`'s reason
@@ -1001,10 +1012,18 @@ def test_work_bet_in_an_earlier_cycle_and_still_running_counts_against_this_one(
     is what keeps an overrun accusing. It also means a filter on `cycle == N`
     cannot see carryover — and the cycle page exists to add up who is full."""
     records = [
-        a_task("task-c00001", owner="ann", person_weeks=2.0, cycle=37, status="ready"),
+        a_task(
+            "task-c00001",
+            owner="ann",
+            developers=["ann"],
+            person_weeks=2.0,
+            cycle=37,
+            status="ready",
+        ),
         a_task(
             "task-c00002",
             owner="ann",
+            developers=["ann"],
             person_weeks=3.0,
             cycle=36,
             status="in_progress",
@@ -1022,6 +1041,7 @@ def test_work_finished_in_the_earlier_cycle_is_not_carried_into_this_one():
         a_task(
             "task-c00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=3.0,
             cycle=36,
             status="done",
@@ -1045,11 +1065,18 @@ def test_work_nobody_has_sized_charges_nobody_and_is_counted_where_it_went():
     themselves, per person, and the pages draw the pair.
     """
     records = [
-        a_task("task-c00001", owner="ann", person_weeks=2.0, cycle=37, status="ready"),
-        a_pitch("pitch-b00001", owner="ann", cycle=37, status="shaping"),
+        a_task(
+            "task-c00001",
+            owner="ann",
+            developers=["ann"],
+            person_weeks=2.0,
+            cycle=37,
+            status="ready",
+        ),
+        a_pitch("pitch-b00001", owner="ann", developers=["ann"], cycle=37, status="shaping"),
         # Two names on one unsized bet: one record on the cycle's count, and one
         # on each of their rows.
-        a_pitch("pitch-b00002", owner="ann", assignees=["bo"], cycle=37, status="shaping"),
+        a_pitch("pitch-b00002", owner="ann", developers=["ann", "bo"], cycle=37, status="shaping"),
     ]
     index = build_index(records, _two_cycles(), TODAY)
 
@@ -1067,8 +1094,15 @@ def test_a_pitch_with_children_is_no_more_unsized_than_it_is_charged():
     """A rollup charges nothing because its children do, and for exactly the same
     reason it cannot be missing from the total: it was never in it."""
     records = [
-        a_pitch("pitch-b00001", owner="ann", cycle=37, status="shaping"),
-        a_task("task-c00001", parent="pitch-b00001", owner="ann", cycle=37, status="shaping"),
+        a_pitch("pitch-b00001", owner="ann", developers=["ann"], cycle=37, status="shaping"),
+        a_task(
+            "task-c00001",
+            parent="pitch-b00001",
+            owner="ann",
+            developers=["ann"],
+            cycle=37,
+            status="shaping",
+        ),
     ]
     index = build_index(records, _two_cycles(), TODAY)
 
@@ -1099,11 +1133,14 @@ def test_a_task_under_a_project_is_charged_to_the_cycle_it_was_bet_into():
             "task-c00001",
             parent="proj-a00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=4.0,
             cycle=37,
             status="ready",
         ),
-        a_task("task-c00002", owner="bo", person_weeks=4.0, cycle=37, status="ready"),
+        a_task(
+            "task-c00002", owner="bo", developers=["bo"], person_weeks=4.0, cycle=37, status="ready"
+        ),
     ]
     index = build_index(records, _two_cycles(), TODAY)
 
@@ -1115,6 +1152,51 @@ def test_a_task_under_a_project_is_charged_to_the_cycle_it_was_bet_into():
     # Charged to that cycle and to no other — the half that a `cycle_of` of None
     # also got right, by accident.
     assert index.load(36) == {}
+
+
+def test_taking_a_record_out_files_it_under_the_nearest_record_above_that_may_hold_it():
+    """jcanton, 2026-10-12: "move-out should always move to the upper parent".
+
+    `pitch-bdb8d1` was taken out of the pitch it had been filed under, inside
+    `proj-370001`, with the graph's `Take out` — and landed at the top of the
+    tree with no project at all, because every way out wrote `parent: null`.
+
+    The nearest holder of the record's OWN kind, not the grandparent: a pitch
+    inside a project inside a product cannot be filed under the product, and a
+    rule that just went up one more step would write the blocker
+    `_containment_problems` reports. And the walk stays inside the map it is
+    given, so an id the plan cannot show never comes back out of it.
+    """
+    records = [
+        a_product("prod-000001"),
+        a_project("proj-a00001", parent="prod-000001"),
+        a_pitch("pitch-b00001", parent="proj-a00001"),
+        # The shape the graph was used on: a pitch hand-filed under a pitch.
+        a_pitch("pitch-b00002", parent="pitch-b00001"),
+        a_task("task-c00001", parent="pitch-b00001"),
+        a_pitch("pitch-b00003"),
+        a_task("task-c00002", parent="pitch-b00003"),
+        # A loop somebody committed by hand, and a parent nobody wrote.
+        a_pitch("pitch-b00004", parent="pitch-b00005"),
+        a_pitch("pitch-b00005", parent="pitch-b00004"),
+        a_task("task-c00003", parent="pitch-b00099"),
+        a_pitch("pitch-b00006", parent="issue-000001"),
+        a_task("task-c00004", parent="pitch-b00006"),
+    ]
+    by_id = {record.id: record for record in records}
+
+    def out(record_id: str) -> str | None:
+        return out_to(by_id[record_id], by_id)
+
+    assert out("task-c00001") == "proj-a00001", "a task out of its pitch stays in the project"
+    assert out("pitch-b00002") == "proj-a00001", "the graph's case, out of a pitch"
+    assert out("pitch-b00001") is None, "out of its project: a product cannot hold a pitch"
+    assert out("proj-a00001") is None, "a product holds nothing above it"
+    assert out("task-c00002") is None, "a pitch with no project leaves nothing to land in"
+    assert out("pitch-b00004") is None, "a loop is walked once, not for ever"
+    assert out("task-c00003") is None, "a parent nobody wrote has nothing above it"
+    assert out("task-c00004") is None, "an id outside the map never comes back out"
+    assert out("prod-000001") is None
 
 
 def test_a_bet_nobody_has_sized_is_counted_where_it_was_bet_and_carried_into_nothing():
@@ -1132,10 +1214,11 @@ def test_a_bet_nobody_has_sized_is_counted_where_it_was_bet_and_carried_into_not
     the control: real carryover is decided by the dates and still is.
     """
     records = [
-        a_pitch("pitch-b00001", owner="ann", cycle=35, status="shaping"),
+        a_pitch("pitch-b00001", owner="ann", developers=["ann"], cycle=35, status="shaping"),
         a_task(
             "task-c00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=1.0,
             cycle=35,
             status="in_progress",
@@ -1173,6 +1256,7 @@ def test_work_that_has_started_is_counted_where_it_is_running_even_with_no_size(
         a_pitch(
             "pitch-b00001",
             owner="ann",
+            developers=["ann"],
             cycle=35,
             status="in_progress",
             start_date=date(2026, 6, 1),
@@ -1181,6 +1265,7 @@ def test_work_that_has_started_is_counted_where_it_is_running_even_with_no_size(
             "task-c00001",
             parent="pitch-b00001",
             owner="ann",
+            developers=["ann"],
             status="in_progress",
             start_date=date(2026, 6, 1),
         ),
@@ -1188,11 +1273,14 @@ def test_work_that_has_started_is_counted_where_it_is_running_even_with_no_size(
             "task-c00002",
             parent="pitch-b00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=8.0,
             status="in_progress",
             start_date=date(2026, 6, 1),
         ),
-        a_task("task-c00003", parent="pitch-b00001", owner="ann", status="shaping"),
+        a_task(
+            "task-c00003", parent="pitch-b00001", owner="ann", developers=["ann"], status="shaping"
+        ),
     ]
     index = build_index(records, _three_cycles(), TODAY)
 
@@ -1227,6 +1315,7 @@ def test_the_scheduler_having_no_answer_is_not_the_same_as_there_being_nothing_t
         a_task(
             "task-c00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=1.0,
             cycle=35,
             status="ready",
@@ -1235,12 +1324,13 @@ def test_the_scheduler_having_no_answer_is_not_the_same_as_there_being_nothing_t
         a_task(
             "task-c00002",
             owner="ann",
+            developers=["ann"],
             person_weeks=1.0,
             cycle=35,
             status="ready",
             depends_on=["task-c00001"],
         ),
-        a_pitch("pitch-b00001", owner="bo", cycle=35, status="shaping"),
+        a_pitch("pitch-b00001", owner="bo", developers=["bo"], cycle=35, status="shaping"),
     ]
     index = build_index(records, _three_cycles(), TODAY)
 
@@ -1259,6 +1349,7 @@ def test_an_undated_cycle_counts_only_what_was_bet_into_it_by_name():
         a_task(
             "task-c00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=3.0,
             cycle=36,
             status="in_progress",
@@ -1276,6 +1367,7 @@ def test_a_carried_parent_charges_nothing_because_its_children_already_did():
         a_pitch(
             "pitch-b00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=4.0,
             cycle=36,
             status="in_progress",
@@ -1285,6 +1377,7 @@ def test_a_carried_parent_charges_nothing_because_its_children_already_did():
             "task-c00001",
             parent="pitch-b00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=1.0,
             cycle=36,
             status="in_progress",
@@ -1461,6 +1554,7 @@ def test_a_task_under_a_pitch_is_counted_in_the_cycle_its_pitch_was_bet_into():
             "task-c00001",
             parent="pitch-b00001",
             owner="ann",
+            developers=["ann"],
             person_weeks=2.0,
             status="in_progress",
             start_date=date(2026, 7, 1),
@@ -1484,7 +1578,14 @@ def test_a_ready_task_carried_into_this_cycle_is_counted_by_its_dates():
             status="in_progress",
             start_date=date(2026, 7, 1),
         ),
-        a_task("task-c00001", parent="pitch-b00001", owner="ann", person_weeks=2.0, status="ready"),
+        a_task(
+            "task-c00001",
+            parent="pitch-b00001",
+            owner="ann",
+            developers=["ann"],
+            person_weeks=2.0,
+            status="ready",
+        ),
     ]
     index = build_index(records, _two_cycles(), TODAY)
 
@@ -1729,6 +1830,198 @@ def test_the_build_end_a_predicate_uses_is_the_one_the_timeline_uses(seed_index:
     odd = Config(cycles={9: (date(2026, 1, 5), date(2026, 3, 1))}, cooldown_weeks=1.0)
     assert build_index([], odd, date(2026, 1, 5)).cooldown_weeks == 1.0
     assert isinstance(seed_index.plans.get(37), (Cycle, type(None)))
+
+
+def test_cycle_windows_is_the_one_place_the_three_dates_come_from(seed_index: Index):
+    """The timeline computed these itself and the calendar needs the same three.
+    An invariant written twice is guarded once."""
+    windows = seed_index.cycle_windows()
+
+    assert windows == sorted(windows, key=lambda w: w.number)
+    assert [w.number for w in windows] == sorted(seed_index.cycles)
+    for window in windows:
+        assert isinstance(window, CycleWindow)
+        opens, closes = seed_index.cycles[window.number]
+        assert window.opens == opens
+        assert window.closes == closes
+        assert opens <= window.builds_until <= closes
+        # The same date the predicates and the timeline are drawn against: two
+        # answers to "when does this cycle stop building" is one of them wrong.
+        assert window.builds_until == seed_index.build_end(window.number)
+
+
+def test_a_plan_that_has_dated_no_cycle_has_no_windows_rather_than_an_error(seed_root: Path):
+    """Empty must not look like broken. Every consumer degrades to a plain
+    calendar; none of them may meet an exception."""
+    records, config, _ = load_repo(seed_root)
+    config = config.model_copy(update={"cycles": {}, "plans": {}})
+    index = build_index(records, config, TODAY)
+
+    assert index.cycle_windows() == []
+
+
+def test_an_absurd_cooldown_costs_that_cycles_flag_and_not_every_page(
+    seed_root: Path, tmp_path: Path
+):
+    """`round()` raises on infinity, and `cooldown_weeks` is a float a person
+    types into `config/defaults.yaml`. Three places multiplied it by seven and
+    rounded: `Index.build_end`, `Config._resolve` and `_proposed` on the cycle
+    page — and two of them rounded BEFORE `days_after` could bound anything, so
+    one number in one committed file was nine routes down.
+
+    Entered where a person's commit enters it, through a copy of the corpus with
+    the bad line appended and `load_repo` run over that. The earlier version of
+    this test built the config with `model_copy(update=...)` AFTER `load_repo`
+    had already run with the corpus's real 2.0, so `with_plans` — the copy that
+    raises first, and OUTSIDE every `readable()` wrapper, meaning the raise
+    escapes `load_repo` itself — was never reached at all. The test passed over a
+    live defect, which is what a fixture edited after the fact buys you.
+
+    So there are two claims and the first is the bigger one: the plan still
+    LOADS. Then the flag: the cycle whose cool-down swallowed its own window
+    reports a build that ends on the day it opened, rather than before it.
+    """
+    root = tmp_path / "plan"
+    shutil.copytree(seed_root, root)
+    defaults = root / "config" / "defaults.yaml"
+    defaults.write_text(defaults.read_text() + "\ncooldown_weeks: .inf\n")
+
+    records, config, unreadable = load_repo(root)
+
+    assert config.cooldown_weeks == float("inf")
+    assert unreadable == []
+    assert len(records) == len(load_repo(seed_root)[0])
+
+    index = build_index(records, config, TODAY)
+    number = sorted(index.cycles)[0]
+    opens, _ = index.cycles[number]
+
+    assert index.build_end(number) == opens
+    assert all(w.builds_until >= w.opens for w in index.cycle_windows())
+
+    # The third copy, on the branch of `_proposed` that nothing else reaches: a
+    # cycle number nobody has dated at all, where the cool-down is added to the
+    # cadence instead of read off a window. It lives in the renderer and is
+    # imported here rather than left to the render suite, because what is being
+    # pinned is this arithmetic in every place it is written, and a copy tested
+    # in a different file is the copy that gets the guard last.
+    from openproj.render.cycles import _proposed
+
+    undated = _proposed(index, max(index.cycles) + 1, None)
+    assert undated.ends_on >= undated.builds_until
+
+
+def test_an_absurd_appetite_is_no_appetite_at_all_on_three_pages(
+    seed_root: Path, tmp_path: Path
+):
+    """The same question as the cool-down above, asked of the other number a
+    person types — and it had the same answer on three more routes.
+
+    Three copies of the expression, so nothing guarded it: the cycle page's
+    roster, the cycles index's card and the people page's per-cycle load each
+    wrote out `min(100, round(100 * x / capacity))`. `_percent` (`tokens.py`) is
+    the one copy, and it bounds before it rounds, which is the order `days_after`
+    and `within_the_calendar` (`model.py`) already settled on.
+
+    Entered where a person's commit enters it — the number goes into the file and
+    `load_repo` reads it — for the reason the cool-down test gives: a fixture
+    edited after the load is a fixture that never crosses the path the defect
+    lives on. It renders rather than asking `_percent` directly, because a helper
+    that answers correctly while two of the three call sites still spell the
+    arithmetic out is exactly the state this defect was already in.
+
+    **This test used to be called `..._draws_a_full_bar_and_not_a_500` and it
+    asserted an infinite load. Both halves of that are superseded, and by the
+    branch its own docstring predicted.** It said the remaining two sites were
+    "a branch of their own — jcanton, 2026-09-23", and on that branch the fix
+    landed one level up from the bars: `size_weeks` answers None for a size that
+    is not a number, so an absurd appetite is no appetite. The holder's load is
+    now their OTHER work, the bars are ordinary, and what says something is wrong
+    is a blocker on the record rather than a full bar somebody has to interpret.
+
+    A full bar was the least-bad reading while the number still reached the
+    arithmetic — "as much as it can hold", because a bar drawn empty is a cycle
+    that looks free to bet into. It is a worse reading than not drawing the bet at
+    all and naming the file, which is what happens now: a full bar is a sentence
+    about capacity, and the thing that is wrong is not the capacity.
+    """
+    from openproj.render import render_cycle, render_cycles, render_people
+
+    root = tmp_path / "plan"
+    shutil.copytree(seed_root, root)
+    bet = root / "tasks" / "task-6a5c02--lower-the-scan-operator.md"
+    bet.write_text(bet.read_text().replace("person_weeks: 1.5", "person_weeks: .inf"))
+
+    records, config, unreadable = load_repo(root)
+
+    # The file is a record and stays one. The defect is downstream of every
+    # gate there is, which is why nothing upstream is allowed to notice it here.
+    assert unreadable == []
+    assert len(records) == len(load_repo(seed_root)[0])
+
+    dated = build_index(records, config, TODAY)
+    holder = dated.plan["task-6a5c02"].developers[0]
+    cycle = cycle_of(dated.plan["task-6a5c02"], dated.plan)
+
+    # Built a second time, for a day inside the cycle the bet is in. The people
+    # page draws a load bar only for somebody on the CURRENT cycle's roster, and
+    # the module's TODAY sits in the cycle before this one — so at that date the
+    # page has no bar to get wrong and the test would pass over the site it is
+    # here for. Read off the window rather than written down, because a date
+    # typed in beside a corpus that is allowed to grow is a date that stops
+    # meaning "during the bet".
+    opens, closes = dated.cycles[cycle]
+    when = opens + (closes - opens) / 2
+    index = build_index(records, config, when)
+
+    # The same corpus with the appetite REMOVED rather than made nonsense, which
+    # is the property in one comparison: a size that is not a number is no size.
+    # Derived rather than written down — a bet is divided among its developers, so
+    # a number typed in here would be this test asserting arithmetic it did just
+    # as badly as the code might.
+    unsized = tmp_path / "unsized"
+    shutil.copytree(seed_root, unsized)
+    blank = unsized / "tasks" / "task-6a5c02--lower-the-scan-operator.md"
+    blank.write_text(blank.read_text().replace("person_weeks: 1.5\n", ""))
+    without = build_index(*load_repo(unsized)[:2], when)
+
+    held = index.load(cycle)[holder]
+    assert math.isfinite(held)
+    assert held == without.load(cycle)[holder], (
+        "a size that is not a number is not the same as no size at all"
+    )
+    # And that the comparison has teeth: the untouched corpus, where the bet is
+    # a number, must give a different answer — or both sides of the line above
+    # could be measuring a record nobody carries.
+    assert held != build_index(*load_repo(seed_root)[:2], when).load(cycle)[holder]
+
+    # Said on the record rather than drawn on a bar. This is what replaced the
+    # full bar, and without it the page would merely be quieter about a plan that
+    # is wrong.
+    assert [
+        one.severity
+        for one in index.problems
+        if one.record_id == "task-6a5c02" and one.field == "person_weeks"
+    ] == ["blocker"]
+
+    pages = {
+        "people": render_people(index),
+        "cycles": render_cycles(index),
+        f"cycle/{cycle}": render_cycle(index, cycle),
+    }
+
+    # Every width a bar is given, off the parsed document rather than out of the
+    # page's characters: the stylesheet is inlined into all three of these, and
+    # `width: 100%` is a string it contains whatever the data says.
+    for name, page in pages.items():
+        widths = [
+            element.attrs["style"]
+            for element in elements(page)
+            if element.attrs.get("style", "").startswith("width:")
+        ]
+        assert widths, f"{name} drew no bar at all"
+        drawn = [float(width.removeprefix("width:").removesuffix("%").strip()) for width in widths]
+        assert all(0 <= one <= 100 for one in drawn), f"{name}: {widths}"
 
 
 def test_a_record_in_progress_with_nothing_linked_is_a_question_not_a_rule(seed_index: Index):
