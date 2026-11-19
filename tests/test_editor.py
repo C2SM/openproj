@@ -12727,3 +12727,54 @@ def test_escape_then_tab_leaves_ace(live_server: str, tmp_path: Path):  # noqa: 
         assert not _evaluated(call, "!!document.activeElement.closest('.ace_editor')"), (
             "Tab after Escape left the keyboard in the editor"
         )
+
+
+def _spy_save(call, ready: str) -> bool:
+    """Put the page's Save in `ready`, press Ctrl+S, and say whether Save was pressed."""
+    _evaluated(
+        call,
+        "window.__pressed = false; const s = document.getElementById('save');"
+        "s.addEventListener('click', e => {"
+        " window.__pressed = true; e.stopImmediatePropagation(); }, true);" + ready,
+    )
+    _chord(call, "s", "KeyS", 2)
+    time.sleep(0.3)
+    return _evaluated(call, "window.__pressed")
+
+
+def test_mod_s_presses_save_where_there_is_one(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/cycles", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        cycle = _evaluated(call, "document.querySelector('a[href^=\"/cycle/\"]').pathname")
+        for path, ready, idle in (
+            (cycle, "s.disabled = false;", "s.disabled = true;"),
+            ("/graph", "s.hidden = false; s.disabled = false;", "s.hidden = true;"),
+            (f"/detail/{TASK}?view=slide", "s.hidden = false; s.disabled = false;",
+             "s.disabled = true;"),
+        ):
+            call("Page.navigate", {"url": f"{live_server}{path}"})
+            time.sleep(2.5)
+            assert _spy_save(call, ready), f"Ctrl+S did not press Save on {path}"
+            call("Page.navigate", {"url": f"{live_server}{path}"})
+            time.sleep(2.5)
+            assert not _spy_save(call, idle), f"Ctrl+S pressed a Save that was off on {path}"
+
+
+def test_the_sheet_on_the_editor_lists_save_and_the_view_chord(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        sheet = _sheet(call)
+        assert "Editor" in sheet["heads"], sheet
+        assert {"Ctrl+S", "Ctrl+Shift+1", "Ctrl+B"} <= set(sheet["keys"]), sheet
+
+
+def test_create_says_create_with_mod_s(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/new", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        title = _evaluated(call, "document.getElementById('save').title")
+        assert title == "Create  Ctrl+S", title
