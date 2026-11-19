@@ -12887,7 +12887,7 @@ def test_slash_focuses_the_search_box_and_n_presses_create(
         _evaluated(call, "document.activeElement.blur()")
         _key(call, "n", "KeyN")
         time.sleep(0.5)
-        assert _evaluated(call, "!!document.querySelector('#rows tr.draft')"), "no draft row"
+        assert _evaluated(call, "!!document.getElementById('draft-kind')"), "no draft row"
         call("Page.navigate", {"url": f"{live_server}/"})
         time.sleep(2)
         _key(call, "n", "KeyN")
@@ -12903,11 +12903,15 @@ def test_a_key_does_not_leave_a_draft_row_with_writing_in_it(
         time.sleep(2)
         _key(call, "n", "KeyN")
         time.sleep(0.5)
+        # The row asks for a kind first and draws its fields once it has one
         _evaluated(
             call,
-            "(i => { i.focus(); })(document.querySelector('#rows tr.draft input, "
-            "#rows tr.draft [contenteditable]'))",
+            "(s => { s.value = s.options[s.options.length - 1].value;"
+            " s.dispatchEvent(new Event('change', {bubbles: true})); })"
+            "(document.getElementById('draft-kind'))",
         )
+        time.sleep(0.4)
+        assert _evaluated(call, "!window.unsaved()"), "a row nobody typed in counts as unsaved"
         for letter in "draft":
             _key(call, letter, f"Key{letter.upper()}")
         _evaluated(call, "document.activeElement.blur()")
