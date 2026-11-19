@@ -1723,6 +1723,8 @@ const EDITABLE = null;
 {% else %}
 const BASE = document.getElementById('base');
 const EDITABLE = DATA.editable;
+// The grid's own keys, for the `?` sheet; a reader's table has none of them
+tbody.dataset.keys = 'cell-edit row-move escape';
 const SUGGESTS = DATA.suggests;
 const CHOICES = DATA.choices;
 

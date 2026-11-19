@@ -727,6 +727,17 @@ document.addEventListener('focusin', (event) => {
   }
 });
 
+// Alt+↓ is on the `?` sheet wherever a date field is, and only where a pointer
+// is fine enough for this calendar to be the one that opens
+if (!COARSE.matches) {
+  addEventListener('DOMContentLoaded', () => {
+    for (const box of document.querySelectorAll('input[type="date"]')) {
+      box.dataset.keys = 'calendar';
+    }
+    labelKeys();
+  });
+}
+
 // The keyboard's own way in, which is what a combobox uses and what this needs
 // for the reader who tabs to the field rather than clicking it: focus alone
 // opens the popup, and Alt+Down opens it again after an Escape closed it.

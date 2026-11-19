@@ -12781,3 +12781,19 @@ def test_create_says_create_with_mod_s(live_server: str, tmp_path: Path):  # noq
         time.sleep(2.5)
         title = _evaluated(call, "document.getElementById('save').title")
         assert title == "Create  Ctrl+S", title
+
+
+def test_the_sheet_sections_follow_the_page(live_server: str, tmp_path: Path):  # noqa: F811
+    live = "liveKeys().map(entry => entry.id)"
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        table = set(_evaluated(call, live))
+        number = _evaluated(
+            call,
+            "fetch('/cycles').then(r => r.text()).then(t => t.match(/\\/cycle\\/(\\d+)/)[1])",
+        )
+        call("Page.navigate", {"url": f"{live_server}/deck/{number}"})
+        time.sleep(2.5)
+        deck = set(_evaluated(call, live))
+    assert {"cell-edit", "row-move", "escape"} <= table and "slide-next" not in table, table
+    assert {"slide-next", "thumb-up"} <= deck and "cell-edit" not in deck, deck

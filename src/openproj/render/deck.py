@@ -167,13 +167,14 @@ _DECK = (
   <button type="button" id="present" class="ghost" hidden>Present</button>
 </p>
 
-<div class="deckwrap" data-fills>
+<div class="deckwrap" data-fills
+  data-keys="slide-next slide-prev slide-first slide-last present-leave">
   {#- The rail. Built from the sheets beside it rather than rendered twice — see
       `_DECK_SCRIPT`, which clones each slide into its own thumbnail. Two
       renderings of one slide is two things to keep in step, and the thumbnail is
       the one nobody would notice going stale. -#}
   <nav class="rail" id="rail" aria-label="Slides in this deck" hidden>
-    <ol id="thumbs"></ol>
+    <ol id="thumbs" data-keys="thumb-up thumb-down thumb-open"></ol>
   </nav>
   {#- The join between the rail and the sheets. Same control and same gesture as
       the slide editor's: drag to resize, double-click to put it back. Drawn
