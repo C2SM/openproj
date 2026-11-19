@@ -12510,7 +12510,11 @@ def test_a_g_typed_where_text_goes_is_text(live_server: str, tmp_path: Path):  #
     url = f"{live_server}/detail/{TASK}?edit"
     with _devtools(chrome(), url, tmp_path / "q", _KEYS_WINDOW) as (call, _):
         time.sleep(2.5)
-        _evaluated(call, "document.querySelector('input[name=\"title\"]').focus()")
+        _evaluated(
+            call,
+            "(t => { t.focus(); t.setSelectionRange(t.value.length, t.value.length); })"
+            "(document.querySelector('input[name=\"title\"]'))",
+        )
         _gt(call)
         assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
         assert _evaluated(call, "document.querySelector('input[name=\"title\"]').value").endswith(
