@@ -174,7 +174,7 @@ _DECK = (
       renderings of one slide is two things to keep in step, and the thumbnail is
       the one nobody would notice going stale. -#}
   <nav class="rail" id="rail" aria-label="Slides in this deck" hidden>
-    <ol id="thumbs" data-keys="thumb-up thumb-down thumb-open"></ol>
+    <ol id="thumbs"></ol>
   </nav>
   {#- The join between the rail and the sheets. Same control and same gesture as
       the slide editor's: drag to resize, double-click to put it back. Drawn
@@ -746,6 +746,8 @@ const SHEETS = document.getElementById('sheets');
 const WRAP = document.querySelector('.deckwrap');
 const RAIL = document.getElementById('rail');
 const THUMBS = document.getElementById('thumbs');
+// Only a writer can move a slide, so only a writer's sheet says how
+THUMBS.dataset.keys = MAY_WRITE ? 'thumb-up thumb-down thumb-open' : 'thumb-open';
 const PRESENT = document.getElementById('present');
 const COUNTER = document.getElementById('counter');
 // The slide's own coordinate space. Everything on a slide is laid out against

@@ -2595,6 +2595,10 @@ const DRAFT_ID = '+';
 // Create sitting directly underneath them, and a draft that outlives the page is
 // a draft somebody creates twice.
 let DRAFT = null;
+// Typing in a row nobody has created yet is unsaved work, for the shell's `g` keys
+window.unsaved = () => !!DRAFT && (Object.keys(DRAFT.fields).length > 0
+  || [...document.querySelectorAll('#rows tr.draft input, #rows tr.draft textarea')]
+    .some(box => box.value.trim()));
 
 // Whether the create this row asked for is still in the air.
 //

@@ -2063,6 +2063,7 @@ function attachStatus(surface, bar) {
       // keymap is on.
       name => {
         surface.setKeymap(name);
+        setKeySurface(name);
         rememberEditor({keymap: name});
       }));
   }
@@ -2256,7 +2257,8 @@ function attachEditing(surface, bar, templates) {
       }
       bar.append(button);
     }
-    labelKeys(bar, EDITOR.keymap === 'vim' ? 'vim' : undefined);
+    // Vim exists only on a surface that can change keymap; a textarea's is the browser's
+    setKeySurface(surface.setKeymap ? EDITOR.keymap : 'default');
   }
 
   // One press of undo or redo, sent to whichever history owns the document now.

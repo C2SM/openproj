@@ -35,10 +35,12 @@ class Key:
     keys: tuple[str, ...]
     anywhere: bool = False
     own: bool = False
+    # Vim's own key on Windows and Linux, so the tooltip and the sheet drop it there
+    vim: bool = False
 
 
-def _toolbar(id: str, words: str, chord: str) -> Key:
-    return Key(id, words, "editor", (chord,), own=True)
+def _toolbar(id: str, words: str, chord: str, vim: bool = False) -> Key:
+    return Key(id, words, "editor", (chord,), own=True, vim=vim)
 
 
 KEYS: tuple[Key, ...] = (
@@ -53,11 +55,11 @@ KEYS: tuple[Key, ...] = (
     Key("view-preview", "Preview", "editor", ("Ctrl+Shift+Digit3",), own=True),
     _toolbar("undo", "Undo", "Mod+z"),
     _toolbar("redo", "Redo", "Mod+Shift+z"),
-    _toolbar("bold", "Bold", "Mod+b"),
+    _toolbar("bold", "Bold", "Mod+b", vim=True),
     _toolbar("italic", "Italic", "Mod+i"),
     _toolbar("strike", "Strikethrough", "Mod+Shift+x"),
     _toolbar("heading", "Heading", "Mod+2"),
-    _toolbar("code", "Code", "Mod+e"),
+    _toolbar("code", "Code", "Mod+e", vim=True),
     _toolbar("fence", "Code block", "Mod+Shift+e"),
     _toolbar("quote", "Quote", "Mod+."),
     _toolbar("bullets", "Bullet list", "Mod+8"),

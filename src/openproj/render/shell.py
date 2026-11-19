@@ -2568,13 +2568,21 @@ function oneLabel(keys) {
   return APPLE ? mods.join('') + last : [...mods, last].join('+');
 }
 
-// `surface` is the editor the control is on. Under vim on Windows and Linux,
-// Ctrl+B and Ctrl+E are vim's, and a tooltip naming them would name a key that
-// scrolls.
-function keyLabel(id, surface) {
+// Which keymap the page's editor is in, set by the editor. One fact for the
+// page and not an argument, because the tooltips, a later relabel and the sheet
+// all have to agree on it.
+let keySurface = 'default';
+function setKeySurface(surface) {
+  keySurface = surface;
+  labelKeys();
+}
+
+// Under vim on Windows and Linux the registry's `vim` keys are vim's, and a
+// tooltip naming one would name a key that scrolls
+function keyLabel(id) {
   const entry = KEY_BY_ID.get(id);
   if (!entry) return '';
-  if (surface === 'vim' && !APPLE && (id === 'bold' || id === 'code')) return '';
+  if (entry.vim && keySurface === 'vim' && !APPLE) return '';
   return entry.keys.map(oneLabel).join(' or ');
 }
 
@@ -2602,14 +2610,16 @@ function ownWords(element, entry) {
 
 // A container such as the table's body carries `data-keys` only to make its
 // entries live on this page, so only a control is given a tooltip.
-function labelKeys(root = document, surface) {
+function labelKeys(root = document) {
   for (const element of root.querySelectorAll('[data-keys]')) {
     if (!element.matches('a, button, input')) continue;
     const id = element.dataset.keys.split(' ')[0];
     const entry = KEY_BY_ID.get(id);
-    const label = keyLabel(id, surface);
-    if (!entry || !label) continue;
-    element.title = `${ownWords(element, entry)}  ${label}`;
+    if (!entry) continue;
+    const label = keyLabel(id);
+    // Words alone when the key is not this page's, so a relabel can take one away
+    element.title = label ? `${ownWords(element, entry)}  ${label}` : ownWords(element, entry);
+    if (!label) { element.removeAttribute('aria-keyshortcuts'); continue; }
     const aria = ariaKeys(id);
     if (aria) element.setAttribute('aria-keyshortcuts', aria);
   }
@@ -2684,7 +2694,11 @@ function goArm() {
   goArmed = setTimeout(goDisarm, 1500);
 }
 
+// Pressed on their own before the letter they modify, so never the second key
+const MODIFIER_KEYS = new Set(['Shift', 'CapsLock', 'Control', 'Alt', 'Meta', 'AltGraph']);
+
 addEventListener('keydown', event => {
+  if (MODIFIER_KEYS.has(event.key)) return;
   if (quiet(event)) { if (goArmed) goDisarm(); return; }
   const key = event.key.toLowerCase();
   if (goArmed) {
@@ -2743,7 +2757,7 @@ const SHEET_SECTIONS = [['go', 'Go to'], ['page', 'On this page'], ['editor', 'E
 let sheetReturn = null;
 
 function openSheet() {
-  const live = liveKeys();
+  const live = liveKeys().filter(entry => keyLabel(entry.id));
   const list = sheet().querySelector('.keylist');
   list.replaceChildren();
   for (const [section, heading] of SHEET_SECTIONS) {
