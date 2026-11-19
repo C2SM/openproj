@@ -10346,3 +10346,9 @@ def test_every_data_keys_id_is_in_the_registry(seed_index: Index, tmp_path: Path
         assert "go-graph" not in said, name
     nav = [e for e in elements((tmp_path / "index.html").read_text()) if e.tag == "a"]
     assert {e.attrs.get("data-keys") for e in nav} >= {"go-records", "go-timeline", "go-help"}
+
+
+def test_the_shortcuts_button_has_a_name(rendered: Path):
+    page = (rendered / "index.html").read_text()
+    found = [e for e in elements(page) if e.attrs.get("id") == "keysbutton"]
+    assert found and found[0].attrs.get("aria-label") == "Keyboard shortcuts", found

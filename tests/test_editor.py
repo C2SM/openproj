@@ -12568,3 +12568,67 @@ def test_a_key_does_not_leave_unsaved_work(live_server: str, tmp_path: Path):  #
             "(document.getElementById('state') || document.getElementById('announce')).textContent",
         )
         assert "Save or reset first" in said, said
+
+
+def _sheet(call) -> dict:
+    return _evaluated(
+        call,
+        """(() => { const d = document.getElementById('keysheet');
+        return {open: !!(d && d.open),
+                heads: d ? [...d.querySelectorAll('h3')].map(h => h.textContent) : [],
+                keys: d ? [...d.querySelectorAll('kbd')].map(k => k.textContent) : []}; })()""",
+    )
+
+
+def test_question_mark_opens_the_sheet_with_this_pages_keys(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "?", "Slash", shift=True)
+        time.sleep(0.3)
+        sheet = _sheet(call)
+        assert sheet["open"], sheet
+        assert {"g t", "/", "n", "?"} <= set(sheet["keys"]), sheet
+        assert "Editor" not in sheet["heads"], sheet
+        _key(call, "Escape", "Escape")
+        time.sleep(0.3)
+        assert not _sheet(call)["open"]
+
+
+def test_single_keys_off_stops_g_but_not_question_mark(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        _evaluated(call, "document.getElementById('singlekeys').click()")
+        _evaluated(call, "document.getElementById('keysheet').close()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == "/graph"
+        _key(call, "?", "Slash", shift=True)
+        time.sleep(0.3)
+        assert _sheet(call)["open"]
+
+
+def test_the_switch_works_when_storage_refuses(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        call("Page.enable")
+        call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": "Object.defineProperty(window, 'localStorage', "
+                "{get() { throw new Error('denied'); }})"
+            },
+        )
+        call("Page.reload")
+        time.sleep(2.5)
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        _evaluated(call, "document.getElementById('singlekeys').click()")
+        said = _evaluated(call, "document.getElementById('keysheet').textContent")
+        assert "will not keep the choice" in said, said
+        _evaluated(call, "document.getElementById('keysheet').close()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == "/graph"
