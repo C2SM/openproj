@@ -73,6 +73,7 @@ from .hill import (
     hill_geometry,
 )
 from .icons import _ICON_ART, ICONS, icon_svg
+from .keys import keys_for
 from .markdown import (
     _ASSET_MEDIA,
     _EMBED_SRC,
@@ -237,6 +238,7 @@ __all__ = [
     "render_slide_editor",
     "slide_html",
     "inlined_assets",
+    "keys_for",
     "links_for",
     "opened",
     "render_detail",

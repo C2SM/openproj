@@ -18,32 +18,16 @@ from .env import _compiled
 from .hill import hill_geometry
 from .icons import _icon_uri
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
-from .tokens import HUMAN, KINDS, PRIORITY_GLYPH, STATUS_GLYPH, STATUSES, card_facts
-
-# The nav, as the field on `Links` each item points at and the word it wears. One
-# list, because the mark for "you are here" has to be decided once: six links
-# written out by hand were six places for a seventh page to be added and marked
-# nowhere.
-#
-# The words, and the order a plan that never wrote `views` gets — which is
-# `Links.nav`'s default, and why this sits above the class. Which items a page
-# draws, and in what order, is `Links.nav`: a plan's `views` decides it, through
-# `links_for` below, and `test_the_views_are_the_nav_in_the_nav_order` holds this
-# order to `VIEWS` so a plan that says nothing draws the nav it always drew.
-_NAV = (
-    ("records", "Records"),
-    ("table", "Table"),
-    ("graph", "Graph"),
-    ("timeline", "Timeline"),
-    ("cycles", "Cycles"),
-    ("people", "People"),
-    # The two inbox views of the landing list, back in the nav on jcanton's
-    # ruling: quick access to what would otherwise be a click on a filter. At
-    # the end, where they sat before the records flip retired their own pages.
-    ("issues", "Issues"),
-    ("notes", "Notes"),
+from .tokens import (
+    _NAV,
+    _NAV_KEYS,
+    HUMAN,
+    KINDS,
+    PRIORITY_GLYPH,
+    STATUS_GLYPH,
+    STATUSES,
+    card_facts,
 )
-_NAV_KEYS = frozenset(key for key, _ in _NAV)
 
 
 class Links(BaseModel):
