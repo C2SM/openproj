@@ -139,10 +139,15 @@ guard has already said no before a badge could be drawn.
 `Links.nav` draws, so a view the plan left out of `views` has no binding, no tooltip and no sheet
 line. `g h` is the one that is not a nav item — Help is in the footer — and it follows `links.help`.
 
-**`n` follows the page's own create control, and falls back to `links.new`.** On the records lists
-it is the `Create …` link, so on `/issues` and `/notes` it carries the kind. On the Table it opens
-the inline draft row, because that is the Table's own way to create. Elsewhere it goes to
-`links.new`, and where that is empty — the static export — `n` does not exist.
+**`n` presses the page's own create control, and exists only where there is one.** On the records
+lists it is the `Create …` link, so on `/issues` and `/notes` it carries the kind. On the Table it
+opens the inline draft row, because that is the Table's own way to create. The design first had it
+fall back to `links.new` everywhere else, and that was taken out while building: `_page` cannot tell
+a reader from a writer, so the fallback offered a signed-out reader a key whose only answer was a
+403 from `/new` — the control `test_a_served_table_for_a_reader_offers_no_editor_and_still_reads`
+exists to keep off the page. A page draws its create control only for somebody who may write, so
+following the control is the rule that already knows. The cost is that `n` does nothing on the
+graph, the timeline, a cycle or a record page.
 
 **`/` focuses the page's search box** — `#q` on the views with the facet bar, `#betfind` on the cycle
 page — and selects its text. A page with no search box does not list `/`. Its default is prevented,
@@ -198,7 +203,9 @@ second list.
 
 ### One notation, for the reader's platform
 
-Decided once in the shell, from `navigator.userAgentData?.platform ?? navigator.platform`:
+Decided once in the shell, from `navigator.userAgentData?.platform ?? navigator.platform`, matched
+without case — `userAgentData` answers `macOS`, and a case-sensitive `/Mac/` labelled every
+tooltip on a Mac with Ctrl:
 
 | reader on  | Save   | view chord   | Bold   | sequences |
 | ---------- | ------ | ------------ | ------ | --------- |
