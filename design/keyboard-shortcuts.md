@@ -116,8 +116,9 @@ exemptions, and the census fails on any third.
 | `n`   | New      | `?`   | This sheet   |
 
 **A letter goes to the first nav item that wants it.** Each item carries its preferred letters —
-Timeline's are `t` then `l`, every other item has one — and the nav's own order hands them out,
-each item taking its first letter nobody before it has. Table precedes Timeline, so with both drawn
+Timeline's are `t` then `l`, every other item has one — and they are handed out in `_NAV`'s order
+over the items this plan draws, each taking its first letter nobody before it has. `_NAV`'s and not
+`views`' order, so a plan that lists Timeline first does not take `t` away from a Table it also shows. Table precedes Timeline, so with both drawn
 Timeline is `g l`; a plan that leaves Table out of `views`, as `icon4py-plan` does, gets `g t` for
 Timeline. jcanton, 2026-11-19: *"when table/ is disabled (e.g. for icon4py-plan) the t goes to
 timeline instead of table?"* A key that moves between plans is acceptable because nobody has to
