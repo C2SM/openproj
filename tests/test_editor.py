@@ -39,11 +39,13 @@ from test_web import (
     SECRET,
     SEED,
     TASK,
+    _plan_saying,
     file_at,
     git_head,
     head,
     live_server,  # noqa: F401 — a fixture, requested by name below
     save,
+    serving,
 )
 
 from openproj.auth import sign_session
@@ -12439,3 +12441,130 @@ def test_blockers_are_edited_by_their_titles_and_saved_as_their_ids(
             time.sleep(0.25)
         assert stored() == [OTHER], f"Save wrote {stored()}, not the one blocker left in the box"
         assert not [line for line in said if "TypeError" in line or "ReferenceError" in line], said
+
+
+# --- Keyboard shortcuts: the `g` keys, in a real browser --------------------
+#
+# Trusted `Input.dispatchKeyEvent` and not a synthetic `KeyboardEvent`, because
+# the claim is about where the key lands: a synthetic event dispatched on
+# `document` never reaches a focused field, so it cannot tell a guard that works
+# from one that was never asked.
+
+_KEYS_WINDOW = ("--window-size=1280,800",)
+
+
+def _key(call, key: str, code: str, shift: bool = False) -> None:
+    for kind in ("rawKeyDown", "char", "keyUp"):
+        if kind == "char" and len(key) != 1:
+            continue
+        call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": kind,
+                "key": key,
+                "code": code,
+                "text": key if kind == "char" else "",
+                "modifiers": 8 if shift else 0,
+                "windowsVirtualKeyCode": ord(key.upper()) if len(key) == 1 else 0,
+            },
+        )
+
+
+def _gt(call) -> None:
+    _key(call, "g", "KeyG")
+    time.sleep(0.2)
+    _key(call, "t", "KeyT")
+    time.sleep(1.5)
+
+
+def test_g_then_a_letter_goes_there_and_badges_name_the_letters(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        badges = _evaluated(
+            call,
+            "[...document.querySelectorAll('.gohint')].map(b => "
+            "[b.parentNode.dataset.keys, b.textContent])",
+        )
+        links = _evaluated(call, "document.querySelectorAll('[data-keys^=\"go-\"]').length")
+        assert len(badges) == links, (badges, links)
+        assert ["go-timeline", "l"] in badges, badges
+        _key(call, "l", "KeyL")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/timeline"
+
+
+def test_a_g_typed_where_text_goes_is_text(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _evaluated(call, "document.getElementById('q').focus()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == "/table"
+        assert _evaluated(call, "document.querySelectorAll('.gohint').length") == 0
+        assert _evaluated(call, "document.getElementById('q').value").endswith("gt")
+
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "q", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, "document.querySelector('input[name=\"title\"]').focus()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
+        assert _evaluated(call, "document.querySelector('input[name=\"title\"]').value").endswith(
+            "gt"
+        )
+        assert _evaluated(call, "!!SURFACE.editor"), "the record page is not on Ace"
+        _evaluated(call, "SURFACE.editor.focus(); SURFACE.editor.navigateFileEnd()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
+        assert _evaluated(call, "SURFACE.editor.getValue()").endswith("gt")
+        assert _evaluated(call, "document.querySelectorAll('.gohint').length") == 0
+
+
+def test_shift_and_caps_still_navigate(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "G", "KeyG", shift=True)
+        time.sleep(0.2)
+        _key(call, "T", "KeyT", shift=True)
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_an_unmatched_second_key_disarms(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        _key(call, "z", "KeyZ")
+        time.sleep(0.5)
+        assert _evaluated(call, "document.querySelectorAll('.gohint').length") == 0
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_a_plan_without_table_gets_t_for_timeline(tmp_path: Path):
+    plan = _plan_saying(tmp_path, "views: [cycles, timeline, graph]\n")
+    with serving(create_app(plan, auth="dev", secret=SECRET)) as url:
+        with _devtools(chrome(), f"{url}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+            time.sleep(2)
+            _gt(call)
+            assert _evaluated(call, "location.pathname") == "/timeline"
+
+
+def test_a_key_does_not_leave_unsaved_work(live_server: str, tmp_path: Path):  # noqa: F811
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, "document.querySelector('input[name=\"title\"]').focus()")
+        _key(call, "x", "KeyX")
+        _evaluated(call, "document.activeElement.blur()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
+        said = _evaluated(
+            call,
+            "(document.getElementById('state') || document.getElementById('announce')).textContent",
+        )
+        assert "Save or reset first" in said, said
