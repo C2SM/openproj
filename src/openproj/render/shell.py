@@ -781,6 +781,24 @@ nav a, #buildhelp a { position: relative; }
   font: 700 .72rem/1 var(--font-mono); padding: .18rem .32rem; border-radius: 4px;
   background: var(--accent); color: var(--on-accent); pointer-events: none; z-index: 50; }
 #build .gohint { top: auto; bottom: 1.3rem; }
+#keysbutton { margin-left: .4rem; padding: 0 .35rem; font: inherit; line-height: 1.2;
+  color: inherit; background: none; border: 1px solid var(--line-strong); border-radius: 4px; }
+#keysbutton:hover { color: var(--accent); border-color: var(--accent); }
+@media (pointer: coarse) { #keysbutton { display: none; } }
+#keysheet { max-width: min(36rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem);
+  padding: 1rem 1.25rem; color: var(--fg); background: var(--surface);
+  border: 1px solid var(--line-strong); border-radius: 8px; }
+#keysheet::backdrop { background: rgb(0 0 0 / .35); }
+#keysheet h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+#keysheet h3 { margin: .9rem 0 .3rem; font-size: .8rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; }
+#keysheet dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem;
+  margin: 0; }
+#keysheet dt { white-space: nowrap; color: var(--muted); }
+#keysheet dd { margin: 0; }
+#keysheet kbd { font: .8rem/1 var(--font-mono); padding: .15rem .35rem; color: var(--fg);
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; }
+#keysheet .keyswitch { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid var(--line); }
 /* Where you are: weight, colour and a box, all three. Colour alone is not a
    signal this app accepts anywhere else — the status ladder is a luminance ramp
    and a glyph for the same reason — and the nav is the one component every page
@@ -2611,9 +2629,14 @@ const SINGLE_KEYS = 'openproj:single-keys';
 let singleKeysOff = remembered.get(SINGLE_KEYS, 'on') === 'off';
 function shortcutsOff() { return singleKeysOff; }
 
+// The input types that take text, as an allowlist: a facet checkbox somebody
+// just clicked keeps focus and must not swallow `g`
+const TEXT_INPUTS = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number',
+  'date', 'datetime-local', 'month', 'week', 'time']);
 function isTyping(target) {
-  return !!(target && target.closest
-    && target.closest('input, textarea, select, [contenteditable], .ace_editor'));
+  if (!target || !target.closest) return false;
+  if (target.matches('input')) return TEXT_INPUTS.has(target.type);
+  return !!target.closest('textarea, select, [contenteditable], .ace_editor');
 }
 
 // Something on top of the page that has the keyboard: a drawing, the record
@@ -2622,7 +2645,7 @@ function isTyping(target) {
 function covered() {
   return cardPinned
     || document.documentElement.classList.contains('presenting')
-    || !!document.querySelector('#pop:not([hidden]), .drawpopup, dialog[open]:not(#keysheet)');
+    || !!document.querySelector('#pop:not([hidden]), .drawpopup, dialog[open]');
 }
 
 function quiet(event) {
@@ -2671,6 +2694,12 @@ addEventListener('keydown', event => {
     location.href = hit[1].href;
     return;
   }
+  // Before the switch, because the sheet is where the switch is
+  if (event.key === '?') {
+    event.preventDefault();
+    openSheet();
+    return;
+  }
   if (singleKeysOff) return;
   if (key === 'g') {
     event.preventDefault();
@@ -2688,6 +2717,58 @@ addEventListener('keydown', event => {
     if (control) control.click();
     else location.href = {{ links.new|tojson }};
   }
+});
+
+// --- The sheet ------------------------------------------------------------
+// The dialog and its button are drawn after this script, at the foot of the page
+const sheet = () => document.getElementById('keysheet');
+const SHEET_SECTIONS = [['go', 'Go to'], ['page', 'On this page'], ['editor', 'Editor'],
+  ['presenting', 'Presenting']];
+let sheetReturn = null;
+
+function openSheet() {
+  const live = liveKeys();
+  const list = sheet().querySelector('.keylist');
+  list.replaceChildren();
+  for (const [section, heading] of SHEET_SECTIONS) {
+    const entries = live.filter(entry => entry.section === section);
+    if (!entries.length) continue;
+    const block = document.createElement('section');
+    const title = document.createElement('h3');
+    title.textContent = heading;
+    const rows = document.createElement('dl');
+    for (const entry of entries) {
+      const keys = document.createElement('dt');
+      entry.keys.forEach((one, at) => {
+        if (at) keys.append(' or ');
+        const cap = document.createElement('kbd');
+        cap.textContent = oneLabel(one);
+        keys.append(cap);
+      });
+      const words = document.createElement('dd');
+      words.textContent = entry.words;
+      rows.append(keys, words);
+    }
+    block.append(title, rows);
+    list.append(block);
+  }
+  document.getElementById('singlekeys').checked = !singleKeysOff;
+  sheetReturn = document.activeElement;
+  sheet().showModal();
+}
+addEventListener('DOMContentLoaded', () => {
+  sheet().addEventListener('close', () => {
+    if (sheetReturn && sheetReturn.focus) sheetReturn.focus();
+    sheetReturn = null;
+  });
+  document.getElementById('keysheet-close').addEventListener('click', () => sheet().close());
+  document.getElementById('keysbutton').addEventListener('click', openSheet);
+  document.getElementById('singlekeys').addEventListener('change', event => {
+    singleKeysOff = !event.target.checked;
+    const kept = remembered.set(SINGLE_KEYS, singleKeysOff ? 'off' : 'on');
+    document.getElementById('singlekeys-said').textContent = kept
+      ? '' : 'This browser will not keep the choice; it applies to this page.';
+  });
 });
 
 // How every search box on every page decides whether a needle is in a haystack.
@@ -4256,7 +4337,9 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       box, and as an inline box inside a flex item the link's padding widens the
       mark without making the row any taller on the one page that draws it. -#}
   <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help"
-    {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
+    {%- if help_here %} aria-current="page"{% endif %}>Help</a>
+    <button type="button" id="keysbutton" data-keys="sheet"
+      aria-label="Keyboard shortcuts">?</button></span>
   <a id="report" href="https://github.com/C2SM/openproj/issues/new">Report issue</a>
   {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
       "on mobile takes up too much space: I'd rather it be only one line with a
@@ -4270,6 +4353,15 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
     <div class="buildshelf"></div>
   </details>
 </footer>
+{#- Filled by `openSheet` from the shortcuts live on this page, so it lists
+    nothing a page does not do. -#}
+<dialog id="keysheet" aria-labelledby="keysheet-h">
+  <h2 id="keysheet-h">Keyboard shortcuts</h2>
+  <div class="keylist"></div>
+  <p class="keyswitch"><label><input type="checkbox" id="singlekeys">
+    Single-key shortcuts</label> <span id="singlekeys-said"></span></p>
+  <p><button type="button" id="keysheet-close">Close</button></p>
+</dialog>
 <script>
 // **Sign-in, the plan picker and the theme toggle move to the footer on a
 // phone.** jcanton, 2026-08-26: "I'd move the sign-in and theme and light/dark

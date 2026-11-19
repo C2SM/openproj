@@ -205,6 +205,13 @@ authored by whoever wrote the most of it, with a `Co-authored-by:` for everybody
 committed to the same record while you were writing, the page says so in one line and keeps your
 draft rather than throwing it away.
 
+## Keyboard shortcuts
+
+Press `?` on any page, or the `?` beside Help at the foot of it, for the shortcuts that work on that
+page. `g` and a letter go to another view, and the letters are drawn on the links while `g` waits.
+The same sheet has a switch for the single-key shortcuts, for anybody who would rather a stray key
+did nothing.
+
 ## Editing it in git
 
 Both directions are first class. The files are ordinary markdown, a save from the browser is one
