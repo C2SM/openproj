@@ -12695,16 +12695,22 @@ def test_toolbar_titles_use_the_platform_notation(live_server: str, tmp_path: Pa
         assert write == "Write  Ctrl+Shift+1", write
 
 
+ACE = "document.querySelector('.ace_editor').env.editor"
+
+
 def test_escape_then_tab_leaves_ace(live_server: str, tmp_path: Path):  # noqa: F811
     """jcanton, 2026-11-19: the hatch announces "Press Tab to leave the document"
     and then Ace indents. Ace's Tab command stops the event before `area`'s
-    bubbling listener can let it through."""
-    url = f"{live_server}/detail/{TASK}?edit"
+    bubbling listener can let it through.
+
+    On the slide editor, because on the record page Escape leaves the view
+    before the hatch is ever armed."""
+    url = f"{live_server}/detail/{TASK}?view=slide"
     with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
         time.sleep(2.5)
-        _evaluated(call, "SURFACE.editor.focus(); SURFACE.editor.navigateFileEnd()")
+        _evaluated(call, f"{ACE}.focus(); {ACE}.navigateFileEnd()")
         _key(call, "x", "KeyX")
-        before = _evaluated(call, "SURFACE.editor.getValue()")
+        before = _evaluated(call, f"{ACE}.getValue()")
         for key, code in (("Escape", "Escape"), ("Tab", "Tab")):
             for kind in ("rawKeyDown", "keyUp"):
                 call(
@@ -12717,7 +12723,7 @@ def test_escape_then_tab_leaves_ace(live_server: str, tmp_path: Path):  # noqa: 
                     },
                 )
             time.sleep(0.2)
-        assert _evaluated(call, "SURFACE.editor.getValue()") == before, "Tab indented"
+        assert _evaluated(call, f"{ACE}.getValue()") == before, "Tab indented"
         assert not _evaluated(call, "!!document.activeElement.closest('.ace_editor')"), (
             "Tab after Escape left the keyboard in the editor"
         )
