@@ -19,6 +19,7 @@ import json
 import math
 import re
 import time
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -26,6 +27,7 @@ import pygit2
 import pytest
 from browser import _devtools, _evaluated, chrome, in_a_live_page, measured_in
 from fastapi.testclient import TestClient
+from marionette import driving
 from pages import elements, tags
 from test_store import commit_directly
 from test_web import (
@@ -49,7 +51,9 @@ from test_web import (
 )
 
 from openproj.auth import sign_session
-from openproj.render import preview_html
+from openproj.index import build_index
+from openproj.model import load_repo
+from openproj.render import preview_html, render_deck, render_table
 from openproj.render.tokens import _over, _percent
 from openproj.vendor import ACE_FILES
 from openproj.web import MAX_ASSET_BYTES, SESSION_COOKIE, create_app
@@ -12807,3 +12811,135 @@ def test_the_sheet_sections_follow_the_page(tmp_path: Path):
         deck = set(_evaluated(call, ids))
     assert {"cell-edit", "row-move", "escape"} <= table and "slide-next" not in table, table
     assert {"slide-next", "thumb-up"} <= deck and "cell-edit" not in deck, deck
+
+
+# --- From the whole-branch review --------------------------------------------
+
+
+def _shifted(call, key: str, code: str) -> None:
+    """A capital the way a keyboard sends it: Shift goes down first, on its own."""
+    shift = {"key": "Shift", "code": "ShiftLeft", "windowsVirtualKeyCode": 16}
+    call("Input.dispatchKeyEvent", {"type": "rawKeyDown", "modifiers": 8, **shift})
+    _key(call, key, code, shift=True)
+    call("Input.dispatchKeyEvent", {"type": "keyUp", **shift})
+
+
+def test_a_capital_typed_with_its_own_shift_still_navigates(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _shifted(call, "G", "KeyG")
+        time.sleep(0.2)
+        _shifted(call, "T", "KeyT")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_vim_keeps_its_keys_out_of_the_tooltips_and_the_sheet(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    """Under vim on Windows and Linux, Ctrl+B and Ctrl+E are vim's."""
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), "about:blank", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        call("Page.enable")
+        call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "localStorage.setItem('openproj:editor:1', '{\"keymap\": \"vim\"}')"},
+        )
+        call("Page.navigate", {"url": url})
+        time.sleep(3)
+        titles = _evaluated(
+            call,
+            "['bold', 'code', 'italic'].map(id => "
+            "document.querySelector(`[data-keys=\"${id}\"]`).title)",
+        )
+        assert titles == ["Bold", "Code", "Italic  Ctrl+I"], titles
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        assert {"Ctrl+B", "Ctrl+E"}.isdisjoint(_sheet(call)["keys"]), _sheet(call)
+
+
+def test_a_reader_is_not_offered_the_thumbnail_moves(seed_root: Path, tmp_path: Path):
+    records, config, _ = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17))
+    page = tmp_path / "deck.html"
+    page.write_text(render_deck(index, 37, may_write=False))
+    with _devtools(chrome(), page.as_uri(), tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        live = set(_evaluated(call, "liveKeys().map(entry => entry.id)"))
+    assert "thumb-open" in live and not {"thumb-up", "thumb-down"} & live, live
+
+
+def test_slash_focuses_the_search_box_and_n_presses_create(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "/", "Slash")
+        time.sleep(0.2)
+        assert _evaluated(call, "[document.activeElement.id, document.activeElement.value]") == [
+            "q",
+            "",
+        ]
+        _evaluated(call, "document.activeElement.blur()")
+        _key(call, "n", "KeyN")
+        time.sleep(0.5)
+        assert _evaluated(call, "!!document.querySelector('#rows tr.draft')"), "no draft row"
+        call("Page.navigate", {"url": f"{live_server}/"})
+        time.sleep(2)
+        _key(call, "n", "KeyN")
+        time.sleep(2)
+        assert _evaluated(call, "location.pathname") == "/new"
+
+
+def test_a_key_does_not_leave_a_draft_row_with_writing_in_it(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "n", "KeyN")
+        time.sleep(0.5)
+        _evaluated(
+            call,
+            "(i => { i.focus(); })(document.querySelector('#rows tr.draft input, "
+            "#rows tr.draft [contenteditable]'))",
+        )
+        for letter in "draft":
+            _key(call, letter, f"Key{letter.upper()}")
+        _evaluated(call, "document.activeElement.blur()")
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        _key(call, "g", "KeyG")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_slash_is_ours_and_not_firefox_quick_find(seed_root: Path, tmp_path: Path):
+    """Firefox opens quick find on `/` unless the page prevents the key, and then
+    nothing on the page is focused and the box is left empty."""
+    records, config, _ = load_repo(seed_root)
+    table = render_table(build_index(records, config, date(2026, 8, 17)))
+    with driving(table, tmp_path / "table.html") as browser:
+        browser.call(
+            "WebDriver:PerformActions",
+            {
+                "actions": [
+                    {
+                        "type": "key",
+                        "id": "keyboard",
+                        "actions": [
+                            {"type": "keyDown", "value": "/"},
+                            {"type": "keyUp", "value": "/"},
+                        ],
+                    }
+                ]
+            },
+        )
+        assert browser.js("[document.activeElement.id, document.activeElement.value]") == [
+            "q",
+            "",
+        ]
