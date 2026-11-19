@@ -32,8 +32,8 @@ _RECORDS = """
     have. -#}
 {{ facets }}
 {%- if creatable %}
-<p class="editbar"><a class="button" data-keys="new"
-  href="{{ create.href }}">{{ create.label }}</a></p>
+<p class="editbar"><a class="button" href="{{ create.href }}" data-keys="new">{{ create.label }}</a>
+</p>
 {%- endif %}
 <div class="table-scroll carded" data-fills><table id="records" class="unfitted"><thead><tr>
   {%- for column in columns %}
@@ -60,7 +60,7 @@ _RECORDS = """
     <p class="headline">{% if not rows %}{{ said.empty_headline }}{% endif %}</p>
     <p class="hint">{% if not rows %}{{ said.empty_hint }}{% endif %}</p>
     {%- if not rows and creatable %}
-    <a class="button primary" data-keys="new" href="{{ create.href }}">{{ create.label }}</a>
+    <a class="button primary" href="{{ create.href }}" data-keys="new">{{ create.label }}</a>
     {%- endif %}
   </td></tr>
 </tbody></table></div>

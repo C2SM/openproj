@@ -1576,7 +1576,7 @@ def _coedit_source(page: str) -> str:
 # and the boundary is a boundary with a hole in it.
 _THROUGH_THE_SURFACE = (
     "let ORIGINAL_BODY = SURFACE.text();",  # the baseline
-    "const count = Object.keys(fields).length + (SURFACE.text()",  # dirty
+    "return Object.keys(fields).length + (SURFACE.text()",  # pending, read by dirty and unsaved
     "const body = SURFACE.text() === ORIGINAL_BODY ? null : SURFACE.text();",  # save
     "text: SURFACE.text()}))",  # the draft writer
     "draft.text !== SURFACE.text()",  # the draft restorer
@@ -12465,9 +12465,12 @@ def _key(call, key: str, code: str, shift: bool = False) -> None:
                 "code": code,
                 "text": key if kind == "char" else "",
                 "modifiers": 8 if shift else 0,
-                "windowsVirtualKeyCode": ord(key.upper()) if len(key) == 1 else 0,
+                "windowsVirtualKeyCode": ord(key.upper()) if len(key) == 1 else _VK[key],
             },
         )
+
+
+_VK = {"Escape": 27, "Tab": 9}
 
 
 def _gt(call) -> None:

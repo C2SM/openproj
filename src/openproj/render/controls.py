@@ -35,8 +35,8 @@ _FACETS = """
       it never reaches the accessibility tree as one. Every dropdown beside this
       box is wrapped in its `<label>`; the search box was the one control in the
       bar that had nothing to say what it searches. -#}
-  <input id="q" type="search" data-keys="search" aria-label="{{ search }}"
-    placeholder="{{ search }}">
+  <input id="q" type="search" aria-label="{{ search }}" placeholder="{{ search }}"
+    data-keys="search">
   {#- What is wrong with what is in the box. Here rather than in each view,
       because the box is in the bar and the bar is shared: the table can say it
       again over its own empty rows, and does, but the graph and the timeline

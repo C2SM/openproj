@@ -210,7 +210,7 @@ def test_each_view_offers_its_own_create_button(tmp_path: Path):
         }
         for route, (href, label) in wanted.items():
             page = client.get(route).text
-            assert f'<a class="button" {href}>{label}</a>' in page, route
+            assert f'<a class="button" {href} data-keys="new">{label}</a>' in page, route
 
 
 def test_the_who_column_reads_the_field_the_rung_says(tmp_path: Path):
@@ -336,7 +336,7 @@ def test_a_plan_with_no_records_says_so_from_the_server(tmp_path: Path):
     # control on it hidden.
     served = render_records(index, ROUTES, base_commit="abc", edited={}, now=0, may_write=True)
     assert "This plan has no records yet." in served
-    assert '<a class="button primary" href="/new">Create record</a>' in served
+    assert '<a class="button primary" href="/new" data-keys="new">Create record</a>' in served
 
 
 def test_an_empty_view_and_an_empty_plan_are_different_sentences(tmp_path: Path):
@@ -355,11 +355,16 @@ def test_an_empty_view_and_an_empty_plan_are_different_sentences(tmp_path: Path)
         landing = client.get("/").text
 
     assert "No issues are open." in issues
-    assert '<a class="button primary" href="/new?kind=issue">Create issue</a>' in issues
+    assert (
+        '<a class="button primary" href="/new?kind=issue" data-keys="new">Create issue</a>'
+        in issues
+    )
     assert "no records yet" not in issues
 
     assert "Nothing has been written down yet." in notes
-    assert '<a class="button primary" href="/new?kind=note">Create note</a>' in notes
+    assert (
+        '<a class="button primary" href="/new?kind=note" data-keys="new">Create note</a>' in notes
+    )
 
     # The landing still has rows, so its nothing-row is hidden and empty —
     # the sentence rides only the SAID payload, for the states the browser

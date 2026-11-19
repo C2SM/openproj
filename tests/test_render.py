@@ -2822,7 +2822,7 @@ def test_the_people_page_draws_the_control_bar_the_plan_draws(rendered: Path):
     people, index = read(rendered, "people.html"), read(rendered, "table.html")
     shape = (
         r'<div id="controls">\s*<div class="searching">\s*'
-        r'<input id="q" type="search" aria-label="([^"]+)" placeholder="\1">'
+        r'<input id="q" type="search" aria-label="([^"]+)" placeholder="\1"\s*data-keys="search">'
     )
 
     for name, page in (("people", people), ("index", index)):

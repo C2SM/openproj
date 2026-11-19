@@ -781,9 +781,8 @@ nav a, #buildhelp a { position: relative; }
   font: 700 .72rem/1 var(--font-mono); padding: .18rem .32rem; border-radius: 4px;
   background: var(--accent); color: var(--on-accent); pointer-events: none; z-index: 50; }
 #build .gohint { top: auto; bottom: 1.3rem; }
-#keysbutton { margin-left: .4rem; padding: 0 .35rem; font: inherit; line-height: 1.2;
-  color: inherit; background: none; border: 1px solid var(--line-strong); border-radius: 4px; }
-#keysbutton:hover { color: var(--accent); border-color: var(--accent); }
+/* The shared button, made small enough to sit in the footer's line */
+#keysbutton { margin-left: .4rem; padding: 0 .35rem; font-size: inherit; line-height: 1.2; }
 @media (pointer: coarse) { #keysbutton { display: none; } }
 #keysheet { max-width: min(36rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem);
   padding: 1rem 1.25rem; color: var(--fg); background: var(--surface);
@@ -798,7 +797,7 @@ nav a, #buildhelp a { position: relative; }
 #keysheet dd { margin: 0; }
 #keysheet kbd { font: .8rem/1 var(--font-mono); padding: .15rem .35rem; color: var(--fg);
   border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; }
-#keysheet .keyswitch { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid var(--line); }
+#keysheet .keyswitch { margin-top: 1.25rem; }
 /* Where you are: weight, colour and a box, all three. Colour alone is not a
    signal this app accepts anywhere else — the status ladder is a luminance ramp
    and a glyph for the same reason — and the nav is the one component every page
@@ -4359,8 +4358,8 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
 <dialog id="keysheet" aria-labelledby="keysheet-h">
   <h2 id="keysheet-h">Keyboard shortcuts</h2>
   <div class="keylist"></div>
-  <p class="keyswitch"><label><input type="checkbox" id="singlekeys">
-    Single-key shortcuts</label> <span id="singlekeys-said"></span></p>
+  <p class="keyswitch"><input type="checkbox" id="singlekeys">
+    <label for="singlekeys">Single-key shortcuts</label> <span id="singlekeys-said"></span></p>
   <p><button type="button" id="keysheet-close">Close</button></p>
 </dialog>
 <script>
