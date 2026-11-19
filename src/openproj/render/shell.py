@@ -788,12 +788,17 @@ nav a, #buildhelp a { position: relative; }
   padding: 1rem 1.25rem; color: var(--fg); background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: 8px; }
 #keysheet::backdrop { background: rgb(0 0 0 / .35); }
-#keysheet h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+#keysheet .keyhead { display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; margin: 0 0 .5rem; }
+#keysheet h2 { margin: 0; font-size: 1.1rem; }
 #keysheet h3 { margin: .9rem 0 .3rem; font-size: .8rem; color: var(--muted);
   text-transform: uppercase; letter-spacing: .04em; }
 #keysheet dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem;
   margin: 0; }
-#keysheet dt { white-space: nowrap; color: var(--muted); }
+/* The record page's bare `dt` (styles.py) is uppercase field-label type; at
+   (1,0,1) this outranks it, so the four properties it sets are set back here */
+#keysheet dt { white-space: nowrap; color: var(--muted); text-transform: none;
+  letter-spacing: normal; font-size: inherit; padding-top: 0; }
 #keysheet dd { margin: 0; }
 #keysheet kbd { font: .8rem/1 var(--font-mono); padding: .15rem .35rem; color: var(--fg);
   border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; }
@@ -4366,12 +4371,14 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
 </footer>
 {#- Filled by `openSheet` from the shortcuts live on this page, so it lists
     nothing a page does not do. -#}
+{#- Close first, because a modal focuses its first control: with the switch
+    first, a long sheet opened scrolled to its foot. -#}
 <dialog id="keysheet" aria-labelledby="keysheet-h">
-  <h2 id="keysheet-h">Keyboard shortcuts</h2>
+  <div class="keyhead"><h2 id="keysheet-h">Keyboard shortcuts</h2>
+    <button type="button" id="keysheet-close">Close</button></div>
   <div class="keylist"></div>
   <p class="keyswitch"><input type="checkbox" id="singlekeys">
     <label for="singlekeys">Single-key shortcuts</label> <span id="singlekeys-said"></span></p>
-  <p><button type="button" id="keysheet-close">Close</button></p>
 </dialog>
 <script>
 // **Sign-in, the plan picker and the theme toggle move to the footer on a
