@@ -196,7 +196,7 @@ _SLIDE = """
       -#}
   <div class="commitbar" id="commitbar">
     <span id="unsaved">Nothing changed yet</span>
-    <button type="button" id="save">Save</button>
+    <button type="button" id="save" data-keys="save">Save</button>
     <button type="button" id="reset" disabled>Reset</button>
     <span id="state" role="status"></span>
   </div>
@@ -539,6 +539,7 @@ const PROSE = document.getElementById('prose');
 const PREVIEW = document.getElementById('preview');
 const FITNOTE = document.getElementById('fitnote');
 const SAVE = document.getElementById('save');
+bindSaveKey(SAVE);
 window.unsaved = () => dirty() > 0;
 const RESET = document.getElementById('reset');
 const BASE = document.getElementById('base');

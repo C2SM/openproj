@@ -81,7 +81,7 @@ _CYCLE = """
     Save, and the bar is on screen at both ends of it either way. -#}
 <div class="commitbar" id="commitbar">
   <span id="unsaved">Nothing to save</span>
-  <button type="button" id="save" disabled>Save</button>
+  <button type="button" id="save" data-keys="save" disabled>Save</button>
   <span id="state" role="status"></span>
   <input type="hidden" id="base" value="{{ base_commit }}">
 </div>
@@ -491,6 +491,7 @@ async function put(fields, body = null) {
 }
 
 const SAVE = document.getElementById('save');
+bindSaveKey(SAVE);
 window.unsaved = () => !SAVE.disabled;
 const NOTES = document.getElementById('notes');
 const GOAL = document.getElementById('goal');

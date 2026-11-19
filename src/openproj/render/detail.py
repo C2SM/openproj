@@ -1334,7 +1334,7 @@ _DETAIL = """
   <div class="commitbar" id="commitbar"{% if not creating %} hidden{% endif %}>
     {% if creating %}
     <span id="unsaved">Nothing is written until you press Create</span>
-    <button type="button" id="save">Create</button>
+    <button type="button" id="save" data-keys="save">Create</button>
     <span id="state" role="status"></span>
     {% else %}
     <span id="unsaved">Nothing to save</span>
@@ -1345,7 +1345,7 @@ _DETAIL = """
         written — an autosave that says "saved" before it has saved anything is
         the worst thing in this row. -#}
     <span id="draftsaved" class="hint"></span>
-    <button type="button" id="save" hidden>Save</button>
+    <button type="button" id="save" data-keys="save" hidden>Save</button>
     {#- **Reset, and it was Cancel until 2026-08-25.** jcanton: "the 'Cancel'
         button exits editing and goes to preview, even if there's no edit to
         cancel. maybe we should change its function: call it 'reset' and it

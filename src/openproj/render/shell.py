@@ -2719,6 +2719,17 @@ addEventListener('keydown', event => {
   }
 });
 
+// ⌘S on a page whose Save button is its own: pressed only when it is drawn and
+// on, so there is never a second path to a save
+function bindSaveKey(button) {
+  addEventListener('keydown', event => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    if (event.key.toLowerCase() !== 's') return;
+    event.preventDefault();
+    if (visible(button) && !button.disabled) button.click();
+  });
+}
+
 // --- The sheet ------------------------------------------------------------
 // The dialog and its button are drawn after this script, at the foot of the page
 const sheet = () => document.getElementById('keysheet');
