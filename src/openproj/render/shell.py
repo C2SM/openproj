@@ -2711,11 +2711,11 @@ addEventListener('keydown', event => {
     event.preventDefault();
     box.focus();
     box.select();
-  } else if (key === 'n' && KEY_BY_ID.has('new')) {
+  } else if (key === 'n') {
     const control = firstVisible('[data-keys~="new"]');
+    if (!control) return;
     event.preventDefault();
-    if (control) control.click();
-    else location.href = {{ links.new|tojson }};
+    control.click();
   }
 });
 

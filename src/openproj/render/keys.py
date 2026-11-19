@@ -42,7 +42,9 @@ def _toolbar(id: str, words: str, chord: str) -> Key:
 
 
 KEYS: tuple[Key, ...] = (
-    Key("new", "New record", "page", ("n",), anywhere=True),
+    # Live only where the page draws its own create control, which it does only
+    # for somebody who may write: a reader is offered no key whose answer is a 403
+    Key("new", "Create a record", "page", ("n",)),
     Key("search", "Search", "page", ("/",)),
     Key("sheet", "Keyboard shortcuts", "page", ("?",), anywhere=True),
     Key("save", "Save", "editor", ("Mod+s",), own=True),
