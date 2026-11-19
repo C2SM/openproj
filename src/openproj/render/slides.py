@@ -539,6 +539,7 @@ const PROSE = document.getElementById('prose');
 const PREVIEW = document.getElementById('preview');
 const FITNOTE = document.getElementById('fitnote');
 const SAVE = document.getElementById('save');
+window.unsaved = () => dirty() > 0;
 const RESET = document.getElementById('reset');
 const BASE = document.getElementById('base');
 // The document as it was when this page was rendered, and the ONE thing Reset

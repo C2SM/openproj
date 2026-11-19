@@ -2201,15 +2201,24 @@ const UNSAVED = document.getElementById('unsaved');
 // `dirty()` runs on every character typed into the document.
 const RESET = document.getElementById('reset');
 
+// How many fields and bodies differ from what was loaded, for the bar and for
+// the shell's `g` keys, which must not leave unsaved work by a keystroke
+function pending() {
+  let fields = {};
+  // A number typed as a word throws in `read`; that is Save's message to deliver
+  try { fields = changed(); } catch (error) { fields = {}; }
+  return Object.keys(fields).length + (SURFACE.text() === ORIGINAL_BODY ? 0 : 1);
+}
+// The create form compares nothing against a base, so typing is what counts
+window.unsaved = () => CREATING
+  ? SURFACE.text() !== ORIGINAL_BODY || !!FORM.elements.title.value.trim()
+  : pending() > 0;
+
 function dirty() {
   // The create bar's sentence is static — "Nothing is written until you press
   // Create". A counter here would count fields against defaults nobody typed.
   if (CREATING) return;
-  let fields = {};
-  // A number typed as a word throws in `read`; that is Save's message to deliver,
-  // not a reason for the counter to stop counting the rest.
-  try { fields = changed(); } catch (error) { fields = {}; }
-  const count = Object.keys(fields).length + (SURFACE.text() === ORIGINAL_BODY ? 0 : 1);
+  const count = pending();
   const editing = document.querySelector('article.record').classList.contains('editing');
   // Gone entirely when there is nothing for it to say. It is a sticky bar, so it
   // was on screen the whole time somebody was READING a record, reporting

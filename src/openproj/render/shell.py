@@ -775,6 +775,12 @@ a, a:visited { color: var(--accent); }
    a reader had already clicked would have stayed in the accent while the rest
    went muted, which is a highlight that means "visited". */
 nav a, nav a:visited { color: var(--muted); }
+/* The letter a link answers to while `g` is armed, centred above it */
+nav a, #buildhelp a { position: relative; }
+.gohint { position: absolute; left: 50%; top: -.55rem; transform: translateX(-50%);
+  font: 700 .72rem/1 var(--font-mono); padding: .18rem .32rem; border-radius: 4px;
+  background: var(--accent); color: var(--on-accent); pointer-events: none; z-index: 50; }
+#build .gohint { top: auto; bottom: 1.3rem; }
 /* Where you are: weight, colour and a box, all three. Colour alone is not a
    signal this app accepts anywhere else — the status ladder is a luminance ramp
    and a glyph for the same reason — and the nav is the one component every page
@@ -2593,6 +2599,96 @@ function liveKeys() {
 
 // After every page script has built what it builds
 addEventListener('DOMContentLoaded', () => labelKeys());
+
+// --- The bare keys: `g` and a letter, `/`, `n`, `?` ---------------------------
+//
+// A key with no modifier is a character somebody may be typing, so it is a
+// shortcut only when nothing that takes text has the keyboard and nothing on
+// top of the page owns it. Matched on `event.key` and case-folded, the opposite
+// of the editor's view chord: here the reader means the letter on the key, and
+// `?` is Shift+' on Swiss-German and Shift+/ on US, which both deliver `?`.
+const SINGLE_KEYS = 'openproj:single-keys';
+let singleKeysOff = remembered.get(SINGLE_KEYS, 'on') === 'off';
+function shortcutsOff() { return singleKeysOff; }
+
+function isTyping(target) {
+  return !!(target && target.closest
+    && target.closest('input, textarea, select, [contenteditable], .ace_editor'));
+}
+
+// Something on top of the page that has the keyboard: a drawing, the record
+// popup or right-click menu, a pinned card, a dialog other than the sheet, or
+// the deck while it is presenting
+function covered() {
+  return cardPinned
+    || document.documentElement.classList.contains('presenting')
+    || !!document.querySelector('#pop:not([hidden]), .drawpopup, dialog[open]:not(#keysheet)');
+}
+
+function quiet(event) {
+  return event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.repeat
+    || isTyping(event.target) || isTyping(document.activeElement) || covered();
+}
+
+const visible = element => !!(element && element.getClientRects().length && !element.hidden);
+const firstVisible = selector => [...document.querySelectorAll(selector)].find(visible);
+const goTargets = () => [...document.querySelectorAll('[data-keys^="go-"]')]
+  .map(element => [KEY_BY_ID.get(element.dataset.keys), element])
+  .filter(([entry]) => entry);
+
+let goArmed = 0;
+function goDisarm() {
+  clearTimeout(goArmed);
+  goArmed = 0;
+  document.querySelectorAll('.gohint').forEach(badge => badge.remove());
+}
+function goArm() {
+  const targets = goTargets();
+  for (const [entry, element] of targets) {
+    const badge = document.createElement('span');
+    badge.className = 'gohint';
+    badge.setAttribute('aria-hidden', 'true');
+    badge.textContent = entry.keys[0].split(' ')[1];
+    element.append(badge);
+  }
+  announce('Go to: ' + targets
+    .map(([entry]) => `${entry.keys[0].split(' ')[1]} ${entry.words}`).join(', '));
+  goArmed = setTimeout(goDisarm, 1500);
+}
+
+addEventListener('keydown', event => {
+  if (quiet(event)) { if (goArmed) goDisarm(); return; }
+  const key = event.key.toLowerCase();
+  if (goArmed) {
+    goDisarm();
+    const hit = goTargets().find(([entry]) => entry.keys[0] === `g ${key}`);
+    if (!hit) return;
+    event.preventDefault();
+    if (typeof window.unsaved === 'function' && window.unsaved()) {
+      announce('Save or reset first');
+      return;
+    }
+    location.href = hit[1].href;
+    return;
+  }
+  if (singleKeysOff) return;
+  if (key === 'g') {
+    event.preventDefault();
+    goArm();
+  } else if (key === '/') {
+    const box = firstVisible('[data-keys~="search"]');
+    if (!box) return;
+    // Prevented, which is also what keeps Firefox's quick find off it
+    event.preventDefault();
+    box.focus();
+    box.select();
+  } else if (key === 'n' && KEY_BY_ID.has('new')) {
+    const control = firstVisible('[data-keys~="new"]');
+    event.preventDefault();
+    if (control) control.click();
+    else location.href = {{ links.new|tojson }};
+  }
+});
 
 // How every search box on every page decides whether a needle is in a haystack.
 //

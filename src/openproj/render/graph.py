@@ -1345,6 +1345,7 @@ addEventListener('openproj:room', () => {
 
 const CONNECT = document.getElementById('connect');
 const SAVE = document.getElementById('save');
+window.unsaved = () => !SAVE.hidden && !SAVE.disabled;
 const DISCARD = document.getElementById('discard');
 let connecting = false;
 // `blocker`, not `source`: two classic scripts on one page share one global

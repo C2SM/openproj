@@ -2706,7 +2706,7 @@ function adderHtml() {
     // and the stylesheet shows one, for the reason the hint above the table
     // carries two sentences: which is true changes when the phone is turned.
     return `<tr class="adder"><td${wide}>` +
-      `<button type="button" id="add-row" class="add">+ New row</button>` +
+      `<button type="button" id="add-row" class="add" data-keys="new">+ New row</button>` +
       `<a class="button thumb-add" href="${esc(NEW_RECORD)}">+ New record</a>` +
       `<button type="button" id="unparent" hidden></button>` +
       `<span class="hint" id="rootless" hidden></span>` +
