@@ -12636,3 +12636,88 @@ def test_the_switch_works_when_storage_refuses(live_server: str, tmp_path: Path)
         _evaluated(call, "document.getElementById('keysheet').close()")
         _gt(call)
         assert _evaluated(call, "location.pathname") == "/graph"
+
+
+def _chord(call, key: str, code: str, modifiers: int) -> None:
+    # 2 is Ctrl and 8 is Shift. CI is Linux, where the toolbar's Mod is Ctrl
+    for kind in ("rawKeyDown", "keyUp"):
+        call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": kind,
+                "key": key,
+                "code": code,
+                "modifiers": modifiers,
+                "windowsVirtualKeyCode": ord(key.upper()),
+            },
+        )
+
+
+def test_the_toolbar_keys_ace_used_to_take_now_reach_the_toolbar(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    """Ace's own `replaymacro`, `expandtoline` and Ctrl-K `findnext` stopped these
+    three before the toolbar's listener saw them, so the tooltips named keys that
+    did something else."""
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        assert _evaluated(call, "!!SURFACE.editor"), "the record page is not on Ace"
+        for key, code, mods, wrote in (
+            ("E", "KeyE", 10, "```"),
+            ("L", "KeyL", 10, "- [ ] "),
+            ("k", "KeyK", 2, "]("),
+        ):
+            _evaluated(
+                call,
+                "SURFACE.editor.focus(); SURFACE.editor.navigateFileEnd();"
+                "SURFACE.editor.insert('\\n\\n')",
+            )
+            before = _evaluated(call, "SURFACE.editor.getValue()")
+            _chord(call, key, code, mods)
+            time.sleep(0.3)
+            after = _evaluated(call, "SURFACE.editor.getValue()")
+            assert after.count(wrote) > before.count(wrote), (key, mods, after[-80:])
+
+
+def test_toolbar_titles_use_the_platform_notation(live_server: str, tmp_path: Path):  # noqa: F811
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        bold = _evaluated(
+            call,
+            "(b => b && [b.title, b.getAttribute('aria-keyshortcuts')])"
+            "(document.querySelector('[data-keys=\"bold\"]'))",
+        )
+        assert bold == ["Bold  Ctrl+B", "Control+B"], bold
+        write = _evaluated(call, "document.querySelector('[data-keys=\"view-write\"]').title")
+        assert write == "Write  Ctrl+Shift+1", write
+
+
+def test_escape_then_tab_leaves_ace(live_server: str, tmp_path: Path):  # noqa: F811
+    """jcanton, 2026-11-19: the hatch announces "Press Tab to leave the document"
+    and then Ace indents. Ace's Tab command stops the event before `area`'s
+    bubbling listener can let it through."""
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, "SURFACE.editor.focus(); SURFACE.editor.navigateFileEnd()")
+        _key(call, "x", "KeyX")
+        before = _evaluated(call, "SURFACE.editor.getValue()")
+        for key, code in (("Escape", "Escape"), ("Tab", "Tab")):
+            for kind in ("rawKeyDown", "keyUp"):
+                call(
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": kind,
+                        "key": key,
+                        "code": code,
+                        "windowsVirtualKeyCode": 27 if key == "Escape" else 9,
+                    },
+                )
+            time.sleep(0.2)
+        assert _evaluated(call, "SURFACE.editor.getValue()") == before, "Tab indented"
+        assert not _evaluated(call, "!!document.activeElement.closest('.ace_editor')"), (
+            "Tab after Escape left the keyboard in the editor"
+        )
