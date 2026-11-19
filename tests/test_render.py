@@ -10327,3 +10327,22 @@ def test_every_key_id_is_unique():
     assert len(ids) == len(set(ids))
     served = [entry["id"] for entry in keys_for(ROUTES)]
     assert len(served) == len(set(served))
+
+
+def test_every_data_keys_id_is_in_the_registry(seed_index: Index, tmp_path: Path):
+    from openproj.render.keys import keys_for
+
+    views = ("cycles", "timeline")
+    written = render_static(seed_index.model_copy(update={"views": views}), tmp_path)
+    known = {entry["id"] for entry in keys_for(links_for(views, STATIC))}
+    for name in written:
+        page = (tmp_path / name).read_text()
+        said = {
+            token
+            for element in elements(page)
+            for token in element.attrs.get("data-keys", "").split()
+        }
+        assert said <= known, (name, said - known)
+        assert "go-graph" not in said, name
+    nav = [e for e in elements((tmp_path / "index.html").read_text()) if e.tag == "a"]
+    assert {e.attrs.get("data-keys") for e in nav} >= {"go-records", "go-timeline", "go-help"}

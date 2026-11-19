@@ -17,6 +17,7 @@ from .controls import _PLAN_FACETS
 from .env import _compiled
 from .hill import hill_geometry
 from .icons import _icon_uri
+from .keys import keys_for
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
 from .tokens import (
     _NAV,
@@ -2386,7 +2387,7 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     and from nothing else, so what a screen reader announces and what a reader
     sees cannot come apart. Whitespace between the links is a whitespace-only text
     node in a flex container, which is not a flex item and draws nothing. -#}
-<nav>{% for item in nav %}<a href="{{ item.href }}"
+<nav>{% for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
   {%- if item.current %} aria-current="page"{% endif %}>{{ item.label }}</a>
 {% endfor %}<span class="corner">
 {#- Who you are, and the only way in from the page. Reads are public here by
@@ -2511,6 +2512,87 @@ const ANNOUNCE = document.getElementById('announce');
 // `&` and the escaping is not idempotent.
 const esc = value => String(value ?? '').replace(/[&<>"]/g,
   c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+// Every shortcut this page can have, from `render/keys.py`, which is the only
+// place a key or its words are written. See `design/keyboard-shortcuts.md`.
+const KEYS = {{ keys|tojson }};
+const KEY_BY_ID = new Map(KEYS.map(entry => [entry.id, entry]));
+const APPLE = /Mac|iPhone|iPad/.test(
+  (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
+const ARROWS = {ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→'};
+const MAC_MODS = {Mod: '⌘', Ctrl: '⌃', Shift: '⇧', Alt: '⌥'};
+const PC_MODS = {Mod: 'Ctrl', Ctrl: 'Ctrl', Shift: 'Shift', Alt: 'Alt'};
+
+function keyName(token, chord) {
+  if (token.startsWith('Digit')) return token.slice(5);
+  if (ARROWS[token]) return ARROWS[token];
+  return chord && token.length === 1 ? token.toUpperCase() : token;
+}
+
+// One alternative, as the reader's platform writes it: ⌘⇧E on a Mac,
+// Ctrl+Shift+E elsewhere, and a sequence stays as typed, `g t`
+function oneLabel(keys) {
+  if (keys.includes(' ') || !keys.includes('+')) return keys;
+  const tokens = keys.split('+');
+  const last = keyName(tokens.pop(), true);
+  const mods = tokens.map(mod => (APPLE ? MAC_MODS : PC_MODS)[mod]);
+  return APPLE ? mods.join('') + last : [...mods, last].join('+');
+}
+
+// `surface` is the editor the control is on. Under vim on Windows and Linux,
+// Ctrl+B and Ctrl+E are vim's, and a tooltip naming them would name a key that
+// scrolls.
+function keyLabel(id, surface) {
+  const entry = KEY_BY_ID.get(id);
+  if (!entry) return '';
+  if (surface === 'vim' && !APPLE && (id === 'bold' || id === 'code')) return '';
+  return entry.keys.map(oneLabel).join(' or ');
+}
+
+// ARIA has a spelling for a chord and none for a sequence
+function ariaKeys(id) {
+  const entry = KEY_BY_ID.get(id);
+  if (!entry) return '';
+  const chords = entry.keys.filter(keys => keys.includes('+') && !keys.includes(' '));
+  return chords.map(keys => keys.split('+').map(token =>
+    token === 'Mod' ? (APPLE ? 'Meta' : 'Control')
+      : token === 'Ctrl' ? 'Control'
+      : token.startsWith('Digit') ? token.slice(5)
+      : token.length === 1 ? token.toUpperCase() : token).join('+')).join(' ');
+}
+
+// The words a control already has, without a key suffix an earlier pass put on
+const KEY_SUFFIX = /  \S.*$/;
+function ownWords(element, entry) {
+  const title = (element.getAttribute('title') || '').replace(KEY_SUFFIX, '');
+  return title || element.getAttribute('aria-label')
+    || [...element.childNodes].filter(node => node.nodeType === 3)
+      .map(node => node.data).join('').trim()
+    || entry.words;
+}
+
+// A container such as the table's body carries `data-keys` only to make its
+// entries live on this page, so only a control is given a tooltip.
+function labelKeys(root = document, surface) {
+  for (const element of root.querySelectorAll('[data-keys]')) {
+    if (!element.matches('a, button, input')) continue;
+    const id = element.dataset.keys.split(' ')[0];
+    const entry = KEY_BY_ID.get(id);
+    const label = keyLabel(id, surface);
+    if (!entry || !label) continue;
+    element.title = `${ownWords(element, entry)}  ${label}`;
+    const aria = ariaKeys(id);
+    if (aria) element.setAttribute('aria-keyshortcuts', aria);
+  }
+}
+
+function liveKeys() {
+  return KEYS.filter(entry => entry.anywhere
+    || document.querySelector(`[data-keys~="${CSS.escape(entry.id)}"]`));
+}
+
+// After every page script has built what it builds
+addEventListener('DOMContentLoaded', () => labelKeys());
 
 // How every search box on every page decides whether a needle is in a haystack.
 //
@@ -4077,7 +4159,7 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       it was meant to. The span takes the dot and the link inside it takes the
       box, and as an inline box inside a flex item the link's padding widens the
       mark without making the row any taller on the one page that draws it. -#}
-  <span id="buildhelp"><a href="{{ links.help }}"
+  <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help"
     {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
   <a id="report" href="https://github.com/C2SM/openproj/issues/new">Report issue</a>
   {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
@@ -5118,6 +5200,7 @@ def _page(
         content=Markup(content),
         style=Markup(style),
         csp=Markup(CSP),
+        keys=keys_for(links),
         font=_font_uri(),
         icon=_icon_uri(),
         links=links,
@@ -5170,7 +5253,12 @@ def _page(
         # `links_for` left on, in the plan's order, and `_NAV` only says what each
         # one is called.
         nav=[
-            {"href": getattr(links, key), "label": labels[key], "current": key == current}
+            {
+                "key": key,
+                "href": getattr(links, key),
+                "label": labels[key],
+                "current": key == current,
+            }
             for key in links.nav
         ],
         # The Help page's own mark, on the one link to it, which is in the footer
