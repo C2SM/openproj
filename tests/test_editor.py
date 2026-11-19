@@ -12745,20 +12745,31 @@ def _spy_save(call, ready: str) -> bool:
     return _evaluated(call, "window.__pressed")
 
 
-def test_mod_s_presses_save_where_there_is_one(live_server: str, tmp_path: Path):  # noqa: F811
-    with _devtools(chrome(), f"{live_server}/cycles", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+def _plan_with_a_cycle(tmp_path: Path) -> Path:
+    """The seeded corpus, which has no cycle, and cycle 37."""
+    path = tmp_path / "cycled.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    cycle = "---\ncycle: 37\nstarts_on: 2026-08-17\nbuild_weeks: 4\n---\n"
+    commit_directly(path, SEED | {"cycles/0037.md": cycle}, "seed a plan with a cycle")
+    return path
+
+
+def test_mod_s_presses_save_where_there_is_one(tmp_path: Path):
+    with (
+        serving(create_app(_plan_with_a_cycle(tmp_path), auth="dev", secret=SECRET)) as live,
+        _devtools(chrome(), f"{live}/cycle/37", tmp_path / "p", _KEYS_WINDOW) as (call, _),
+    ):
         time.sleep(2)
-        cycle = _evaluated(call, "document.querySelector('a[href^=\"/cycle/\"]').pathname")
         for path, ready, idle in (
-            (cycle, "s.disabled = false;", "s.disabled = true;"),
+            ("/cycle/37", "s.disabled = false;", "s.disabled = true;"),
             ("/graph", "s.hidden = false; s.disabled = false;", "s.hidden = true;"),
             (f"/detail/{TASK}?view=slide", "s.hidden = false; s.disabled = false;",
              "s.disabled = true;"),
         ):
-            call("Page.navigate", {"url": f"{live_server}{path}"})
+            call("Page.navigate", {"url": f"{live}{path}"})
             time.sleep(2.5)
             assert _spy_save(call, ready), f"Ctrl+S did not press Save on {path}"
-            call("Page.navigate", {"url": f"{live_server}{path}"})
+            call("Page.navigate", {"url": f"{live}{path}"})
             time.sleep(2.5)
             assert not _spy_save(call, idle), f"Ctrl+S pressed a Save that was off on {path}"
 
@@ -12783,17 +12794,16 @@ def test_create_says_create_with_mod_s(live_server: str, tmp_path: Path):  # noq
         assert title == "Create  Ctrl+S", title
 
 
-def test_the_sheet_sections_follow_the_page(live_server: str, tmp_path: Path):  # noqa: F811
-    live = "liveKeys().map(entry => entry.id)"
-    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+def test_the_sheet_sections_follow_the_page(tmp_path: Path):
+    ids = "liveKeys().map(entry => entry.id)"
+    with (
+        serving(create_app(_plan_with_a_cycle(tmp_path), auth="dev", secret=SECRET)) as live,
+        _devtools(chrome(), f"{live}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _),
+    ):
         time.sleep(2)
-        table = set(_evaluated(call, live))
-        number = _evaluated(
-            call,
-            "fetch('/cycles').then(r => r.text()).then(t => t.match(/\\/cycle\\/(\\d+)/)[1])",
-        )
-        call("Page.navigate", {"url": f"{live_server}/deck/{number}"})
+        table = set(_evaluated(call, ids))
+        call("Page.navigate", {"url": f"{live}/deck/37"})
         time.sleep(2.5)
-        deck = set(_evaluated(call, live))
+        deck = set(_evaluated(call, ids))
     assert {"cell-edit", "row-move", "escape"} <= table and "slide-next" not in table, table
     assert {"slide-next", "thumb-up"} <= deck and "cell-edit" not in deck, deck
