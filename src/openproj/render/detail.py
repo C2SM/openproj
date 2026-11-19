@@ -77,15 +77,15 @@ _VIEW_SEGMENTS = (
     '<span id="views" class="views" role="group"'
     ' aria-label="How the document is shown">'
     '<button type="button" id="view-edit" class="seg" aria-pressed="false"'
-    ' aria-label="Write" title="Write  Ctrl+Shift+1">'
+    ' aria-label="Write" title="Write" data-keys="view-write">'
     '<svg viewBox="0 0 24 24" aria-hidden="true">'
     '<path d="M4 20h4L19.2 8.8a2.55 2.55 0 0 0-3.6-3.6L4.4 16.4 4 20Z"/></svg></button>'
     '<button type="button" id="view-both" class="seg" aria-pressed="false"'
-    ' aria-label="Write and preview" title="Write and preview  Ctrl+Shift+2">'
+    ' aria-label="Write and preview" title="Write and preview" data-keys="view-both">'
     '<svg viewBox="0 0 24 24" aria-hidden="true">'
     '<rect x="3" y="5" width="18" height="14" rx="1.6"/><path d="M12 5v14"/></svg></button>'
     '<button type="button" id="preview" class="seg" aria-pressed="false"'
-    ' aria-label="Preview" title="Preview  Ctrl+Shift+3">'
+    ' aria-label="Preview" title="Preview" data-keys="view-preview">'
     '<svg viewBox="0 0 24 24" aria-hidden="true">'
     '<path d="M2.5 12S6 6.2 12 6.2 21.5 12 21.5 12 18 17.8 12 17.8 2.5 12 2.5 12Z"/>'
     '<circle cx="12" cy="12" r="2.7"/></svg></button>'
@@ -901,7 +901,12 @@ addEventListener('keydown', event => {
   // `key` here is one that could never once fire — the trap the shifted marks
   // fell into when ⌘⇧8 was tried and shift-8 turned out to be `*`.
   if (!event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return;
-  const mode = {Digit1: 'edit', Digit2: 'both', Digit3: 'view'}[event.code];
+  // The digits are the registry's (`render/keys.py`), read as `event.code`
+  const mode = {
+    [KEY_BY_ID.get('view-write').keys[0].split('+').pop()]: 'edit',
+    [KEY_BY_ID.get('view-both').keys[0].split('+').pop()]: 'both',
+    [KEY_BY_ID.get('view-preview').keys[0].split('+').pop()]: 'view',
+  }[event.code];
   if (!mode) return;
   event.preventDefault();
   chooseView(VIEW === mode ? GROUND : mode);
@@ -3018,7 +3023,11 @@ async function createRecord() {
 
 document.getElementById('save').onclick = save;
 addEventListener('keydown', event => {
-  if ((event.metaKey || event.ctrlKey) && event.key === 's') { event.preventDefault(); save(); }
+  // Folded, or Caps Lock turns the key off
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    save();
+  }
 });
 
 // One Save is one commit, so an unsaved draft is the only thing git cannot get
