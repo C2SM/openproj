@@ -10280,3 +10280,50 @@ def test_the_overrun_sentence_names_the_cycle_the_bet_was_made_in(demo_root: Pat
         said = f"overruns cycle {span.overruns_cycle} by {span.overruns_cycle_weeks:.1f} weeks"
         assert said in " ".join(page.split()), record_id
         assert "overruns cycle None" not in page, record_id
+
+
+# --- Keyboard shortcuts: the registry (design/keyboard-shortcuts.md) -----------
+
+
+def test_a_letter_goes_to_the_first_nav_item_that_wants_it():
+    from openproj.render.keys import go_letters
+
+    both = go_letters(("records", "table", "graph", "timeline", "cycles"))
+    assert both["table"] == "t" and both["timeline"] == "l"
+    # The icon4py-plan shape: no Table, so Timeline takes the letter it prefers
+    assert go_letters(("records", "timeline", "cycles", "graph"))["timeline"] == "t"
+    # `_NAV` order and not `views` order decides who asks first
+    assert go_letters(("timeline", "table")) == {"table": "t", "timeline": "l"}
+
+
+def test_a_view_left_out_has_no_shortcut():
+    from openproj.render.keys import keys_for
+
+    ids = {entry["id"]: entry for entry in keys_for(links_for(("cycles", "timeline"), ROUTES))}
+    assert "go-graph" not in ids and "go-table" not in ids
+    assert ids["go-timeline"]["keys"] == ["g t"]
+    assert ids["go-help"]["keys"] == ["g h"]
+
+
+def test_the_static_export_has_no_new_key():
+    from openproj.render.keys import keys_for
+
+    assert "new" not in {entry["id"] for entry in keys_for(STATIC)}
+
+
+def test_no_shortcut_carries_alt_but_the_three_named():
+    from openproj.render.keys import ALT_EXEMPT, KEYS
+
+    assert ALT_EXEMPT == {"calendar", "thumb-up", "thumb-down"}
+    for key in KEYS:
+        if any("Alt" in one.split("+")[:-1] for one in key.keys):
+            assert key.id in ALT_EXEMPT, key.id
+
+
+def test_every_key_id_is_unique():
+    from openproj.render.keys import KEYS, keys_for
+
+    ids = [key.id for key in KEYS]
+    assert len(ids) == len(set(ids))
+    served = [entry["id"] for entry in keys_for(ROUTES)]
+    assert len(served) == len(set(served))
