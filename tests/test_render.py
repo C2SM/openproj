@@ -2822,7 +2822,7 @@ def test_the_people_page_draws_the_control_bar_the_plan_draws(rendered: Path):
     people, index = read(rendered, "people.html"), read(rendered, "table.html")
     shape = (
         r'<div id="controls">\s*<div class="searching">\s*'
-        r'<input id="q" type="search" aria-label="([^"]+)" placeholder="\1">'
+        r'<input id="q" type="search" aria-label="([^"]+)" placeholder="\1"\s*data-keys="search">'
     )
 
     for name, page in (("people", people), ("index", index)):
@@ -10280,3 +10280,75 @@ def test_the_overrun_sentence_names_the_cycle_the_bet_was_made_in(demo_root: Pat
         said = f"overruns cycle {span.overruns_cycle} by {span.overruns_cycle_weeks:.1f} weeks"
         assert said in " ".join(page.split()), record_id
         assert "overruns cycle None" not in page, record_id
+
+
+# --- Keyboard shortcuts: the registry (design/keyboard-shortcuts.md) -----------
+
+
+def test_a_letter_goes_to_the_first_nav_item_that_wants_it():
+    from openproj.render.keys import go_letters
+
+    both = go_letters(("records", "table", "graph", "timeline", "cycles"))
+    assert both["table"] == "t" and both["timeline"] == "l"
+    # The icon4py-plan shape: no Table, so Timeline takes the letter it prefers
+    assert go_letters(("records", "timeline", "cycles", "graph"))["timeline"] == "t"
+    # `_NAV` order and not `views` order decides who asks first
+    assert go_letters(("timeline", "table")) == {"table": "t", "timeline": "l"}
+
+
+def test_a_view_left_out_has_no_shortcut():
+    from openproj.render.keys import keys_for
+
+    ids = {entry["id"]: entry for entry in keys_for(links_for(("cycles", "timeline"), ROUTES))}
+    assert "go-graph" not in ids and "go-table" not in ids
+    assert ids["go-timeline"]["keys"] == ["g t"]
+    assert ids["go-help"]["keys"] == ["g h"]
+
+
+def test_the_static_export_has_no_new_key():
+    from openproj.render.keys import keys_for
+
+    assert "new" not in {entry["id"] for entry in keys_for(STATIC)}
+
+
+def test_no_shortcut_carries_alt_but_the_three_named():
+    from openproj.render.keys import ALT_EXEMPT, KEYS
+
+    assert ALT_EXEMPT == {"calendar", "thumb-up", "thumb-down"}
+    for key in KEYS:
+        if any("Alt" in one.split("+")[:-1] for one in key.keys):
+            assert key.id in ALT_EXEMPT, key.id
+
+
+def test_every_key_id_is_unique():
+    from openproj.render.keys import KEYS, keys_for
+
+    ids = [key.id for key in KEYS]
+    assert len(ids) == len(set(ids))
+    served = [entry["id"] for entry in keys_for(ROUTES)]
+    assert len(served) == len(set(served))
+
+
+def test_every_data_keys_id_is_in_the_registry(seed_index: Index, tmp_path: Path):
+    from openproj.render.keys import keys_for
+
+    views = ("cycles", "timeline")
+    written = render_static(seed_index.model_copy(update={"views": views}), tmp_path)
+    known = {entry["id"] for entry in keys_for(links_for(views, STATIC))}
+    for name in written:
+        page = (tmp_path / name).read_text()
+        said = {
+            token
+            for element in elements(page)
+            for token in element.attrs.get("data-keys", "").split()
+        }
+        assert said <= known, (name, said - known)
+        assert "go-graph" not in said, name
+    nav = [e for e in elements((tmp_path / "index.html").read_text()) if e.tag == "a"]
+    assert {e.attrs.get("data-keys") for e in nav} >= {"go-records", "go-timeline", "go-help"}
+
+
+def test_the_shortcuts_button_has_a_name(rendered: Path):
+    page = (rendered / "index.html").read_text()
+    found = [e for e in elements(page) if e.attrs.get("id") == "keysbutton"]
+    assert found and found[0].attrs.get("aria-label") == "Keyboard shortcuts", found

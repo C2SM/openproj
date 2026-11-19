@@ -987,6 +987,12 @@ async function run(html, expression, options) {
     getComputedStyle: () => ({getPropertyValue: () => ''}),
     // The escape the pages reach for when a selector has to hold typed text.
     CSS: {escape: value => String(value).replace(/[^\w-]/g, c => '\\' + c)},
+    // Every browser has one, and the shell reads its platform at load to write
+    // ⌘ or Ctrl. Without it the shell's script threw there, and every `let`
+    // after that line stayed uninitialised, which the later scripts reported as
+    // a TDZ on `roomSlack` rather than as the missing global. No `clipboard`,
+    // as in a page the browser has not granted it to.
+    navigator: {platform: 'Linux x86_64'},
     innerWidth: 1280,
     innerHeight: 800,
     // How far the page has been scrolled. The suggestion popup is parked on the

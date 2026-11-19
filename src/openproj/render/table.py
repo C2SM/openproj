@@ -1723,6 +1723,8 @@ const EDITABLE = null;
 {% else %}
 const BASE = document.getElementById('base');
 const EDITABLE = DATA.editable;
+// The grid's own keys, for the `?` sheet; a reader's table has none of them
+tbody.dataset.keys = 'cell-edit row-move escape';
 const SUGGESTS = DATA.suggests;
 const CHOICES = DATA.choices;
 
@@ -2593,6 +2595,12 @@ const DRAFT_ID = '+';
 // Create sitting directly underneath them, and a draft that outlives the page is
 // a draft somebody creates twice.
 let DRAFT = null;
+// Typing in a row nobody has created yet is unsaved work, for the shell's `g` keys.
+// The title and the open boxes, and not every field: choosing a kind fills status
+// and priority with defaults nobody typed.
+window.unsaved = () => !!DRAFT && (!!String(DRAFT.fields.title || '').trim()
+  || [...document.querySelectorAll('#rows tr.draft input, #rows tr.draft textarea')]
+    .some(box => box.value.trim()));
 
 // Whether the create this row asked for is still in the air.
 //
@@ -2706,7 +2714,7 @@ function adderHtml() {
     // and the stylesheet shows one, for the reason the hint above the table
     // carries two sentences: which is true changes when the phone is turned.
     return `<tr class="adder"><td${wide}>` +
-      `<button type="button" id="add-row" class="add">+ New row</button>` +
+      `<button type="button" id="add-row" class="add" data-keys="new">+ New row</button>` +
       `<a class="button thumb-add" href="${esc(NEW_RECORD)}">+ New record</a>` +
       `<button type="button" id="unparent" hidden></button>` +
       `<span class="hint" id="rootless" hidden></span>` +

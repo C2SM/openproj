@@ -81,7 +81,7 @@ _CYCLE = """
     Save, and the bar is on screen at both ends of it either way. -#}
 <div class="commitbar" id="commitbar">
   <span id="unsaved">Nothing to save</span>
-  <button type="button" id="save" disabled>Save</button>
+  <button type="button" id="save" data-keys="save" disabled>Save</button>
   <span id="state" role="status"></span>
   <input type="hidden" id="base" value="{{ base_commit }}">
 </div>
@@ -287,7 +287,7 @@ _CYCLE = """
     for a moment; the script writes both numbers on every search. -#}
 <p class="hint betsearch">
   <label for="betfind" class="sr-only">Search the betting table</label>
-  <input type="search" id="betfind" placeholder="Search" autocomplete="off"
+  <input type="search" id="betfind" data-keys="search" placeholder="Search" autocomplete="off"
     value="cycle:{{ c.number }}">
   <span id="beterror" class="beterror" hidden></span>
   <span class="betcount"><span id="betshown" class="num">{{ c.candidates|length }}</span> of
@@ -491,6 +491,8 @@ async function put(fields, body = null) {
 }
 
 const SAVE = document.getElementById('save');
+bindSaveKey(SAVE);
+window.unsaved = () => !SAVE.disabled;
 const NOTES = document.getElementById('notes');
 const GOAL = document.getElementById('goal');
 let ROSTER_DIRTY = false;

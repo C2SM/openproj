@@ -167,7 +167,8 @@ _DECK = (
   <button type="button" id="present" class="ghost" hidden>Present</button>
 </p>
 
-<div class="deckwrap" data-fills>
+<div class="deckwrap" data-fills
+  data-keys="slide-next slide-prev slide-first slide-last present-leave">
   {#- The rail. Built from the sheets beside it rather than rendered twice — see
       `_DECK_SCRIPT`, which clones each slide into its own thumbnail. Two
       renderings of one slide is two things to keep in step, and the thumbnail is
@@ -745,6 +746,8 @@ const SHEETS = document.getElementById('sheets');
 const WRAP = document.querySelector('.deckwrap');
 const RAIL = document.getElementById('rail');
 const THUMBS = document.getElementById('thumbs');
+// Only a writer can move a slide, so only a writer's sheet says how
+THUMBS.dataset.keys = MAY_WRITE ? 'thumb-up thumb-down thumb-open' : 'thumb-open';
 const PRESENT = document.getElementById('present');
 const COUNTER = document.getElementById('counter');
 // The slide's own coordinate space. Everything on a slide is laid out against

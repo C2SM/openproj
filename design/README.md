@@ -23,6 +23,7 @@ the `Dockerfile`.
 | `context-menus.md`   | the right-click menu and the popup it opens: two boxes, one host contract, five cuts                 |
 | `views-and-kinds.md` | the two settings a plan switches views and kinds off with, and what was kept always on               |
 | `cycle-calendar.md`  | why the date picker is a widget and not a rule, the library audit behind it, and the timeline's half |
+| `keyboard-shortcuts.md` | the one registry behind every shortcut, the `g` sequences and their badges, and the `?` sheet |
 | `hackmd-observed.md` | what the team's HackMD actually contained, measured before this tool existed                         |
 | `QUEUE.md`           | the work queue: what is next, and what was accepted as a gap                                         |
 | `probes/`            | measurements — CI timings, load runs, the concurrency audit                                          |

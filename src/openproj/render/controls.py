@@ -35,7 +35,8 @@ _FACETS = """
       it never reaches the accessibility tree as one. Every dropdown beside this
       box is wrapped in its `<label>`; the search box was the one control in the
       bar that had nothing to say what it searches. -#}
-  <input id="q" type="search" aria-label="{{ search }}" placeholder="{{ search }}">
+  <input id="q" type="search" aria-label="{{ search }}" placeholder="{{ search }}"
+    data-keys="search">
   {#- What is wrong with what is in the box. Here rather than in each view,
       because the box is in the bar and the bar is shared: the table can say it
       again over its own empty rows, and does, but the graph and the timeline
@@ -1124,8 +1125,8 @@ const FORMATS = [
   // `label` is the ACCESSIBLE name and not a visible one. ⌘Z and ⌘⇧Z are taken
   // off the browser only where the browser's own has been destroyed —
   // `historyOf`.
-  {key: 'z', label: 'Undo', title: 'Undo  ⌘Z', history: 'undo'},
-  {key: 'z', shift: true, label: 'Redo', title: 'Redo  ⌘⇧Z', history: 'redo'},
+  {id: 'undo', label: 'Undo', title: 'Undo', history: 'undo'},
+  {id: 'redo', label: 'Redo', title: 'Redo', history: 'redo'},
 
   // The template menu, a group of one between the history and the marks —
   // jcanton, 2026-10-09: "we can move the template selector as a button on top
@@ -1137,26 +1138,26 @@ const FORMATS = [
   // name, as on the history pair: the button wears `TEMPLATE_ART`.
   {group: true, label: 'Template', title: 'Template', template: true},
 
-  {key: 'b', group: true, label: 'B', title: 'Bold  ⌘B', wrap: '**'},
-  {key: 'i', label: 'I', title: 'Italic  ⌘I', wrap: '*', style: 'font-style: italic'},
+  {id: 'bold', group: true, label: 'B', title: 'Bold', wrap: '**'},
+  {id: 'italic', label: 'I', title: 'Italic', wrap: '*', style: 'font-style: italic'},
   // ⌘⇧X and not ⌘⇧S: the shortcut is matched on `event.key`, and every shifted
   // binding here is a letter, because shift-8 on a US layout is `*` rather than
   // `8` and a shortcut on a digit is one that could never once fire.
-  {key: 'x', shift: true, label: 'S', title: 'Strikethrough  ⌘⇧X', wrap: '~~',
+  {id: 'strike', label: 'S', title: 'Strikethrough', wrap: '~~',
    style: 'text-decoration: line-through'},
-  {key: '2', label: 'H', title: 'Heading  ⌘2', prefix: '## '},
+  {id: 'heading', label: 'H', title: 'Heading', prefix: '## '},
 
-  {key: 'e', group: true, label: '<>', title: 'Code  ⌘E', wrap: '`'},
-  {key: 'e', shift: true, label: '{ }', title: 'Code block  ⌘⇧E', fence: true},
-  {key: '.', label: '❝', title: 'Quote  ⌘.', prefix: '> '},
-  {key: '8', label: '•', title: 'Bullet list  ⌘8', prefix: '- '},
+  {id: 'code', group: true, label: '<>', title: 'Code', wrap: '`'},
+  {id: 'fence', label: '{ }', title: 'Code block', fence: true},
+  {id: 'quote', label: '❝', title: 'Quote', prefix: '> '},
+  {id: 'bullets', label: '•', title: 'Bullet list', prefix: '- '},
   // ⌘7 beside ⌘8, on the precedent ⌘8 already set: both are browser tab
   // shortcuts and both are taken back by `preventDefault`, and a numbered list
   // one key from the bulleted one is the pairing anybody would guess.
-  {key: '7', label: '1.', title: 'Numbered list  ⌘7', prefix: '1. ', ordered: true},
-  {key: 'l', shift: true, label: '[x]', title: 'Check list  ⌘⇧L', prefix: '- [ ] ', box: true},
+  {id: 'numbers', label: '1.', title: 'Numbered list', prefix: '1. ', ordered: true},
+  {id: 'checklist', label: '[x]', title: 'Check list', prefix: '- [ ] ', box: true},
 
-  {key: 'k', group: true, label: '[]()', title: 'Link  ⌘K', link: true},
+  {id: 'link', group: true, label: '[]()', title: 'Link', link: true},
   // The one button that does not write markdown. An `![alt](https://…)` typed
   // into this tool draws no picture: `_image` refuses anything that is not an
   // asset this repository stored, on the allowlist rule, and renders it as a
@@ -1194,6 +1195,14 @@ const FORMATS = [
    insert: '| Heading | Heading |\n| --- | --- |\n| Cell | Cell |', chooses: [2, 7]},
   {label: '—', title: 'Horizontal rule', insert: '---'},
 ];
+// The keys and their modifiers are the registry's (`render/keys.py`), so the
+// tooltip, the sheet and the match below cannot disagree
+for (const mark of FORMATS) {
+  if (!mark.id) continue;
+  const chord = KEY_BY_ID.get(mark.id).keys[0].split('+');
+  mark.key = chord.pop().toLowerCase();
+  mark.shift = chord.includes('Shift');
+}
 
 // The two drawings the history buttons wear, rendered on the server: a template
 // variable and not a `.replace` into finished markup, the same crossing the
@@ -2054,6 +2063,7 @@ function attachStatus(surface, bar) {
       // keymap is on.
       name => {
         surface.setKeymap(name);
+        setKeySurface(name);
         rememberEditor({keymap: name});
       }));
   }
@@ -2160,6 +2170,7 @@ function attachEditing(surface, bar, templates) {
       button.className = 'mark';
       button.textContent = mark.label;
       button.title = mark.title;
+      if (mark.id) button.dataset.keys = mark.id;
       if (mark.style) button.setAttribute('style', mark.style);
       // mousedown, not click: click runs after the textarea has lost focus and
       // with it the selection the mark is supposed to apply to.
@@ -2246,6 +2257,8 @@ function attachEditing(surface, bar, templates) {
       }
       bar.append(button);
     }
+    // Vim exists only on a surface that can change keymap; a textarea's is the browser's
+    setKeySurface(surface.setKeymap ? EDITOR.keymap : 'default');
   }
 
   // One press of undo or redo, sent to whichever history owns the document now.
@@ -2286,6 +2299,15 @@ function attachEditing(surface, bar, templates) {
   // hatch away from the gesture for leaving backwards.
   let leaving = false;
   surface.onInput(() => { leaving = false; });
+  // Capture, because on Ace the bubbling listener below never sees Tab: Ace's
+  // own indent command stops it on the hidden textarea first, so the hatch said
+  // "Press Tab to leave" and Tab indented. Stopped here before Ace sees it, and
+  // not prevented, so the browser moves focus.
+  area.addEventListener('keydown', event => {
+    if (!leaving || event.key !== 'Tab' || event.metaKey || event.ctrlKey || event.altKey) return;
+    leaving = false;
+    event.stopPropagation();
+  }, true);
 
   area.addEventListener('keydown', event => {
     // **A `defaultPrevented` guard was written here and then measured away.**

@@ -19,6 +19,32 @@ from ..model import (
 )
 from .icons import _ICON_SVG
 
+# The nav, as the field on `Links` each item points at and the word it wears. One
+# list, because the mark for "you are here" has to be decided once: six links
+# written out by hand were six places for a seventh page to be added and marked
+# nowhere.
+#
+# The words, and the order a plan that never wrote `views` gets — which is
+# `Links.nav`'s default. Here and not in `shell.py` because `keys.py` hands out
+# the `g` letters in this order, and `shell.py` imports `keys.py`. Which items a
+# page draws, and in what order, is `Links.nav`: a plan's `views` decides it,
+# through `links_for` in `shell.py`, and `test_the_views_are_the_nav_in_the_nav_order` holds this
+# order to `VIEWS` so a plan that says nothing draws the nav it always drew.
+_NAV = (
+    ("records", "Records"),
+    ("table", "Table"),
+    ("graph", "Graph"),
+    ("timeline", "Timeline"),
+    ("cycles", "Cycles"),
+    ("people", "People"),
+    # The two inbox views of the landing list, back in the nav on jcanton's
+    # ruling: quick access to what would otherwise be a click on a filter. At
+    # the end, where they sat before the records flip retired their own pages.
+    ("issues", "Issues"),
+    ("notes", "Notes"),
+)
+_NAV_KEYS = frozenset(key for key, _ in _NAV)
+
 
 # A status is a class, not a colour baked into the markup: the same rect has to
 # be one colour on a white ground and another on a dark one, and a `fill`

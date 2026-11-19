@@ -116,7 +116,7 @@ _GRAPH = """
       the drop target and the highlighting are the extension's now — the version
       of this written here could not tell the reader where the node would land,
       because the box it would land in moves with the node. -#}
-  <button type="button" id="save" hidden>Save</button>
+  <button type="button" id="save" data-keys="save" hidden>Save</button>
   <button type="button" id="discard" hidden>Reset</button>
   <span id="state" role="status"></span>
   <input type="hidden" id="base" value="{{ base_commit }}">
@@ -1345,6 +1345,8 @@ addEventListener('openproj:room', () => {
 
 const CONNECT = document.getElementById('connect');
 const SAVE = document.getElementById('save');
+bindSaveKey(SAVE);
+window.unsaved = () => !SAVE.hidden && !SAVE.disabled;
 const DISCARD = document.getElementById('discard');
 let connecting = false;
 // `blocker`, not `source`: two classic scripts on one page share one global

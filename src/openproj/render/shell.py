@@ -17,33 +17,18 @@ from .controls import _PLAN_FACETS
 from .env import _compiled
 from .hill import hill_geometry
 from .icons import _icon_uri
+from .keys import keys_for
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
-from .tokens import HUMAN, KINDS, PRIORITY_GLYPH, STATUS_GLYPH, STATUSES, card_facts
-
-# The nav, as the field on `Links` each item points at and the word it wears. One
-# list, because the mark for "you are here" has to be decided once: six links
-# written out by hand were six places for a seventh page to be added and marked
-# nowhere.
-#
-# The words, and the order a plan that never wrote `views` gets — which is
-# `Links.nav`'s default, and why this sits above the class. Which items a page
-# draws, and in what order, is `Links.nav`: a plan's `views` decides it, through
-# `links_for` below, and `test_the_views_are_the_nav_in_the_nav_order` holds this
-# order to `VIEWS` so a plan that says nothing draws the nav it always drew.
-_NAV = (
-    ("records", "Records"),
-    ("table", "Table"),
-    ("graph", "Graph"),
-    ("timeline", "Timeline"),
-    ("cycles", "Cycles"),
-    ("people", "People"),
-    # The two inbox views of the landing list, back in the nav on jcanton's
-    # ruling: quick access to what would otherwise be a click on a filter. At
-    # the end, where they sat before the records flip retired their own pages.
-    ("issues", "Issues"),
-    ("notes", "Notes"),
+from .tokens import (
+    _NAV,
+    _NAV_KEYS,
+    HUMAN,
+    KINDS,
+    PRIORITY_GLYPH,
+    STATUS_GLYPH,
+    STATUSES,
+    card_facts,
 )
-_NAV_KEYS = frozenset(key for key, _ in _NAV)
 
 
 class Links(BaseModel):
@@ -790,6 +775,34 @@ a, a:visited { color: var(--accent); }
    a reader had already clicked would have stayed in the accent while the rest
    went muted, which is a highlight that means "visited". */
 nav a, nav a:visited { color: var(--muted); }
+/* The letter a link answers to while `g` is armed, centred above it */
+nav a, #buildhelp a { position: relative; }
+.gohint { position: absolute; left: 50%; top: -.55rem; transform: translateX(-50%);
+  font: 700 .72rem/1 var(--font-mono); padding: .18rem .32rem; border-radius: 4px;
+  background: var(--accent); color: var(--on-accent); pointer-events: none; z-index: 50; }
+#build .gohint { top: auto; bottom: 1.3rem; }
+/* The shared button, made small enough to sit in the footer's line */
+#keysbutton { margin-left: .4rem; padding: 0 .35rem; font-size: inherit; line-height: 1.2; }
+@media (pointer: coarse) { #keysbutton { display: none; } }
+#keysheet { max-width: min(36rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem);
+  padding: 1rem 1.25rem; color: var(--fg); background: var(--surface);
+  border: 1px solid var(--line-strong); border-radius: 8px; }
+#keysheet::backdrop { background: rgb(0 0 0 / .35); }
+#keysheet .keyhead { display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; margin: 0 0 .5rem; }
+#keysheet h2 { margin: 0; font-size: 1.1rem; }
+#keysheet h3 { margin: .9rem 0 .3rem; font-size: .8rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; }
+#keysheet dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem;
+  margin: 0; }
+/* The record page's bare `dt` (styles.py) is uppercase field-label type; at
+   (1,0,1) this outranks it, so the four properties it sets are set back here */
+#keysheet dt { white-space: nowrap; color: var(--muted); text-transform: none;
+  letter-spacing: normal; font-size: inherit; padding-top: 0; }
+#keysheet dd { margin: 0; }
+#keysheet kbd { font: .8rem/1 var(--font-mono); padding: .15rem .35rem; color: var(--fg);
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; }
+#keysheet .keyswitch { margin-top: 1.25rem; }
 /* Where you are: weight, colour and a box, all three. Colour alone is not a
    signal this app accepts anywhere else — the status ladder is a luminance ramp
    and a glyph for the same reason — and the nav is the one component every page
@@ -2402,7 +2415,7 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     and from nothing else, so what a screen reader announces and what a reader
     sees cannot come apart. Whitespace between the links is a whitespace-only text
     node in a flex container, which is not a flex item and draws nothing. -#}
-<nav>{% for item in nav %}<a href="{{ item.href }}"
+<nav>{% for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
   {%- if item.current %} aria-current="page"{% endif %}>{{ item.label }}</a>
 {% endfor %}<span class="corner">
 {#- Who you are, and the only way in from the page. Reads are public here by
@@ -2527,6 +2540,266 @@ const ANNOUNCE = document.getElementById('announce');
 // `&` and the escaping is not idempotent.
 const esc = value => String(value ?? '').replace(/[&<>"]/g,
   c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+// Every shortcut this page can have, from `render/keys.py`, which is the only
+// place a key or its words are written. See `design/keyboard-shortcuts.md`.
+const KEYS = {{ keys|tojson }};
+const KEY_BY_ID = new Map(KEYS.map(entry => [entry.id, entry]));
+// `macOS` from `userAgentData`, `MacIntel` from `platform`
+const APPLE = /mac|iphone|ipad/i.test(
+  (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
+const ARROWS = {ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→'};
+const MAC_MODS = {Mod: '⌘', Ctrl: '⌃', Shift: '⇧', Alt: '⌥'};
+const PC_MODS = {Mod: 'Ctrl', Ctrl: 'Ctrl', Shift: 'Shift', Alt: 'Alt'};
+
+function keyName(token, chord) {
+  if (token.startsWith('Digit')) return token.slice(5);
+  if (ARROWS[token]) return ARROWS[token];
+  return chord && token.length === 1 ? token.toUpperCase() : token;
+}
+
+// One alternative, as the reader's platform writes it: ⌘⇧E on a Mac,
+// Ctrl+Shift+E elsewhere, and a sequence stays as typed, `g t`
+function oneLabel(keys) {
+  if (keys.includes(' ') || !keys.includes('+')) return keys;
+  const tokens = keys.split('+');
+  const last = keyName(tokens.pop(), true);
+  const mods = tokens.map(mod => (APPLE ? MAC_MODS : PC_MODS)[mod]);
+  return APPLE ? mods.join('') + last : [...mods, last].join('+');
+}
+
+// Which keymap the page's editor is in, set by the editor. One fact for the
+// page and not an argument, because the tooltips, a later relabel and the sheet
+// all have to agree on it.
+let keySurface = 'default';
+function setKeySurface(surface) {
+  keySurface = surface;
+  labelKeys();
+}
+
+// Under vim on Windows and Linux the registry's `vim` keys are vim's, and a
+// tooltip naming one would name a key that scrolls
+function keyLabel(id) {
+  const entry = KEY_BY_ID.get(id);
+  if (!entry) return '';
+  if (entry.vim && keySurface === 'vim' && !APPLE) return '';
+  return entry.keys.map(oneLabel).join(' or ');
+}
+
+// ARIA has a spelling for a chord and none for a sequence
+function ariaKeys(id) {
+  const entry = KEY_BY_ID.get(id);
+  if (!entry) return '';
+  const chords = entry.keys.filter(keys => keys.includes('+') && !keys.includes(' '));
+  return chords.map(keys => keys.split('+').map(token =>
+    token === 'Mod' ? (APPLE ? 'Meta' : 'Control')
+      : token === 'Ctrl' ? 'Control'
+      : token.startsWith('Digit') ? token.slice(5)
+      : token.length === 1 ? token.toUpperCase() : token).join('+')).join(' ');
+}
+
+// The words a control already has, without a key suffix an earlier pass put on
+const KEY_SUFFIX = /  \S.*$/;
+function ownWords(element, entry) {
+  const title = (element.getAttribute('title') || '').replace(KEY_SUFFIX, '');
+  return title || element.getAttribute('aria-label')
+    || [...element.childNodes].filter(node => node.nodeType === 3)
+      .map(node => node.data).join('').trim()
+    || entry.words;
+}
+
+// A container such as the table's body carries `data-keys` only to make its
+// entries live on this page, so only a control is given a tooltip.
+function labelKeys(root = document) {
+  for (const element of root.querySelectorAll('[data-keys]')) {
+    if (!element.matches('a, button, input')) continue;
+    const id = element.dataset.keys.split(' ')[0];
+    const entry = KEY_BY_ID.get(id);
+    if (!entry) continue;
+    const label = keyLabel(id);
+    // Words alone when the key is not this page's, so a relabel can take one away
+    element.title = label ? `${ownWords(element, entry)}  ${label}` : ownWords(element, entry);
+    if (!label) { element.removeAttribute('aria-keyshortcuts'); continue; }
+    const aria = ariaKeys(id);
+    if (aria) element.setAttribute('aria-keyshortcuts', aria);
+  }
+}
+
+function liveKeys() {
+  return KEYS.filter(entry => entry.anywhere
+    || document.querySelector(`[data-keys~="${CSS.escape(entry.id)}"]`));
+}
+
+// After every page script has built what it builds
+addEventListener('DOMContentLoaded', () => labelKeys());
+
+// --- The bare keys: `g` and a letter, `/`, `n`, `?` ---------------------------
+//
+// A key with no modifier is a character somebody may be typing, so it is a
+// shortcut only when nothing that takes text has the keyboard and nothing on
+// top of the page owns it. Matched on `event.key` and case-folded, the opposite
+// of the editor's view chord: here the reader means the letter on the key, and
+// `?` is Shift+' on Swiss-German and Shift+/ on US, which both deliver `?`.
+const SINGLE_KEYS = 'openproj:single-keys';
+let singleKeysOff = remembered.get(SINGLE_KEYS, 'on') === 'off';
+function shortcutsOff() { return singleKeysOff; }
+
+// The input types that take text, as an allowlist: a facet checkbox somebody
+// just clicked keeps focus and must not swallow `g`
+const TEXT_INPUTS = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number',
+  'date', 'datetime-local', 'month', 'week', 'time']);
+function isTyping(target) {
+  if (!target || !target.closest) return false;
+  if (target.matches('input')) return TEXT_INPUTS.has(target.type);
+  return !!target.closest('textarea, select, [contenteditable], .ace_editor');
+}
+
+// Something on top of the page that has the keyboard: a drawing, the record
+// popup or right-click menu, a pinned card, a dialog other than the sheet, or
+// the deck while it is presenting
+function covered() {
+  return cardPinned
+    || document.documentElement.classList.contains('presenting')
+    || !!document.querySelector('#pop:not([hidden]), .drawpopup, dialog[open]');
+}
+
+function quiet(event) {
+  return event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.repeat
+    || isTyping(event.target) || isTyping(document.activeElement) || covered();
+}
+
+const visible = element => !!(element && element.getClientRects().length && !element.hidden);
+const firstVisible = selector => [...document.querySelectorAll(selector)].find(visible);
+const goTargets = () => [...document.querySelectorAll('[data-keys^="go-"]')]
+  .map(element => [KEY_BY_ID.get(element.dataset.keys), element])
+  .filter(([entry]) => entry);
+
+let goArmed = 0;
+function goDisarm() {
+  clearTimeout(goArmed);
+  goArmed = 0;
+  document.querySelectorAll('.gohint').forEach(badge => badge.remove());
+}
+function goArm() {
+  const targets = goTargets();
+  for (const [entry, element] of targets) {
+    const badge = document.createElement('span');
+    badge.className = 'gohint';
+    badge.setAttribute('aria-hidden', 'true');
+    badge.textContent = entry.keys[0].split(' ')[1];
+    element.append(badge);
+  }
+  announce('Go to: ' + targets
+    .map(([entry]) => `${entry.keys[0].split(' ')[1]} ${entry.words}`).join(', '));
+  goArmed = setTimeout(goDisarm, 1500);
+}
+
+// Pressed on their own before the letter they modify, so never the second key
+const MODIFIER_KEYS = new Set(['Shift', 'CapsLock', 'Control', 'Alt', 'Meta', 'AltGraph']);
+
+addEventListener('keydown', event => {
+  if (MODIFIER_KEYS.has(event.key)) return;
+  if (quiet(event)) { if (goArmed) goDisarm(); return; }
+  const key = event.key.toLowerCase();
+  if (goArmed) {
+    goDisarm();
+    const hit = goTargets().find(([entry]) => entry.keys[0] === `g ${key}`);
+    if (!hit) return;
+    event.preventDefault();
+    if (typeof window.unsaved === 'function' && window.unsaved()) {
+      announce('Save or reset first');
+      return;
+    }
+    location.href = hit[1].href;
+    return;
+  }
+  // Before the switch, because the sheet is where the switch is
+  if (event.key === '?') {
+    event.preventDefault();
+    openSheet();
+    return;
+  }
+  if (singleKeysOff) return;
+  if (key === 'g') {
+    event.preventDefault();
+    goArm();
+  } else if (key === '/') {
+    const box = firstVisible('[data-keys~="search"]');
+    if (!box) return;
+    // Prevented, which is also what keeps Firefox's quick find off it
+    event.preventDefault();
+    box.focus();
+    box.select();
+  } else if (key === 'n') {
+    const control = firstVisible('[data-keys~="new"]');
+    if (!control) return;
+    event.preventDefault();
+    control.click();
+  }
+});
+
+// ⌘S on a page whose Save button is its own: pressed only when it is drawn and
+// on, so there is never a second path to a save
+function bindSaveKey(button) {
+  addEventListener('keydown', event => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    if (event.key.toLowerCase() !== 's') return;
+    event.preventDefault();
+    if (visible(button) && !button.disabled) button.click();
+  });
+}
+
+// --- The sheet ------------------------------------------------------------
+// The dialog and its button are drawn after this script, at the foot of the page
+const sheet = () => document.getElementById('keysheet');
+const SHEET_SECTIONS = [['go', 'Go to'], ['page', 'On this page'], ['editor', 'Editor'],
+  ['presenting', 'Presenting']];
+let sheetReturn = null;
+
+function openSheet() {
+  const live = liveKeys().filter(entry => keyLabel(entry.id));
+  const list = sheet().querySelector('.keylist');
+  list.replaceChildren();
+  for (const [section, heading] of SHEET_SECTIONS) {
+    const entries = live.filter(entry => entry.section === section);
+    if (!entries.length) continue;
+    const block = document.createElement('section');
+    const title = document.createElement('h3');
+    title.textContent = heading;
+    const rows = document.createElement('dl');
+    for (const entry of entries) {
+      const keys = document.createElement('dt');
+      entry.keys.forEach((one, at) => {
+        if (at) keys.append(' or ');
+        const cap = document.createElement('kbd');
+        cap.textContent = oneLabel(one);
+        keys.append(cap);
+      });
+      const words = document.createElement('dd');
+      words.textContent = entry.words;
+      rows.append(keys, words);
+    }
+    block.append(title, rows);
+    list.append(block);
+  }
+  document.getElementById('singlekeys').checked = !singleKeysOff;
+  sheetReturn = document.activeElement;
+  sheet().showModal();
+}
+addEventListener('DOMContentLoaded', () => {
+  sheet().addEventListener('close', () => {
+    if (sheetReturn && sheetReturn.focus) sheetReturn.focus();
+    sheetReturn = null;
+  });
+  document.getElementById('keysheet-close').addEventListener('click', () => sheet().close());
+  document.getElementById('keysbutton').addEventListener('click', openSheet);
+  document.getElementById('singlekeys').addEventListener('change', event => {
+    singleKeysOff = !event.target.checked;
+    const kept = remembered.set(SINGLE_KEYS, singleKeysOff ? 'off' : 'on');
+    document.getElementById('singlekeys-said').textContent = kept
+      ? '' : 'This browser will not keep the choice; it applies to this page.';
+  });
+});
 
 // How every search box on every page decides whether a needle is in a haystack.
 //
@@ -4093,8 +4366,10 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       it was meant to. The span takes the dot and the link inside it takes the
       box, and as an inline box inside a flex item the link's padding widens the
       mark without making the row any taller on the one page that draws it. -#}
-  <span id="buildhelp"><a href="{{ links.help }}"
-    {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
+  <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help"
+    {%- if help_here %} aria-current="page"{% endif %}>Help</a>
+    <button type="button" id="keysbutton" data-keys="sheet"
+      aria-label="Keyboard shortcuts">?</button></span>
   <a id="report" href="https://github.com/C2SM/openproj/issues/new">Report issue</a>
   {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
       "on mobile takes up too much space: I'd rather it be only one line with a
@@ -4108,6 +4383,17 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
     <div class="buildshelf"></div>
   </details>
 </footer>
+{#- Filled by `openSheet` from the shortcuts live on this page, so it lists
+    nothing a page does not do. -#}
+{#- Close first, because a modal focuses its first control: with the switch
+    first, a long sheet opened scrolled to its foot. -#}
+<dialog id="keysheet" aria-labelledby="keysheet-h">
+  <div class="keyhead"><h2 id="keysheet-h">Keyboard shortcuts</h2>
+    <button type="button" id="keysheet-close">Close</button></div>
+  <div class="keylist"></div>
+  <p class="keyswitch"><input type="checkbox" id="singlekeys">
+    <label for="singlekeys">Single-key shortcuts</label> <span id="singlekeys-said"></span></p>
+</dialog>
 <script>
 // **Sign-in, the plan picker and the theme toggle move to the footer on a
 // phone.** jcanton, 2026-08-26: "I'd move the sign-in and theme and light/dark
@@ -5134,6 +5420,7 @@ def _page(
         content=Markup(content),
         style=Markup(style),
         csp=Markup(CSP),
+        keys=keys_for(links),
         font=_font_uri(),
         icon=_icon_uri(),
         links=links,
@@ -5186,7 +5473,12 @@ def _page(
         # `links_for` left on, in the plan's order, and `_NAV` only says what each
         # one is called.
         nav=[
-            {"href": getattr(links, key), "label": labels[key], "current": key == current}
+            {
+                "key": key,
+                "href": getattr(links, key),
+                "label": labels[key],
+                "current": key == current,
+            }
             for key in links.nav
         ],
         # The Help page's own mark, on the one link to it, which is in the footer

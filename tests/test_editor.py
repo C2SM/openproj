@@ -19,6 +19,7 @@ import json
 import math
 import re
 import time
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -26,6 +27,7 @@ import pygit2
 import pytest
 from browser import _devtools, _evaluated, chrome, in_a_live_page, measured_in
 from fastapi.testclient import TestClient
+from marionette import driving
 from pages import elements, tags
 from test_store import commit_directly
 from test_web import (
@@ -39,15 +41,19 @@ from test_web import (
     SECRET,
     SEED,
     TASK,
+    _plan_saying,
     file_at,
     git_head,
     head,
     live_server,  # noqa: F401 — a fixture, requested by name below
     save,
+    serving,
 )
 
 from openproj.auth import sign_session
-from openproj.render import preview_html
+from openproj.index import build_index
+from openproj.model import load_repo
+from openproj.render import preview_html, render_deck, render_table
 from openproj.render.tokens import _over, _percent
 from openproj.vendor import ACE_FILES
 from openproj.web import MAX_ASSET_BYTES, SESSION_COOKIE, create_app
@@ -1574,7 +1580,7 @@ def _coedit_source(page: str) -> str:
 # and the boundary is a boundary with a hole in it.
 _THROUGH_THE_SURFACE = (
     "let ORIGINAL_BODY = SURFACE.text();",  # the baseline
-    "const count = Object.keys(fields).length + (SURFACE.text()",  # dirty
+    "return Object.keys(fields).length + (SURFACE.text()",  # pending, read by dirty and unsaved
     "const body = SURFACE.text() === ORIGINAL_BODY ? null : SURFACE.text();",  # save
     "text: SURFACE.text()}))",  # the draft writer
     "draft.text !== SURFACE.text()",  # the draft restorer
@@ -12439,3 +12445,505 @@ def test_blockers_are_edited_by_their_titles_and_saved_as_their_ids(
             time.sleep(0.25)
         assert stored() == [OTHER], f"Save wrote {stored()}, not the one blocker left in the box"
         assert not [line for line in said if "TypeError" in line or "ReferenceError" in line], said
+
+
+# --- Keyboard shortcuts: the `g` keys, in a real browser --------------------
+#
+# Trusted `Input.dispatchKeyEvent` and not a synthetic `KeyboardEvent`, because
+# the claim is about where the key lands: a synthetic event dispatched on
+# `document` never reaches a focused field, so it cannot tell a guard that works
+# from one that was never asked.
+
+_KEYS_WINDOW = ("--window-size=1280,800",)
+
+
+def _key(call, key: str, code: str, shift: bool = False) -> None:
+    for kind in ("rawKeyDown", "char", "keyUp"):
+        if kind == "char" and len(key) != 1:
+            continue
+        call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": kind,
+                "key": key,
+                "code": code,
+                "text": key if kind == "char" else "",
+                "modifiers": 8 if shift else 0,
+                "windowsVirtualKeyCode": ord(key.upper()) if len(key) == 1 else _VK[key],
+            },
+        )
+
+
+_VK = {"Escape": 27, "Tab": 9}
+
+
+def _gt(call) -> None:
+    _key(call, "g", "KeyG")
+    time.sleep(0.2)
+    _key(call, "t", "KeyT")
+    time.sleep(1.5)
+
+
+def test_g_then_a_letter_goes_there_and_badges_name_the_letters(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        badges = _evaluated(
+            call,
+            "[...document.querySelectorAll('.gohint')].map(b => "
+            "[b.parentNode.dataset.keys, b.textContent])",
+        )
+        links = _evaluated(call, "document.querySelectorAll('[data-keys^=\"go-\"]').length")
+        assert len(badges) == links, (badges, links)
+        assert ["go-timeline", "l"] in badges, badges
+        _key(call, "l", "KeyL")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/timeline"
+
+
+def test_a_g_typed_where_text_goes_is_text(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _evaluated(call, "document.getElementById('q').focus()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == "/table"
+        assert _evaluated(call, "document.querySelectorAll('.gohint').length") == 0
+        assert _evaluated(call, "document.getElementById('q').value").endswith("gt")
+
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "q", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(
+            call,
+            "(t => { t.focus(); t.setSelectionRange(t.value.length, t.value.length); })"
+            "(document.querySelector('input[name=\"title\"]'))",
+        )
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
+        assert _evaluated(call, "document.querySelector('input[name=\"title\"]').value").endswith(
+            "gt"
+        )
+        assert _evaluated(call, "!!SURFACE.editor"), "the record page is not on Ace"
+        _evaluated(call, "SURFACE.editor.focus(); SURFACE.editor.navigateFileEnd()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
+        assert _evaluated(call, "SURFACE.editor.getValue()").endswith("gt")
+        assert _evaluated(call, "document.querySelectorAll('.gohint').length") == 0
+
+
+def test_shift_and_caps_still_navigate(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "G", "KeyG", shift=True)
+        time.sleep(0.2)
+        _key(call, "T", "KeyT", shift=True)
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_an_unmatched_second_key_disarms(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        _key(call, "z", "KeyZ")
+        time.sleep(0.5)
+        assert _evaluated(call, "document.querySelectorAll('.gohint').length") == 0
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_a_plan_without_table_gets_t_for_timeline(tmp_path: Path):
+    plan = _plan_saying(tmp_path, "views: [cycles, timeline, graph]\n")
+    with serving(create_app(plan, auth="dev", secret=SECRET)) as url:
+        with _devtools(chrome(), f"{url}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+            time.sleep(2)
+            _gt(call)
+            assert _evaluated(call, "location.pathname") == "/timeline"
+
+
+def test_a_key_does_not_leave_unsaved_work(live_server: str, tmp_path: Path):  # noqa: F811
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, "document.querySelector('input[name=\"title\"]').focus()")
+        _key(call, "x", "KeyX")
+        _evaluated(call, "document.activeElement.blur()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == f"/detail/{TASK}"
+        said = _evaluated(
+            call,
+            "(document.getElementById('state') || document.getElementById('announce')).textContent",
+        )
+        assert "Save or reset first" in said, said
+
+
+def _sheet(call) -> dict:
+    return _evaluated(
+        call,
+        """(() => { const d = document.getElementById('keysheet');
+        return {open: !!(d && d.open),
+                heads: d ? [...d.querySelectorAll('h3')].map(h => h.textContent) : [],
+                keys: d ? [...d.querySelectorAll('kbd')].map(k => k.textContent) : []}; })()""",
+    )
+
+
+def test_question_mark_opens_the_sheet_with_this_pages_keys(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "?", "Slash", shift=True)
+        time.sleep(0.3)
+        sheet = _sheet(call)
+        assert sheet["open"], sheet
+        assert {"g t", "/", "n", "?"} <= set(sheet["keys"]), sheet
+        assert "Editor" not in sheet["heads"], sheet
+        _key(call, "Escape", "Escape")
+        time.sleep(0.3)
+        assert not _sheet(call)["open"]
+
+
+def test_single_keys_off_stops_g_but_not_question_mark(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        _evaluated(call, "document.getElementById('singlekeys').click()")
+        _evaluated(call, "document.getElementById('keysheet').close()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == "/graph"
+        _key(call, "?", "Slash", shift=True)
+        time.sleep(0.3)
+        assert _sheet(call)["open"]
+
+
+def test_the_switch_works_when_storage_refuses(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        call("Page.enable")
+        call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": "Object.defineProperty(window, 'localStorage', "
+                "{get() { throw new Error('denied'); }})"
+            },
+        )
+        call("Page.reload")
+        time.sleep(2.5)
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        _evaluated(call, "document.getElementById('singlekeys').click()")
+        said = _evaluated(call, "document.getElementById('keysheet').textContent")
+        assert "will not keep the choice" in said, said
+        _evaluated(call, "document.getElementById('keysheet').close()")
+        _gt(call)
+        assert _evaluated(call, "location.pathname") == "/graph"
+
+
+def _chord(call, key: str, code: str, modifiers: int) -> None:
+    # 2 is Ctrl and 8 is Shift. CI is Linux, where the toolbar's Mod is Ctrl
+    for kind in ("rawKeyDown", "keyUp"):
+        call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": kind,
+                "key": key,
+                "code": code,
+                "modifiers": modifiers,
+                "windowsVirtualKeyCode": ord(key.upper()),
+            },
+        )
+
+
+def test_the_toolbar_keys_ace_used_to_take_now_reach_the_toolbar(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    """Ace's own `replaymacro`, `expandtoline` and Ctrl-K `findnext` stopped these
+    three before the toolbar's listener saw them, so the tooltips named keys that
+    did something else."""
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        assert _evaluated(call, "!!SURFACE.editor"), "the record page is not on Ace"
+        for key, code, mods, wrote in (
+            ("E", "KeyE", 10, "```"),
+            ("L", "KeyL", 10, "- [ ] "),
+            ("k", "KeyK", 2, "]("),
+        ):
+            _evaluated(
+                call,
+                "SURFACE.editor.focus(); SURFACE.editor.navigateFileEnd();"
+                "SURFACE.editor.insert('\\n\\n')",
+            )
+            before = _evaluated(call, "SURFACE.editor.getValue()")
+            _chord(call, key, code, mods)
+            time.sleep(0.3)
+            after = _evaluated(call, "SURFACE.editor.getValue()")
+            assert after.count(wrote) > before.count(wrote), (key, mods, after[-80:])
+
+
+def test_toolbar_titles_use_the_platform_notation(live_server: str, tmp_path: Path):  # noqa: F811
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        bold = _evaluated(
+            call,
+            "(b => b && [b.title, b.getAttribute('aria-keyshortcuts')])"
+            "(document.querySelector('[data-keys=\"bold\"]'))",
+        )
+        assert bold == ["Bold  Ctrl+B", "Control+B"], bold
+        write = _evaluated(call, "document.querySelector('[data-keys=\"view-write\"]').title")
+        assert write == "Write  Ctrl+Shift+1", write
+
+
+ACE = "document.querySelector('.ace_editor').env.editor"
+
+
+def test_escape_then_tab_leaves_ace(live_server: str, tmp_path: Path):  # noqa: F811
+    """jcanton, 2026-11-19: the hatch announces "Press Tab to leave the document"
+    and then Ace indents. Ace's Tab command stops the event before `area`'s
+    bubbling listener can let it through.
+
+    On the slide editor, because on the record page Escape leaves the view
+    before the hatch is ever armed."""
+    url = f"{live_server}/detail/{TASK}?view=slide"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, f"{ACE}.focus(); {ACE}.navigateFileEnd()")
+        _key(call, "x", "KeyX")
+        before = _evaluated(call, f"{ACE}.getValue()")
+        for key, code in (("Escape", "Escape"), ("Tab", "Tab")):
+            for kind in ("rawKeyDown", "keyUp"):
+                call(
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": kind,
+                        "key": key,
+                        "code": code,
+                        "windowsVirtualKeyCode": 27 if key == "Escape" else 9,
+                    },
+                )
+            time.sleep(0.2)
+        assert _evaluated(call, f"{ACE}.getValue()") == before, "Tab indented"
+        assert not _evaluated(call, "!!document.activeElement.closest('.ace_editor')"), (
+            "Tab after Escape left the keyboard in the editor"
+        )
+
+
+def _spy_save(call, ready: str) -> bool:
+    """Put the page's Save in `ready`, press Ctrl+S, and say whether Save was pressed."""
+    _evaluated(
+        call,
+        "window.__pressed = false; const s = document.getElementById('save');"
+        "s.addEventListener('click', e => {"
+        " window.__pressed = true; e.stopImmediatePropagation(); }, true);" + ready,
+    )
+    _chord(call, "s", "KeyS", 2)
+    time.sleep(0.3)
+    return _evaluated(call, "window.__pressed")
+
+
+def _plan_with_a_cycle(tmp_path: Path) -> Path:
+    """The seeded corpus, which has no cycle, and cycle 37."""
+    path = tmp_path / "cycled.git"
+    pygit2.init_repository(str(path), bare=True, initial_head="main")
+    cycle = "---\ncycle: 37\nstarts_on: 2026-08-17\nbuild_weeks: 4\n---\n"
+    commit_directly(path, SEED | {"cycles/0037.md": cycle}, "seed a plan with a cycle")
+    return path
+
+
+def test_mod_s_presses_save_where_there_is_one(tmp_path: Path):
+    with (
+        serving(create_app(_plan_with_a_cycle(tmp_path), auth="dev", secret=SECRET)) as live,
+        _devtools(chrome(), f"{live}/cycle/37", tmp_path / "p", _KEYS_WINDOW) as (call, _),
+    ):
+        time.sleep(2)
+        for path, ready, idle in (
+            ("/cycle/37", "s.disabled = false;", "s.disabled = true;"),
+            ("/graph", "s.hidden = false; s.disabled = false;", "s.hidden = true;"),
+            (f"/detail/{TASK}?view=slide", "s.hidden = false; s.disabled = false;",
+             "s.disabled = true;"),
+        ):
+            call("Page.navigate", {"url": f"{live}{path}"})
+            time.sleep(2.5)
+            assert _spy_save(call, ready), f"Ctrl+S did not press Save on {path}"
+            call("Page.navigate", {"url": f"{live}{path}"})
+            time.sleep(2.5)
+            assert not _spy_save(call, idle), f"Ctrl+S pressed a Save that was off on {path}"
+
+
+def test_the_sheet_on_the_editor_lists_save_and_the_view_chord(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), url, tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        sheet = _sheet(call)
+        assert "Editor" in sheet["heads"], sheet
+        assert {"Ctrl+S", "Ctrl+Shift+1", "Ctrl+B"} <= set(sheet["keys"]), sheet
+
+
+def test_create_says_create_with_mod_s(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/new", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2.5)
+        title = _evaluated(call, "document.getElementById('save').title")
+        assert title == "Create  Ctrl+S", title
+
+
+def test_the_sheet_sections_follow_the_page(tmp_path: Path):
+    ids = "liveKeys().map(entry => entry.id)"
+    with (
+        serving(create_app(_plan_with_a_cycle(tmp_path), auth="dev", secret=SECRET)) as live,
+        _devtools(chrome(), f"{live}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _),
+    ):
+        time.sleep(2)
+        table = set(_evaluated(call, ids))
+        call("Page.navigate", {"url": f"{live}/deck/37"})
+        time.sleep(2.5)
+        deck = set(_evaluated(call, ids))
+    assert {"cell-edit", "row-move", "escape"} <= table and "slide-next" not in table, table
+    assert {"slide-next", "thumb-up"} <= deck and "cell-edit" not in deck, deck
+
+
+# --- From the whole-branch review --------------------------------------------
+
+
+def _shifted(call, key: str, code: str) -> None:
+    """A capital the way a keyboard sends it: Shift goes down first, on its own."""
+    shift = {"key": "Shift", "code": "ShiftLeft", "windowsVirtualKeyCode": 16}
+    call("Input.dispatchKeyEvent", {"type": "rawKeyDown", "modifiers": 8, **shift})
+    _key(call, key, code, shift=True)
+    call("Input.dispatchKeyEvent", {"type": "keyUp", **shift})
+
+
+def test_a_capital_typed_with_its_own_shift_still_navigates(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/graph", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _shifted(call, "G", "KeyG")
+        time.sleep(0.2)
+        _shifted(call, "T", "KeyT")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_vim_keeps_its_keys_out_of_the_tooltips_and_the_sheet(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    """Under vim on Windows and Linux, Ctrl+B and Ctrl+E are vim's."""
+    url = f"{live_server}/detail/{TASK}?edit"
+    with _devtools(chrome(), "about:blank", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        call("Page.enable")
+        call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "localStorage.setItem('openproj:editor:1', '{\"keymap\": \"vim\"}')"},
+        )
+        call("Page.navigate", {"url": url})
+        time.sleep(3)
+        titles = _evaluated(
+            call,
+            "['bold', 'code', 'italic'].map(id => "
+            "document.querySelector(`[data-keys=\"${id}\"]`).title)",
+        )
+        assert titles == ["Bold", "Code", "Italic  Ctrl+I"], titles
+        _evaluated(call, "document.getElementById('keysbutton').click()")
+        assert {"Ctrl+B", "Ctrl+E"}.isdisjoint(_sheet(call)["keys"]), _sheet(call)
+
+
+def test_a_reader_is_not_offered_the_thumbnail_moves(seed_root: Path, tmp_path: Path):
+    records, config, _ = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17))
+    page = tmp_path / "deck.html"
+    page.write_text(render_deck(index, 37, may_write=False))
+    with _devtools(chrome(), page.as_uri(), tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        live = set(_evaluated(call, "liveKeys().map(entry => entry.id)"))
+    assert "thumb-open" in live and not {"thumb-up", "thumb-down"} & live, live
+
+
+def test_slash_focuses_the_search_box_and_n_presses_create(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "/", "Slash")
+        time.sleep(0.2)
+        assert _evaluated(call, "[document.activeElement.id, document.activeElement.value]") == [
+            "q",
+            "",
+        ]
+        _evaluated(call, "document.activeElement.blur()")
+        _key(call, "n", "KeyN")
+        time.sleep(0.5)
+        assert _evaluated(call, "!!document.getElementById('draft-kind')"), "no draft row"
+        call("Page.navigate", {"url": f"{live_server}/"})
+        time.sleep(2)
+        _key(call, "n", "KeyN")
+        time.sleep(2)
+        assert _evaluated(call, "location.pathname") == "/new"
+
+
+def test_a_key_does_not_leave_a_draft_row_with_writing_in_it(
+    live_server: str,  # noqa: F811
+    tmp_path: Path,
+):
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _key(call, "n", "KeyN")
+        time.sleep(0.5)
+        # The row asks for a kind first and draws its fields once it has one
+        _evaluated(
+            call,
+            "(s => { s.value = s.options[s.options.length - 1].value;"
+            " s.dispatchEvent(new Event('change', {bubbles: true})); })"
+            "(document.getElementById('draft-kind'))",
+        )
+        time.sleep(0.4)
+        assert _evaluated(call, "!window.unsaved()"), "a row nobody typed in counts as unsaved"
+        for letter in "draft":
+            _key(call, letter, f"Key{letter.upper()}")
+        _evaluated(call, "document.activeElement.blur()")
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        _key(call, "g", "KeyG")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
+def test_slash_is_ours_and_not_firefox_quick_find(seed_root: Path, tmp_path: Path):
+    """Firefox opens quick find on `/` unless the page prevents the key, and then
+    nothing on the page is focused and the box is left empty."""
+    records, config, _ = load_repo(seed_root)
+    table = render_table(build_index(records, config, date(2026, 8, 17)))
+    with driving(table, tmp_path / "table.html") as browser:
+        browser.call(
+            "WebDriver:PerformActions",
+            {
+                "actions": [
+                    {
+                        "type": "key",
+                        "id": "keyboard",
+                        "actions": [
+                            {"type": "keyDown", "value": "/"},
+                            {"type": "keyUp", "value": "/"},
+                        ],
+                    }
+                ]
+            },
+        )
+        assert browser.js("[document.activeElement.id, document.activeElement.value]") == [
+            "q",
+            "",
+        ]

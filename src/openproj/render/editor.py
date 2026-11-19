@@ -594,6 +594,13 @@ function aceSurface(area, seeded) {
                       'goToNextError', 'goToPreviousError']) {
     editor.commands.removeCommand(name);
   }
+  // Three more, because they took keys the toolbar's tooltips name: ⌘⇧E is
+  // `replaymacro`, ⌘⇧L `expandtoline`, and Ctrl-K on Windows and Linux is
+  // `findnext`, which keeps F3 and Ctrl-G. A key Ace handles never reaches the
+  // toolbar's listener, so "Code block  Ctrl+Shift+E" replayed a macro.
+  editor.commands.removeCommand('replaymacro');
+  editor.commands.removeCommand('expandtoline');
+  editor.commands.bindKey({win: 'Ctrl-K', mac: null}, null);
 
   let applying = false;
 
