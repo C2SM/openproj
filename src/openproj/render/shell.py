@@ -2541,7 +2541,8 @@ const esc = value => String(value ?? '').replace(/[&<>"]/g,
 // place a key or its words are written. See `design/keyboard-shortcuts.md`.
 const KEYS = {{ keys|tojson }};
 const KEY_BY_ID = new Map(KEYS.map(entry => [entry.id, entry]));
-const APPLE = /Mac|iPhone|iPad/.test(
+// `macOS` from `userAgentData`, `MacIntel` from `platform`
+const APPLE = /mac|iphone|ipad/i.test(
   (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
 const ARROWS = {ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→'};
 const MAC_MODS = {Mod: '⌘', Ctrl: '⌃', Shift: '⇧', Alt: '⌥'};
