@@ -44,7 +44,6 @@ from .tokens import (
     KINDS,
     LABELS,
     PREFIX,
-    PRIORITY_GLYPH,
     STATUS_TEACH,
     STATUSES,
     _editable_for,
@@ -52,6 +51,7 @@ from .tokens import (
     _percent,
     _read_date,
     _status_class,
+    priority_bars,
 )
 
 # The three views of one document, drawn as one control.
@@ -3467,7 +3467,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
                 '<span class="chipword">{}</span></span>'
             ).format(
                 record.priority,
-                PRIORITY_GLYPH.get(str(record.priority), ""),
+                priority_bars(record.priority),
                 _human(record.priority),
             )
         elif name == _SIZE_FIELD_NAME:

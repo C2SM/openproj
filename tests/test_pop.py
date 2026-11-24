@@ -76,7 +76,7 @@ from openproj.render.tokens import (
     HUMAN,
     LABELS,
     PRIORITIES,
-    PRIORITY_GLYPH,
+    PRIORITY_LEVEL,
     STATUS_GLYPH,
     SUGGESTS,
 )
@@ -1887,6 +1887,8 @@ itemIn('priority').click();
 const inside = popControls().map(one => ({
   kind: one.dataset.kind, role: one.getAttribute('role'), word: wordIn(one),
   glyph: partIn(one, 'popglyph'), mark: partIn(one, 'popmark'),
+  bars: one.querySelectorAll('.popbars rect').length,
+  lit: one.querySelectorAll('.popbars rect.lit').length,
   checked: one.getAttribute('aria-checked')}));
 const landed = document.activeElement.dataset.kind;
 itemIn('priority-' + other).click();
@@ -1949,9 +1951,9 @@ def test_the_priority_submenu_is_the_one_ladder_and_picking_a_rung_writes_it(
     for rung in PRIORITIES:
         one = inside[f"priority-{rung}"]
         assert one["word"] == HUMAN[rung], f"{rung} is drawn as {one['word']!r}"
-        assert one["glyph"] == PRIORITY_GLYPH[rung], (
-            f"{rung} carries {one['glyph']!r} and its mark on this plan is "
-            f"{PRIORITY_GLYPH[rung]!r}"
+        # The meter, counted: every bar drawn and the rung's own number lit.
+        assert (one["bars"], one["lit"]) == (len(PRIORITIES), PRIORITY_LEVEL[rung]), (
+            f"{rung} draws {one['lit']} of {one['bars']} bars lit"
         )
         assert one["role"] == "menuitemradio", (
             f"{rung} is a plain menuitem, where `aria-checked` is ignored"

@@ -27,8 +27,8 @@ from .tokens import (
     HUMAN,
     LABELS,
     PRIORITIES,
-    PRIORITY_GLYPH,
     PRIORITY_LEVEL,
+    PRIORITY_TEXT,
     STATUS_GLYPH,
     STATUSES,
     SUGGESTS,
@@ -263,7 +263,9 @@ def _payload(index: Index) -> dict:
         # the legend are drawn here, and a second copy of either map is a rung
         # that agrees until somebody adds one.
         "glyphs": STATUS_GLYPH,
-        "marks": PRIORITY_GLYPH,
+        # The priority meter in the two characters a menu can hold. The chip
+        # in a cell is the drawing, which the shell's `priBars` hands out.
+        "marks": PRIORITY_TEXT,
         "levels": PRIORITY_LEVEL,
         # Which statuses demand which fields, derived from the gate itself by
         # `required_at` (`model.py`). The detail page has had this since it grew
@@ -669,9 +671,8 @@ function clamped(pieces, one, many) {
 }
 
 // The two marks a row wears, off the payload rather than restated here.
-// `GLYPHS` is what the graph and the timeline already draw; `RUNGS` below is the
-// priority character, which the graph now draws too — a card's title carries the
-// same two marks a row does, in the same order.
+// `GLYPHS` is what the graph and the timeline already draw. A row's priority is
+// the shell's `priBars`, and `RUNGS` below is the same meter as text.
 const GLYPHS = DATA.glyphs || {};
 // The mark that goes in front of a word inside an `<option>`, which is text and
 // nothing else — the same string `mark()` writes on the server, for both ladders.
@@ -740,7 +741,7 @@ function shown(row, key) {
   if (key === 'priority')
     return row.priority
       ? `<span class="chip pri pri-${esc(row.priority)}">` +
-        `<span class="chipmark" aria-hidden="true">${esc(RUNGS[row.priority] || '')}</span>` +
+        `<span class="chipmark" aria-hidden="true">${priBars(row.priority)}</span>` +
         `<span class="chipword">${esc(human(row.priority))}</span></span>`
       : '';
   // Counted out of the body's own checklist. Empty where there is no checklist,

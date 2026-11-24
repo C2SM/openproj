@@ -128,7 +128,8 @@ from .tokens import (
     LABELS,
     PREFIX,
     PRIORITIES,
-    PRIORITY_GLYPH,
+    PRIORITY_BARS,
+    PRIORITY_TEXT,
     REQUIRED_AT,
     STATUS_GLYPH,
     STATUS_TEACH,
@@ -138,6 +139,7 @@ from .tokens import (
     _ago,
     _editable_for,
     _human,
+    priority_bars,
 )
 
 __all__ = [
@@ -153,7 +155,9 @@ __all__ = [
     "PLAIN",
     "PREFIX",
     "PRIORITIES",
-    "PRIORITY_GLYPH",
+    "PRIORITY_BARS",
+    "PRIORITY_TEXT",
+    "priority_bars",
     "PROMOTABLE",
     "DOCS",
     "render_help",

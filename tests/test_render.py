@@ -20,7 +20,7 @@ from openproj.index import Index, build_index
 from openproj.model import KIND_NAMES, VIEW_NEEDS, VIEWS, Config, load_repo
 from openproj.render import (
     PRIORITIES,
-    PRIORITY_GLYPH,
+    PRIORITY_TEXT,
     ROUTES,
     STATIC,
     STATUS_GLYPH,
@@ -9710,7 +9710,7 @@ def test_the_betting_tables_closed_sets_are_chosen_and_never_typed(server_pages:
     page = server_pages["cycle"]
     for field, ladder, glyphs in (
         ("status", STATUSES, STATUS_GLYPH),
-        ("priority", PRIORITIES, PRIORITY_GLYPH),
+        ("priority", PRIORITIES, PRIORITY_TEXT),
     ):
         picker = re.search(
             rf'<select class="pick[^"]*" data-field="{field}".*?</select>', page, re.S

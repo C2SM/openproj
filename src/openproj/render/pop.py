@@ -155,6 +155,7 @@ _POP_STYLE = """
 /* Neither mark shrinks, and the glyph keeps a column of its own so the words
    down a status ladder line up whether or not their marks are the same width. */
 #pop .popglyph { flex: none; width: 1em; text-align: center; }
+#pop .popbars { flex: none; display: flex; }
 #pop .popmark { flex: none; color: var(--muted); }
 /* **The marks have to be recoloured on a lit row, not merely dimmed on a cold
    one.** `--muted` is a grey chosen against `--surface`; the rule above fills a
@@ -1343,6 +1344,13 @@ function popControl(item) {
   // to be permanently false. `haspopup` alone is the honest half.
   if (item.items) control.setAttribute('aria-haspopup', 'menu');
   if (item.glyph) control.append(popPart('popglyph', item.glyph, true));
+  // A drawing where a character will not do: the priority meter. Markup out of
+  // the shell's `priBars`, which only ever hands out the server's own drawing.
+  if (item.bars) {
+    const part = popPart('popbars', '', true);
+    part.innerHTML = item.bars;
+    control.append(part);
+  }
   control.append(popPart('poptext', item.text, false));
   // One slot behind the word, and the two things that can be in it never
   // co-occur: `›` means there is a list behind this, `•` means this is the value
@@ -1639,13 +1647,10 @@ function popPriorityItem(row) {
 
 function popPriorityChoice(row, priority) {
   const item = {kind: 'priority-' + priority, text: popHuman(priority),
-                // The rising block, which is what the chips and the graph's
-                // nodes draw — `cardMark` off the shell's own map, so the menu
-                // cannot disagree with the card it opens over. The status item
-                // reads its glyph out of the schema because a status glyph was
-                // shipped there before the card existed; this one has no reason
-                // to add a second copy.
-                glyph: typeof cardMark === 'function' ? cardMark('priority', priority) : '',
+                // The meter the chips and the graph's nodes draw, off the
+                // shell's own map, so the menu cannot disagree with the card it
+                // opens over.
+                bars: typeof priBars === 'function' ? priBars(priority) : '',
                 checked: (row.priority || null) === priority};
   // Already there writes nothing, for the reason the status choice says: the
   // server would take it, and "set it to what it is" is not a line anybody meant
@@ -2285,8 +2290,9 @@ function popDressChip(chip, name, value) {
     && !one.startsWith('st-') && !one.startsWith('pri-'));
   chip.className = ['chip', klass, ...kept].join(' ');
   const mark = chip.querySelector('.chipmark');
-  const glyph = typeof cardMark === 'function' ? cardMark(name, value) : '';
-  if (mark) mark.textContent = glyph;
+  if (mark && name === 'status')
+    mark.textContent = typeof cardMark === 'function' ? cardMark(name, value) : '';
+  else if (mark) mark.innerHTML = typeof priBars === 'function' ? priBars(value) : '';
   if (name !== 'status') return;
   const hill = POP.querySelector('.card-chips .card-hill');
   if (hill && typeof hillHtml === 'function') hill.outerHTML = hillHtml(value);

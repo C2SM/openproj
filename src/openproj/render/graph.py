@@ -12,7 +12,14 @@ from .env import _compiled
 from .pop import _POP_STYLE, _pop_js
 from .rows import _row
 from .shell import STATIC, Links, _page, _titles
-from .tokens import PRIORITIES, PRIORITY_GLYPH, PRIORITY_LEVEL, STATUS_GLYPH, STATUSES
+from .tokens import (
+    PRIORITIES,
+    PRIORITY_BARS,
+    PRIORITY_LEVEL,
+    PRIORITY_TEXT,
+    STATUS_GLYPH,
+    STATUSES,
+)
 
 
 def _elements(index: Index) -> list[dict]:
@@ -332,6 +339,7 @@ const GLYPH = {{ glyphs|tojson }};
 // the detail page and the key itself.
 const PRIGLYPH = {{ priglyphs|tojson }};
 const LEVELS = {{ levels|tojson }};
+const BARS = {{ bars|tojson }};
 
 // A card's name, and its two marks — as a picture rather than as two characters
 // in front of the title, because a cytoscape label is ONE ink and jcanton wants
@@ -496,12 +504,12 @@ function edgeWidth(edge) {
 // two fills, so that is where they go, and it comes out looking like the thing
 // that could not be written.
 //
-// The block and the glyph are the same characters `PRIORITY_GLYPH` and
-// `STATUS_GLYPH` write into a chip, a menu and a legend key: one notation for one
-// fact, drawn five ways and read as one.
+// The meter is `PRIORITY_BARS`, the geometry `priority_bars` draws into a chip
+// and a legend key, lit in the rung's colour over a `--line` track: one notation
+// for one fact. The glyph is the character `STATUS_GLYPH` writes everywhere.
 function marksImage(node) {
   const priority = node.data('priority'), status = node.data('status');
-  const block = PRIGLYPH[priority] || '';
+  const level = LEVELS[priority] || 0;
   const glyph = GLYPH[status] || '';
   const hue = token('--pri-' + String(priority).replace(/_/g, '-')) || token('--fg');
   // The BORDER's colour and not the chip ink the table uses: the ground behind
@@ -510,17 +518,16 @@ function marksImage(node) {
   const ink = LINE()[status] || token('--fg');
   const stack = token('--font-sans').replace(/"/g, "'");
   const safe = one => one.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  // Both sit on one baseline. The block character draws from the baseline
-  // downwards in most faces, so the two are placed at the same y and the block's
-  // own metrics put it where a chip puts it.
-  const marks = [
-    block ? `<text x="0" y="11" font-family="${stack}" font-size="12" `
-            + `fill="${hue}">${safe(block)}</text>` : '',
-    glyph ? `<text x="13" y="11" font-family="${stack}" font-size="11" `
-            + `font-weight="700" fill="${ink}">${safe(glyph)}</text>` : '',
-  ].join('');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="14" `
-    + `viewBox="0 0 24 14">${marks}</svg>`;
+  // The track is the border's ink, faint, and not the page's `--line`: the ground
+  // here is the status fill, which `--line` can be the same lightness as.
+  // Bottom-aligned on the glyph's baseline, 11px tall like the glyph's caps.
+  const bars = level ? BARS.map(([x, y, width, height], i) =>
+    `<rect x="${x}" y="${y + 1}" width="${width}" height="${height}" `
+    + (i < level ? `fill="${hue}"` : `fill="${ink}" fill-opacity=".28"`) + '/>').join('') : '';
+  const marks = bars + (glyph ? `<text x="${level ? 17 : 0}" y="11" font-family="${stack}" `
+    + `font-size="11" font-weight="700" fill="${ink}">${safe(glyph)}</text>` : '');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="14" `
+    + `viewBox="0 0 28 14" shape-rendering="crispEdges">${marks}</svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
 
@@ -907,13 +914,13 @@ const cy = cytoscape({
         // scales the image to the node and a wide card gets a stretched one.
         'background-image': node => node.isChildless() ? marksImage(node) : 'none',
         'background-image-opacity': 1,
-        'background-width': 24, 'background-height': 14,
+        'background-width': 28, 'background-height': 14,
         'background-position-x': 8, 'background-position-y': '50%',
         'background-fit': 'none', 'background-clip': 'node',
         'background-image-containment': 'inside',
         // Narrower than the card and pushed right by the marks' own width, so the
         // two share the line without sharing any pixels.
-        'text-wrap': 'wrap', 'text-max-width': 106, 'text-margin-x': 15,
+        'text-wrap': 'wrap', 'text-max-width': 102, 'text-margin-x': 17,
         'background-color': e => COLOUR()[e.data('status')],
         // A rank, not arithmetic on the value: priority became a word, and
         // `4 - 'high'` is NaN, which cytoscape draws as no border at all.
@@ -2261,10 +2268,13 @@ def render_graph(
         statuses=STATUSES,
         priorities=PRIORITIES,
         glyphs=STATUS_GLYPH,
-        # The priority character, for the mark in front of a card's title. The
-        # same map the table's menus write, so a card and a cell say the rung with
-        # the same glyph.
-        priglyphs=PRIORITY_GLYPH,
+        # The priority meter as text, for a box's name, which is canvas text and
+        # nothing else. The same characters the table's menus write.
+        priglyphs=PRIORITY_TEXT,
+        # And as geometry, for a card's marks image, which draws the bars itself:
+        # an image has no stylesheet, so the classes `priority_bars` writes would
+        # colour nothing in it.
+        bars=PRIORITY_BARS,
         levels=PRIORITY_LEVEL,
         carded={rung.name: rung.carded for rung in KIND_LADDER},
         total=len(index.plan),

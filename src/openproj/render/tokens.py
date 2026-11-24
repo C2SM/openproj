@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from markupsafe import Markup
+
 from ..model import KINDS as KIND_LADDER
 from ..model import (
     PARENT_KINDS,
@@ -141,48 +143,64 @@ PRIORITIES = ("very_high", "high", "medium", "low", "very_low")
 # two ladders that agree until somebody adds a rung.
 PRIORITY_LEVEL = {"very_low": 1, "low": 2, "medium": 3, "high": 4, "very_high": 5}
 
-# The same ladder where only text will go: a `<select>` option is a string and
-# cannot hold the five-element meter the legend and the table draw. One block
-# character per rung, rising with it.
+# PRIORITY, AS A METER. One bar per rung, always all of them, rising left to
+# right, and the bars a priority reaches are lit in its colour while the rest stay
+# a faint track. jcanton, 2026-11-24: "countable bars [...] always be there, just
+# colouring/filling the used ones a-la macos wifi icon".
 #
-# The graph does NOT use this and did for one release. A cytoscape label is drawn
-# into a canvas with the font it is given and no fallback chain, and Inter has no
-# Block Elements — so every node's name came out with a .notdef box in front of
-# it. An `<option>` is drawn by the platform's own widget, which does fall back,
-# which is why the same characters are safe here and were not there. If that ever
-# stops being true the answer is the one the graph took: draw it.
+# It replaces one block character per rung, `\u2582` to `\u2588`. Inter, the one
+# face every page carries, has no Block Elements, so each was drawn by whatever
+# the platform fell back to: a solid rectangle beside a word, which read as tofu,
+# and a height difference between two neighbouring rungs that nobody could count.
+# Five bars are counted rather than compared, and the empty ones say how many
+# there could have been.
 #
-# Text and not an image, which is the argument `STATUS_GLYPH` already makes and
-# it applies here unchanged: a shape survives a screenshot, a projector and
-# deuteranopia, and it arrives in the label's own ink instead of being drawn by
-# the platform's colour font at a different weight on every machine.
-# PRIORITY, AS ONE CHARACTER. A block of the height the rung is worth: the meter
-# it replaces was five elements, an `inline-flex` and a `data-level`, and this is
-# a glyph on a text baseline.
+# Lit and unlit differ in lightness and not in hue: the track sits between
+# `--line` and `--line-strong`, pale in the light theme and dark in the dark one,
+# against rung colours that are dark on light and light on dark. `--line-strong`
+# alone is a mid grey as light as the green and amber rungs beside it, and
+# `--line` alone all but disappears into the dark page.
 #
-# It was five bars, then no mark at all in menus, and it is now this — jcanton,
-# 2026-08-20, having seen all three: "it's a font glyph, no alignment problems,
-# occupies less horizontal space. it can go back in the dropdowns so it's
-# consistent with the status dropdown, better on all fronts".
-#
-# The vendored face carries 230 codepoints and none of these is one of them, so
-# every one of them is drawn by whatever the platform falls back to. That is the
-# honest cost and it was weighed: a block element is in every desktop UI font
-# there is, the fallback draws a rectangle of the right height where it lands,
-# and the alternative — an element that has to be aligned against a word, inside
-# a chip, inside a cell, inside a column that tightens — is three alignment
-# problems that this repository has now fixed four times.
-#
-# Colour goes with it wherever colour is possible: the chip in the table, the key
-# in the legend, the meter on a node. In a native `<select>` it cannot — an
-# option is a string — which is the same bargain the status glyphs already make.
-PRIORITY_GLYPH = {
-    "very_low": "\u2582",  # ▂ one quarter — an eighth is a hairline at 12px
-    "low": "\u2583",  # ▃ three eighths
-    "medium": "\u2585",  # ▅ five eighths
-    "high": "\u2587",  # ▇ seven eighths
-    "very_high": "\u2588",  # █ full
+# Side by side and not stacked: a rising row is the signal meter everybody
+# already reads, and stacked five bars do not fit a line of text without being
+# hairlines. Pixel geometry and not ems, so each bar is two whole pixels with one
+# between them at 1x. A bar is x, y, width, height on a 14x11 grid, the lowest
+# 3px tall and each next one 2px taller.
+PRIORITY_BARS = tuple((3 * i, 8 - 2 * i, 2, 3 + 2 * i) for i in range(len(PRIORITIES)))
+
+# The ladder where only text will go: an `<option>` is a string, and a graph box's
+# name is canvas text. The same meter in two characters, filled and empty, so a
+# menu still counts the rung out of five rather than naming it a second way.
+PRIORITY_TEXT = {
+    rung: "\u25ae" * level + "\u25af" * (len(PRIORITIES) - level)
+    for rung, level in PRIORITY_LEVEL.items()
 }
+
+_PRIORITY_SVG = Markup(
+    '<svg class="pribars" viewBox="0 0 14 11" width="14" height="11" '
+    'shape-rendering="crispEdges" aria-hidden="true" focusable="false">{}</svg>'
+)
+
+
+def priority_bars(priority: object) -> Markup:
+    """The meter for one priority, or nothing for a word that is not a rung.
+
+    The only place the drawing is made. The browser asks for it by key out of the
+    shell's `chipmarks` payload, so a row the table draws and a chip Jinja draws
+    are the same markup. Nothing for an unknown word, as `_status_class` and
+    `icon_svg` do: `priority` holds whatever a hand-edited file holds.
+    """
+    level = PRIORITY_LEVEL.get(str(priority))
+    if level is None:
+        return Markup("")
+    bars = Markup("").join(
+        Markup('<rect class="{}" x="{}" y="{}" width="{}" height="{}"/>').format(
+            "lit" if i < level else "track", x, y, width, height
+        )
+        for i, (x, y, width, height) in enumerate(PRIORITY_BARS)
+    )
+    return _PRIORITY_SVG.format(bars)
+
 
 # The redundant channel. On the graph and the timeline a fill is the only thing
 # telling two shapes apart, and a luminance ladder makes five fills *separable*
@@ -207,10 +225,10 @@ PRIORITY_GLYPH = {
 # the native `<select>` when it became the hill (`_control_html` in
 # `controls.py` says so), and the facet menus carry no glyph at all; every site
 # left is a chip, a legend swatch, an SVG `<text>` or a data-URI image, and each
-# of those is somewhere an SVG could go. The constraint still binds
-# `PRIORITY_GLYPH`, whose blocks really are in menus, and it is written out
-# again there. These stay characters because a character is what they should be,
-# not because nothing else would fit.
+# of those is somewhere an SVG could go. Priority took that road and is a
+# drawing now (`priority_bars`), keeping a text form only for its `<option>`s.
+# These stay characters because a character is what they should be, not because
+# nothing else would fit.
 #
 # **They say what the hill says.** Since the detail page draws a status as a ball
 # on a hill, a mark that means something unrelated is a second vocabulary for one

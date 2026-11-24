@@ -24,10 +24,12 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
-    PRIORITY_GLYPH,
+    PRIORITY_LEVEL,
+    PRIORITY_TEXT,
     STATUS_GLYPH,
     STATUSES,
     card_facts,
+    priority_bars,
 )
 
 
@@ -1801,18 +1803,23 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    is believed. The swatch carries the glyph too: colour is no longer the only
    channel on a bar or a node, so a key to the colour alone keys half the
    drawing. */
-/* PRIORITY, AS ONE BLOCK. A character whose height is the rung — `\u2581` up to
-   `\u2588` — in the rung's own colour, on the text baseline of whatever word it
-   sits beside. It is the second channel for a fact the graph also draws as line
-   thickness, and jcanton had seen two earlier answers to the same question: five
-   `<i>` elements in an `inline-flex` meter, which had to be aligned against a
-   word inside a chip inside a cell inside a column that tightens, and then no
-   mark at all in menus, where an element cannot go.
+/* PRIORITY, AS A METER. Five bars rising, all of them always drawn: the lit ones
+   in the rung's colour (`currentColor`, which the chip and the legend key set
+   per rung) and the rest a faint track. `priority_bars` in `tokens.py` carries
+   the argument, and why it is not a block character any more.
 
-   `PRIORITY_GLYPH` in `render.py` carries the argument for the characters, the
-   fallback they rely on, and what it costs.
-
-   The colour is on the mark and not on the chip: a chip with a coloured ground
+   One SVG, so it is one inline box on the word's line and not five elements to
+   align inside a chip inside a cell. Pixel-sized, because the bars are two whole
+   pixels wide with one between them, and an em-sized meter at 12px lands each
+   bar across two device pixels and greys it out. */
+.pribars { width: 14px; height: 11px; flex: none; vertical-align: -1px; }
+/* Half way from `--line` to `--line-strong`. `--line` alone is the rule between
+   rows and on the dark ground it was nearly the ground, so a very-low meter read
+   as one bar and nothing. Mixed, it is still lighter than every rung on the light
+   page and darker than every rung on the dark one. */
+.pribars .track { fill: color-mix(in oklab, var(--line) 50%, var(--line-strong)); }
+.pribars .lit { fill: currentColor; }
+/* The colour is on the mark and not on the chip: a chip with a coloured ground
    in the column next to Status would be two ladders competing at one weight, and
    the ground is what Status uses. */
 /* In a table cell the mark leads and the word follows: the mark is what the eye
@@ -1823,8 +1830,7 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    No hue on the ground, for the reason above: the mark carries the colour. */
 .chip.pri { color: var(--kind-ink); border: 1px solid var(--kind-line);
             padding: .1rem .4rem; }
-.chip.pri .chipmark { opacity: 1; font-size: 15px; line-height: 0;
-                      vertical-align: -1px; }
+.chip.pri .chipmark { opacity: 1; }
 .chip.pri-very_low .chipmark  { color: var(--pri-very-low); }
 .chip.pri-low .chipmark       { color: var(--pri-low); }
 .chip.pri-medium .chipmark    { color: var(--pri-medium); }
@@ -1918,7 +1924,7 @@ table.tight-priority td[data-col="priority"] .chip.pri { padding: .1rem .3rem; }
    It sits ON the border rather than inside it, because a 6px border on a 12px
    swatch leaves nothing in the middle — the thickest rung was a box with its own
    meter squeezed out of it. */
-.legend .swatch.pri .primark { font-size: 12px; line-height: 1; }
+.legend .swatch.pri .primark { display: flex; line-height: 1; }
 .legend .swatch.pri-very_low .primark  { color: var(--pri-very-low); }
 .legend .swatch.pri-low .primark       { color: var(--pri-low); }
 .legend .swatch.pri-medium .primark    { color: var(--pri-medium); }
@@ -3171,6 +3177,13 @@ const CARD_MARKS = (() => {
 function cardMark(ladder, value) {
   return (CARD_MARKS[ladder] || {})[value] || '';
 }
+// The priority meter, as markup: the server's own drawing, picked by key, so it
+// is written into a page unescaped and is still never anything a person typed.
+// A word that is not a rung picks nothing.
+function priBars(priority) {
+  const bars = CARD_MARKS.bars || {};
+  return Object.prototype.hasOwnProperty.call(bars, priority) ? bars[priority] : '';
+}
 
 // Bodies already fetched, by id. A pointer crossing a column of rows asks for the
 // same document several times a second otherwise — and the answer cannot change
@@ -3324,9 +3337,11 @@ function cardHtml(row, extra) {
   // them. It says nothing on a card, which is only read; it is what the box that
   // edits a record finds the thing you clicked by, and the card and that box are
   // the same markup drawn by this one function.
-  const chip = (klass, glyph, word, field) =>
+  // `mark` is markup, already safe: a status glyph through `esc`, a priority
+  // meter out of `priBars`.
+  const chip = (klass, mark, word, field) =>
     `<span class="chip ${klass}"${field ? ` data-field="${field}"` : ''}>` +
-    (glyph ? `<span class="chipmark" aria-hidden="true">${esc(glyph)}</span>` : '') +
+    (mark ? `<span class="chipmark" aria-hidden="true">${mark}</span>` : '') +
     `<span class="chipword">${esc(word)}</span></span>`;
   //
   // **A chip per ladder this kind READS, filled or not.** It used to be a chip
@@ -3345,8 +3360,8 @@ function cardHtml(row, extra) {
     const value = row[name];
     if (!value) return chip('empty-chip', '', CARD_NOTHING, name);
     return name === 'status'
-      ? chip(stClass(value), cardMark('status', value), cardWord(value), 'status')
-      : chip(`pri pri-${esc(value)}`, cardMark('priority', value), cardWord(value), 'priority');
+      ? chip(stClass(value), esc(cardMark('status', value)), cardWord(value), 'status')
+      : chip(`pri pri-${esc(value)}`, priBars(value), cardWord(value), 'priority');
   };
   const marks = [
     chip(`kind-${esc(row.kind)}`, '', cardWord(row.kind)),
@@ -5467,7 +5482,15 @@ def _page(
         words=HUMAN,
         # The marks that go with those words, for the hover card: one map per
         # ladder, so a card says the rung the same way on all three views.
-        cardmarks={"status": STATUS_GLYPH, "priority": PRIORITY_GLYPH},
+        # The priority meter as the server draws it, so a row the table draws
+        # in the browser is the markup a chip Jinja draws: `priBars` looks it up
+        # by key and builds nothing of its own. `priority` stays the text form,
+        # for the menus that can only hold a string.
+        cardmarks={
+            "status": STATUS_GLYPH,
+            "priority": PRIORITY_TEXT,
+            "bars": {rung: str(priority_bars(rung)) for rung in PRIORITY_LEVEL},
+        },
         # And which facts a card lists under them, per kind. The same list the
         # right-click box draws its controls from, because they are one box:
         # `card_facts` asks `_editable_for` over a blank record of each kind.
