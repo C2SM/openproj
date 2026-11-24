@@ -2188,7 +2188,10 @@ function popOpenField(name) {
   const control = popControlOf(name, type);
   control.id = 'pop-f-' + (++POP_FIELD_N);
   control.dataset.field = name;
-  control.className = 'popbox';
+  // Added and not assigned: a priority select arrives as `prisel`, which is what
+  // makes it a customizable select with the meter in it, and assigning the class
+  // took that away.
+  control.classList.add('popbox');
   // No `<label>` to point at: the card names a field with a `<dt>` that is not
   // this control's label, and the title line and the chips name nothing at all.
   control.setAttribute('aria-label', popLabel(name));
@@ -2231,6 +2234,10 @@ function popOpenField(name) {
   // what the button being there says, and Enter in a box you have just typed
   // into is not a press of it.
   control.onkeydown = event => {
+    // A key pressed in an open list is the list's: Enter picks the option there
+    // and Escape closes the list. Taken here as well, Enter closed the field on
+    // the value from before the pick.
+    try { if (control.matches(':open')) return; } catch { /* no :open, no list */ }
     if (event.key === 'Enter') {
       // **It must not reach the form**, which is the whole of this branch: the
       // control is inside a real `<form>` with a `type="submit"` button, so an
@@ -2599,10 +2606,29 @@ function popSelectOf(name, value) {
   // model; a `defaults` key beside `opens` is where the answer belongs.
   const locked = POP_FORM.mode === 'new' && name === 'parent' && POP_FORM.parent;
   if ((name === 'parent' && !locked) || !raw) options.unshift({value: '', text: POP_NOTHING});
+  // A priority is the meter and the word, as on the record page and in the
+  // table: a customizable select (`select.prisel` in the shell), whose closed
+  // control shows the chosen option through `<selectedcontent>`. `data-rung` is
+  // what draws the closed control's meter where `base-select` is not supported.
+  const meter = name === 'priority' && typeof priBars === 'function';
+  if (meter) {
+    box.className = 'prisel';
+    box.dataset.rung = raw;
+    const button = document.createElement('button');
+    button.append(document.createElement('selectedcontent'));
+    box.append(button);
+  }
   for (const one of options) {
     const option = document.createElement('option');
     option.value = one.value;
-    option.textContent = one.text;
+    // `priBars` is the server's own drawing picked by key, and a word that is not
+    // a rung picks nothing, so nothing a person typed reaches `innerHTML` here.
+    if (meter && priBars(one.value)) {
+      option.innerHTML = priBars(one.value);
+      const word = document.createElement('span');
+      word.textContent = one.text;
+      option.append(word);
+    } else option.textContent = one.text;
     if (one.value === raw) option.selected = true;
     box.append(option);
   }

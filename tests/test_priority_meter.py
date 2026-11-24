@@ -153,9 +153,10 @@ def test_lit_and_unlit_bars_differ_in_lightness_on_both_themes(tmp_path: Path):
 
 def test_a_priority_option_is_the_word_to_a_browser_without_base_select(seed_root: Path):
     """The record page's priority select is a customizable one, so each option holds
-    the meter. A browser without `base-select` parses a select the old way: every
-    tag inside an `<option>` is dropped and its text kept. What it keeps has to be
-    the word and only the word, never a block character and never nothing."""
+    the meter. A browser without `base-select` draws an option as its text alone:
+    Firefox 160 keeps the SVG in the DOM and draws none of it, and an older parser
+    drops the tags. Either way what is drawn is the text, and that has to be the
+    word and only the word, never a block character and never nothing."""
     import re
 
     from openproj.render import HUMAN
@@ -227,3 +228,75 @@ def test_a_box_name_is_measured_in_the_meter_face(seed_root: Path, tmp_path: Pat
     )
     assert got["loaded"], "the meter face never loaded on the graph"
     assert abs(got["width"] - 12 * 1070 / 1000) < 0.1, got
+
+
+def test_a_closed_priority_select_lights_its_rung_where_base_select_is_missing():
+    """A browser without `base-select` (Firefox 160 measured, Safari) draws an option
+    as its text, so the closed control's meter is the select's own background:
+    one gradient per bar, coloured per rung. Chrome cannot be made to lack the
+    feature, so this is asked of the rules rather than of the pixels; the pixels
+    were looked at in headless Firefox."""
+    import re
+
+    from openproj.render.shell import _priority_select_css
+    from openproj.render.tokens import PRIORITY_LEVEL
+
+    css = _priority_select_css()
+    assert css.startswith("@supports not (appearance: base-select) {"), (
+        "the fallback is not gated, so Chrome would draw the meter twice"
+    )
+    for rung, level in PRIORITY_LEVEL.items():
+        (rule,) = re.findall(rf'select\.prisel\[data-rung="{rung}"\] {{([^}}]*)}}', css)
+        lit = re.findall(r"--pb\d: var\(--pri-(?!track)[a-z-]+\);", rule)
+        track = re.findall(r"--pb\d: var\(--pri-track\);", rule)
+        assert (len(lit), len(track)) == (level, len(PRIORITIES) - level), rule
+    # Bottoms level: each bar is pushed down by half of what it is short of the
+    # tallest, from a centred box, so offset + height is one number for all five.
+    positions = re.findall(r"top calc\(50% \+ ([\d.]+)px\)", css)
+    bottoms = {float(off) * 2 + h for off, (*_, h) in zip(positions, PRIORITY_BARS, strict=True)}
+    assert len(bottoms) == 1, bottoms
+
+
+def test_every_priority_select_says_its_rung(seed_root: Path):
+    """`data-rung` is what draws the fallback meter, so a select drawn without it,
+    or with one that disagrees with what it shows, draws a wrong closed control."""
+    import re
+
+    from openproj.render import render_cycle
+
+    records, config, unreadable = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17), unreadable)
+    task = next(one for one in index.records.values() if one.kind == "task" and one.priority)
+    pages = {
+        "record": render_detail(index, ROUTES, only=task.id, base_commit="deadbee", may_write=True),
+        "cycle": render_cycle(index, 37, ROUTES, base_commit="deadbee"),
+    }
+    for name, page in pages.items():
+        selects = re.findall(r"<select[^>]*\bprisel\b[^>]*>.*?</select>", page, re.S)
+        assert selects, f"the {name} page draws no priority select"
+        for one in selects:
+            said = re.search(r'data-rung="([^"]*)"', one)
+            chosen = re.search(r'<option value="([^"]*)"\s*selected', one)
+            assert said and chosen and said.group(1) == chosen.group(1), (name, one[:200])
+
+
+def test_a_picked_priority_moves_the_rung_the_closed_control_draws(seed_root: Path):
+    """The shell's one `change` listener keeps `data-rung` on the select, for every
+    priority select on every page, the ones built in the browser included."""
+    from test_injection import run_js
+
+    records, config, unreadable = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17), unreadable)
+    task = next(one for one in index.records.values() if one.kind == "task" and one.priority)
+    page = render_detail(index, ROUTES, only=task.id, base_commit="deadbee", may_write=True)
+    answer = run_js(
+        page,
+        "(() => { const s = document.querySelector('select.prisel');"
+        " const other = s.value === 'low' ? 'high' : 'low'; s.value = other;"
+        " s.dispatchEvent(new Event('change', {bubbles: true}));"
+        " return {value: s.value, rung: s.dataset.rung}; })()",
+        page=True,
+    )
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+    got = answer["value"]
+    assert got["rung"] == got["value"], got

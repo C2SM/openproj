@@ -368,7 +368,8 @@ _CYCLE = """
       {% for value in statuses %}<option value="{{ value }}"
         {{- ' selected' if value == row.status else '' }}>{{ mark('status', value) }}{{
         value|human }}</option>{% endfor %}</select></td>
-    <td><select class="pick prisel" data-field="priority" aria-label="{{ row.title }} priority">
+    <td><select class="pick prisel" data-field="priority" data-rung="{{ row.priority or '' }}"
+        aria-label="{{ row.title }} priority">
       <button><selectedcontent></selectedcontent></button>
       {% for value in priorities %}<option value="{{ value }}"
         {{- ' selected' if value == row.priority else '' }}>{{ pri(value) }}<span>{{

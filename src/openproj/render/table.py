@@ -672,8 +672,8 @@ function clamped(pieces, one, many) {
 const GLYPHS = DATA.glyphs || {};
 // What goes in front of a word inside an `<option>`. A status option is text and
 // takes its glyph; a priority option is in a customizable select and takes the
-// meter itself, the same markup the cell shows, ahead of the word in a `<span>`
-// so a browser without `base-select` drops the drawing and keeps the word.
+// meter itself, the same markup the cell shows, ahead of the word in a `<span>`.
+// A browser without `base-select` draws an option as its text, which is the word.
 function optionFor(field, value) {
   if (field === 'priority') return `${priBars(value)}<span>${esc(human(value))}</span>`;
   const glyph = field === 'status' && GLYPHS[value] ? GLYPHS[value] + ' ' : '';
@@ -2435,7 +2435,8 @@ function openEditor(cell) {
     // each option, and a priority list is a customizable select (`select.prisel`).
     ? `<select data-type="text" aria-label="${named}"` +
       (field === 'priority'
-        ? ' class="prisel"><button><selectedcontent></selectedcontent></button>' : '>') +
+        ? ` class="prisel" data-rung="${esc(was)}">` +
+          '<button><selectedcontent></selectedcontent></button>' : '>') +
       closed.map(o =>
         `<option value="${esc(o)}" ${o === was ? 'selected' : ''}>${optionFor(field, o)}</option>`
       ).join('') + '</select>'

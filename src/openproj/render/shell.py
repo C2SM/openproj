@@ -24,6 +24,7 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
+    PRIORITY_BARS,
     PRIORITY_LEVEL,
     STATUS_GLYPH,
     STATUSES,
@@ -1816,7 +1817,8 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    rows and on the dark ground it was nearly the ground, so a very-low meter read
    as one bar and nothing. Mixed, it is still lighter than every rung on the light
    page and darker than every rung on the dark one. */
-.pribars .track { fill: color-mix(in oklab, var(--line) 50%, var(--line-strong)); }
+:root { --pri-track: color-mix(in oklab, var(--line) 50%, var(--line-strong)); }
+.pribars .track { fill: var(--pri-track); }
 .pribars .lit { fill: currentColor; }
 /* The rung's colour is on the drawing and not on whatever holds it, so a chip, an
    `<option>`, a filter's checkbox and a menu item all light it the same way. */
@@ -1831,10 +1833,12 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    face the page has, and five of them made the open list twice as wide as the
    closed control. jcanton, 2026-11-24: "same meter everywhere".
 
-   A browser without `base-select` never sees the drawing at all, and that is the
-   HTML parser and not this sheet: its select parser drops every tag inside an
-   `<option>` and keeps the text, so the option is the word and nothing else, and
-   the `<button>` and `<selectedcontent>` are dropped the same way.
+   A browser without `base-select` draws an option as its text and nothing else,
+   so its options are the word: Firefox 160 keeps the SVG in the DOM and draws
+   none of it, and an older parser drops the tags outright. Its closed control
+   gets the meter from `_priority_select_css` instead. Its open list gets
+   nothing, because that list is drawn where page fonts and drawings do not
+   reach (see there).
 
    Here in the shell and not on a page, because these selects are on three pages
    (the table's cell editor, the record page and the cycle page) and the rules
@@ -1845,6 +1849,9 @@ select.prisel::picker(select) {
   border: 1px solid var(--line-strong); border-radius: 4px; padding: .2rem 0;
   background: var(--surface); color: var(--fg);
   box-shadow: 0 6px 18px rgb(0 0 0 / .18);
+  /* The list reads the same wherever it opens from. Opened from a chip (the
+     edit card's priority) it inherited the chip's capitals and monospace. */
+  font: 13px var(--font-sans); text-transform: none; letter-spacing: normal;
 }
 select.prisel option { display: flex; align-items: center; gap: .4rem; }
 /* Inline, because the record page makes its fields `display: block` and a block
@@ -1872,6 +1879,7 @@ select.prisel::picker-icon {
    laid out as flex (the table, the cycle page), floated there in one the record
    page has made a block, and centred on the line in both. */
 select.prisel::picker-icon { margin-left: auto; float: right; margin-top: .45em; }
+{{ priselect }}
 /* The colour is on the mark and not on the chip: a chip with a coloured ground
    in the column next to Status would be two ladders competing at one weight, and
    the ground is what Status uses. */
@@ -3227,6 +3235,13 @@ function priBars(priority) {
   const bars = CARD_MARKS.bars || {};
   return Object.prototype.hasOwnProperty.call(bars, priority) ? bars[priority] : '';
 }
+// The rung a priority select holds, kept on the select itself, which is what draws
+// the closed control's meter in a browser without `base-select`. One listener for
+// every priority select on every page, the ones built later included.
+document.addEventListener('change', event => {
+  const box = event.target;
+  if (box && box.matches && box.matches('select.prisel')) box.dataset.rung = box.value;
+}, true);
 
 // Bodies already fetched, by id. A pointer crossing a column of rows asks for the
 // same document several times a second otherwise — and the answer cannot change
@@ -5447,6 +5462,61 @@ _OFF_NAV = frozenset({"detail", "help"})
 _PAGE_KEYS = _NAV_KEYS | _OFF_NAV
 
 
+def _priority_select_css() -> str:
+    """The meter in a closed priority select, for a browser without `base-select`.
+
+    Such a browser draws each option as its text alone, the SVG inside dropped
+    from view, so the closed control said only the word. A character would not
+    do: the closed control shows the chosen option's text, and that text is
+    also what the open list draws, which Firefox draws in its parent process
+    where no page font exists (bug 1576820, open since 2019) and Safari and
+    Chrome without `base-select` draw as a native menu. A meter glyph there is
+    the platform's unknown-glyph box, which is where this started.
+
+    So the bars are the select's own background: one `linear-gradient` per bar
+    from `PRIORITY_BARS`, sized and placed as the SVG draws them, coloured by
+    the theme's `--pri-*` tokens and `--pri-track`. `data-rung` on the select
+    says which rung, kept by the shell's `change` listener. Gated by
+    `@supports not`, so a browser with `base-select` draws the SVG and never
+    this.
+
+    `!important`, on these five properties and nothing else, because every page
+    dresses its own selects with the `background` shorthand, and a shorthand
+    resets the image: `#bets select.pick` on the cycle page is (1,1,1) and drew
+    no meter at all. What this beats is exactly what it has to, a page's own
+    background and left padding, on a select that holds a known rung, in a
+    browser that cannot draw the SVG.
+    """
+    tallest = max(height for *_, height in PRIORITY_BARS)
+    inset = 8
+    bars = range(1, len(PRIORITY_BARS) + 1)
+    known = ", ".join(f'[data-rung="{rung}"]' for rung in PRIORITY_LEVEL)
+    rules = [
+        f"select.prisel:is({known}) {{\n"
+        "  background-repeat: no-repeat !important;\n"
+        "  background-image: "
+        + ", ".join(f"linear-gradient(var(--pb{i}), var(--pb{i}))" for i in bars)
+        + " !important;\n  background-size: "
+        + ", ".join(f"{width}px {height}px" for _, _, width, height in PRIORITY_BARS)
+        + " !important;\n  background-position: "
+        # Bottoms level, as in the SVG: a bar `height` tall is pushed down by
+        # half of what it is short of the tallest from a centred box.
+        + ", ".join(
+            f"left {inset + x}px top calc(50% + {(tallest - height) / 2:g}px)"
+            for x, _, _, height in PRIORITY_BARS
+        )
+        + f" !important;\n  padding-left: {inset + 14 + 7}px !important;\n}}"
+    ]
+    for rung, level in PRIORITY_LEVEL.items():
+        lit = f"var(--pri-{rung.replace('_', '-')})"
+        rules.append(
+            f'select.prisel[data-rung="{rung}"] {{ '
+            + " ".join(f"--pb{i}: {lit if i <= level else 'var(--pri-track)'};" for i in bars)
+            + " }"
+        )
+    return "@supports not (appearance: base-select) {\n" + "\n".join(rules) + "\n}"
+
+
 def _page(
     title: str,
     content: str,
@@ -5655,6 +5725,7 @@ def _page(
         # not about the page, and `pyproject.toml` and `__init__.py` have already
         # disagreed with each other and with the newest tag once.
         version=__version__,
+        priselect=Markup(_priority_select_css()),
     )
 
 

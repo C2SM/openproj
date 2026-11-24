@@ -4234,6 +4234,7 @@ for (const input of document.querySelectorAll('[data-suggest]')) attachSuggest(i
 _CONTROL = """
 {% if f.type == "priority" %}
 <select name="{{ f.name }}" id="{{ f.id }}" data-type="text" class="field prisel"
+        data-rung="{{ f.value or '' }}"
         {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}
         {% if f.disabled %}disabled{% endif %}
         {% if f.gates %}data-required-at="{{ f.gates|join(' ') }}"{% endif %}>
@@ -4242,7 +4243,8 @@ _CONTROL = """
       also in the dropdowns for editing a record". A customizable select
       (`select.prisel` in the shell), so the option holds the drawing itself, and
       the closed control shows it too through `<selectedcontent>`. A browser
-      without one drops every tag here and shows the word. -#}
+      without one draws each option as its text, the word; its closed control
+      gets the meter from `data-rung` (`_priority_select_css`). -#}
   <button><selectedcontent></selectedcontent></button>
   {% for s in priorities %}
   <option value="{{ s }}" {% if s == f.value %}selected{% endif %}>{{
