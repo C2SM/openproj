@@ -83,6 +83,11 @@ class _Nav(HTMLParser):
             self._inside = tag
         elif tag == "a" and self._inside:
             found = dict(attrs)
+            # The plan's own mark is a link home at the head of the nav, and it is
+            # the plan rather than one of its views: every question asked of the
+            # nav here is about which views it lists, in what order, marked how.
+            if "planmark" in (found.get("class") or "").split():
+                return
             self._link = (found.get("href") or "", found.get("aria-current") == "page")
             self._text = []
 
@@ -100,7 +105,8 @@ class _Nav(HTMLParser):
 
 
 def nav_of(page: str) -> list[tuple[str, str, bool]]:
-    """(label, href, marked) for every link in the nav, in document order."""
+    """(label, href, marked) for every view the nav links, in document order. The
+    plan's mark, a link home ahead of them, is not one."""
     parser = _Nav()
     parser.feed(page)
     return parser.found

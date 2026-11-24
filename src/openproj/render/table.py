@@ -5394,7 +5394,7 @@ def render_table(
         pop=_pop_js(links, index if editable else None),
     )
     return _page(
-        "openproj — table",
+        "Table",
         body,
         # Concatenated here rather than reached through a shared sheet, exactly as
         # `_SUGGEST_STYLE` beside it already is: the menu's three hosts load no
@@ -5409,4 +5409,5 @@ def render_table(
         "table",
         index.unreadable,
         index.unusable,
+        face=index.face,
     )

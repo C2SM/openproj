@@ -249,6 +249,14 @@ class CycleWindow(NamedTuple):
     alt: bool
 
 
+class Face(NamedTuple):
+    """What a plan looks like from outside its pages: the name in its tab title
+    and nav, and the colour of its mark. Empty is unset."""
+
+    name: str = ""
+    colour: str = ""
+
+
 class Index(BaseModel):
     # THE PLAN, and only the plan: kinds whose rung says `planned`. Narrowed on
     # purpose rather than superseded — every PM surface (table, graph, timeline,
@@ -341,6 +349,10 @@ class Index(BaseModel):
     # reader to the right one of four files; a key nobody wrote is absent here,
     # and the reader names `SWITCHES_FILE` (`model.py`), which is where it goes.
     switches_from: dict[str, str] = {}
+    # The plan's name and the colour of its mark, as `resolve_face` answered, for
+    # the shell: the tab title, the favicon and the nav. Empty is unset.
+    name: str = ""
+    colour: str = ""
     # The icon each person picked for themselves, login to icon name, from
     # `people/<login>.md`. The choice and not the record: the one page that draws
     # these wants the mark beside a name, and an index carrying the whole record
@@ -372,6 +384,10 @@ class Index(BaseModel):
                     "the plan: .plan holds planned kinds only — put it in .records"
                 )
         return self
+
+    @property
+    def face(self) -> Face:
+        return Face(self.name, self.colour)
 
     def counts_in(self, record: Record, cycle: int) -> bool:
         """Whether this record's work lands inside this cycle's window.
@@ -1234,6 +1250,8 @@ def build_index(
         views=config.views,
         kinds=config.kinds,
         switches_from={key: config._from[key] for key in _SWITCHES if key in config._from},
+        name=config.name,
+        colour=config.colour,
         icons={login: person.icon for login, person in config.people.items() if person.icon},
         today=today,
         holidays=config.holidays,

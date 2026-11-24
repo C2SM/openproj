@@ -5022,7 +5022,7 @@ def test_every_page_carries_a_skip_link_and_a_live_region(rendered: Path):
     for page in PAGES:
         body = read(rendered, page)
         assert '<a class="skip" href="#main">' in body, page
-        assert body.index('class="skip"') < body.index("<nav>"), f"{page}: first in the order"
+        assert body.index('class="skip"') < body.index("<nav "), f"{page}: first in the order"
         assert '<p id="announce" class="sr-only" role="status" aria-live="polite">' in body, page
         # Clipped, not hidden: display:none and visibility:hidden both take an
         # element out of the accessibility tree, which is the one place this
@@ -5759,7 +5759,7 @@ const way = off && off.querySelector('p:last-of-type a');
 return {
   viewport: vw,
   sideways: root.scrollWidth - vw,
-  nav: [...document.querySelectorAll('nav > a')].map(seen),
+  nav: [...document.querySelectorAll('nav > a[data-keys]')].map(seen),
   heading: seen(off && off.querySelector('h1')),
   said: seen(off && off.querySelector('p')),
   codes: off ? [...off.querySelectorAll('p code')].map(seen) : [],
@@ -6033,7 +6033,7 @@ _GEOMETRY = """
 const nav = document.querySelector('nav').getBoundingClientRect();
 const box = document.querySelector('[data-fills]').getBoundingClientRect();
 const here = document.querySelector('nav a[aria-current="page"]');
-const other = [...document.querySelectorAll('nav a')].find(a => a !== here);
+const other = [...document.querySelectorAll('nav a[data-keys]')].find(a => a !== here);
 const at = el => { const r = el.getBoundingClientRect();
                    return {top: r.top, bottom: r.bottom, height: r.height}; };
 return {

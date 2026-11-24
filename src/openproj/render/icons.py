@@ -12,17 +12,30 @@ from markupsafe import Markup
 # one mid teal rather than the theme's two — the tab strip is painted by the
 # browser in a theme this page is not told about, so a colour that survives both
 # grounds beats a colour that is right on one of them.
-_ICON = (
-    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
-    "<rect x='1' y='2' width='10' height='3.2' rx='1.6' fill='#27899e'/>"
-    "<rect x='4' y='6.4' width='11' height='3.2' rx='1.6' fill='#27899e'/>"
-    "<rect x='2' y='10.8' width='7' height='3.2' rx='1.6' fill='#27899e'/>"
+#
+# The teal is the default and a plan may pick its own (`colour:` in
+# `config/defaults.yaml`), so two plans open side by side are two marks.
+# jcanton, 2026-11-24: icon4py keeps the teal, plan-d goes orange. The same
+# reasoning binds a picked colour as the teal: a mid tone reads on a light tab
+# strip and a dark one, and that is the plan's choice to make, not this file's.
+MARK_COLOUR = "#27899e"
+_MARK = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'{}>"
+    "<rect x='1' y='2' width='10' height='3.2' rx='1.6' fill='{}'/>"
+    "<rect x='4' y='6.4' width='11' height='3.2' rx='1.6' fill='{}'/>"
+    "<rect x='2' y='10.8' width='7' height='3.2' rx='1.6' fill='{}'/>"
     "</svg>"
 )
 
 
-@lru_cache(maxsize=1)
-def _icon_uri() -> str:
+def _mark(colour: str, attributes: str = "") -> str:
+    """The mark in `colour`, which `model.plan_colour` has already held to
+    `#rrggbb`: nothing else reaches this, so it is written in unescaped."""
+    return _MARK.format(attributes, *[colour or MARK_COLOUR] * 3)
+
+
+@lru_cache(maxsize=8)
+def _icon_uri(colour: str = "") -> str:
     """The mark as a data: URI, so the tab has an icon and nothing is fetched.
 
     Without a `<link rel="icon">` a browser goes and asks for `/favicon.ico` on
@@ -34,7 +47,13 @@ def _icon_uri() -> str:
     thing the export has to carry as a separate file. Percent-encoded rather than
     base64 so the source above stays a picture somebody can read and edit.
     """
-    return "data:image/svg+xml," + quote(_ICON, safe="")
+    return "data:image/svg+xml," + quote(_mark(colour), safe="")
+
+
+def mark_svg(colour: str = "") -> Markup:
+    """The same mark, inline, for the start of the nav. `aria-hidden` because the
+    plan's name is written beside it."""
+    return Markup(_mark(colour, " class='planmark-icon' aria-hidden='true' focusable='false'"))
 
 
 # A person's own mark, drawn beside their name on the People page and nowhere
