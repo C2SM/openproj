@@ -63,7 +63,6 @@ from .tokens import (
     HUMAN,
     LABELS,
     PRIORITIES,
-    STATUS_GLYPH,
     SUGGESTS,
     _editable_for,
 )
@@ -120,6 +119,18 @@ _POP_STYLE = """
    KEEPS its items when it closes, so it would not even do that — it would stay
    the whole menu, over the page, ignoring every press. */
 #pop[hidden] { display: none; }
+/* A submenu (`popOpenSub`): the box's own look, beside it. Fixed, so it escapes
+   the box's scroll clip although it is inside it, and placed by `popPlaceSub`. */
+#pop .popsub {
+  position: fixed; z-index: 26; min-width: 9rem; max-width: 20rem;
+  max-height: 70vh; overflow-y: auto;
+  display: flex; flex-direction: column; padding: .25rem 0;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: 3px; box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+}
+/* The item whose list is open keeps the ground a hovered item gets, so the eye
+   can follow which row the list beside it belongs to. */
+#pop .popitem.popopened { background: var(--surface-2); }
 /* One item. `white-space: nowrap` with an ellipsis rather than wrapping: an item
    carries a record's title (`Take out of "…"`), and a menu whose rows are three
    lines tall is a menu you cannot scan.
@@ -152,10 +163,17 @@ _POP_STYLE = """
   text-overflow: ellipsis;
 }
 #pop .poptext { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-/* Neither mark shrinks, and the glyph keeps a column of its own so the words
-   down a status ladder line up whether or not their marks are the same width. */
-#pop .popglyph { flex: none; width: 1em; text-align: center; }
-#pop .popbars { flex: none; display: flex; }
+/* A status or a priority item's chip: it does not shrink, and the dot behind it
+   sits after it as it does after any word. */
+#pop .popchip { flex: none; display: flex; }
+/* Its row is highlighted the way the picker's rows are, with a tint of the accent,
+   and not with the full accent fill and inverted ink every other item takes: the
+   chip carries the ladder's own colours, and a priority chip, which has no ground
+   of its own, put its ink straight onto the accent and could not be read. (1,3,0)
+   over `#pop .popitem:hover, #pop .popitem:focus` at (1,2,0). */
+#pop .popitem.poprung:hover, #pop .popitem.poprung:focus {
+  background: color-mix(in oklab, var(--accent) 16%, transparent); color: inherit;
+}
 #pop .popmark { flex: none; color: var(--muted); }
 /* **The marks have to be recoloured on a lit row, not merely dimmed on a cold
    one.** `--muted` is a grey chosen against `--surface`; the rule above fills a
@@ -717,10 +735,20 @@ function popMenu(x, y, id) {
 
 // --- the levels -------------------------------------------------------------
 //
-// **A submenu drills down in the same box.** The alternative — a second element
-// opening beside the item — is the conventional desktop idiom and was refused
-// for cost: a second element, a second placement function with its own edge
-// flipping, and a hover-intent model this app no longer has anywhere.
+// **A submenu opens beside its item, and the menu stays where it is.** It drilled
+// down in the same box, which was the cheaper of the two, and the cost turned up
+// in jcanton's screenshots: the drilled list was re-placed against the pointer,
+// so a menu at y≈490 beside a node came back at y≈1070 over other nodes. So it
+// cascades: a second `role="menu"` beside the hovered or pressed item, aligned
+// with its top, flipped to the left where the right has no room, shifted up to
+// stay inside the window, and opening it moves the parent by not one pixel.
+//
+// Inside `#pop` and `position: fixed`, so it escapes the box's own scroll clip
+// and wears every `#pop .popitem` rule as it is, and a press or a key inside it
+// is already a press or a key inside the menu.
+//
+// On a phone (`env.PHONE`, the app's one narrow breakpoint) there is no room to
+// cascade into, and the drill-down stays, with the box left where it was.
 //
 // The levels the box is showing, innermost last. `from` is the slug of the item
 // that was drilled into, so `‹ Back` knows where to put the keyboard down.
@@ -732,9 +760,101 @@ let POP_AT = null;
 // press that has just happened, and a `‹ Back` is a different question.
 let POP_SAID = '';
 
-function popControls() { return [...POP.querySelectorAll('.popitem')]; }
+// The submenu that is open, and the item it opened from.
+let POP_SUB = null;
+let POP_SUB_FROM = null;
+// Hover intent: an item with a list behind it opens it after a short rest, and a
+// submenu survives the pointer crossing other items on its way across to it.
+let POP_SUB_OPENING = null;
+let POP_SUB_CLOSING = null;
+const POP_NARROW = matchMedia({{ phone|tojson }});
+function popCascades() { return !POP_NARROW.matches; }
 
-function popDraw() {
+// The level the keyboard is on: the submenu when the focus is inside it, the box
+// otherwise. Up and Down walk this and never cross into the other.
+function popLevel() {
+  return POP_SUB && POP_SUB.isConnected && POP_SUB.contains(document.activeElement)
+    ? POP_SUB : POP;
+}
+function popControls(box = popLevel()) {
+  return [...box.querySelectorAll(':scope > .popitem')];
+}
+
+// Beside the item it opened from: its first item level with that item, at the
+// box's right edge, or its left edge when the right has no room, and shifted up
+// so its foot stays inside the window. Measured at the origin first, for the
+// reason `popPlace` gives.
+function popPlaceSub() {
+  if (!POP_SUB || !POP_SUB_FROM) return;
+  const room = 8;
+  POP_SUB.style.left = '0px';
+  POP_SUB.style.top = '0px';
+  const wide = POP_SUB.offsetWidth, tall = POP_SUB.offsetHeight;
+  const box = POP.getBoundingClientRect(), from = POP_SUB_FROM.getBoundingClientRect();
+  let left = box.right - 2;
+  if (left + wide > innerWidth - room) left = box.left - wide + 2;
+  // The first item's top, inside the border and the padding, level with the item
+  // the list opened from.
+  const first = POP_SUB.querySelector(':scope > .popitem');
+  const inset = (first ? first.offsetTop : 0) + POP_SUB.clientTop;
+  const top = Math.max(room, Math.min(from.top - inset, innerHeight - room - tall));
+  POP_SUB.style.left = `${Math.max(room, left)}px`;
+  POP_SUB.style.top = `${top}px`;
+}
+
+function popOpenSub(item, from, focusIn) {
+  clearTimeout(POP_SUB_OPENING);
+  clearTimeout(POP_SUB_CLOSING);
+  if (POP_SUB && POP_SUB_FROM === from && POP_SUB.isConnected) {
+    if (focusIn) popFocusOpened();
+    return;
+  }
+  popCloseSub(false);
+  const chosen = item.items() || [];
+  const sub = document.createElement('div');
+  sub.className = 'popsub';
+  sub.id = 'popsub';
+  sub.setAttribute('role', 'menu');
+  sub.setAttribute('aria-label', item.text);
+  sub.replaceChildren(...chosen.map(popControl));
+  POP.append(sub);
+  POP_SUB = sub;
+  POP_SUB_FROM = from;
+  from.setAttribute('aria-expanded', 'true');
+  from.setAttribute('aria-controls', 'popsub');
+  from.classList.add('popopened');
+  popPlaceSub();
+  if (focusIn) popFocusOpened();
+}
+
+// Into the submenu, on the value the record holds if the list has one, which is
+// where somebody reading a ladder is looking, and the first item otherwise.
+function popFocusOpened() {
+  const items = popControls(POP_SUB);
+  const at = items.findIndex(one => one.getAttribute('aria-checked') === 'true');
+  popFocusIn(POP_SUB, at === -1 ? 0 : at);
+}
+
+// `back` hands the keyboard to the item it opened from: ArrowLeft and Escape.
+function popCloseSub(back) {
+  clearTimeout(POP_SUB_OPENING);
+  clearTimeout(POP_SUB_CLOSING);
+  if (!POP_SUB) return;
+  const from = POP_SUB_FROM;
+  POP_SUB.remove();
+  POP_SUB = null;
+  POP_SUB_FROM = null;
+  if (!from) return;
+  from.setAttribute('aria-expanded', 'false');
+  from.classList.remove('popopened');
+  if (back && from.isConnected) popFocusIn(POP, popControls(POP).indexOf(from));
+}
+
+// `keep` draws the new level where the box already is rather than placing it
+// against the pointer again: the drill-down on a phone, which must not move the
+// menu any more than the cascade does.
+function popDraw(keep) {
+  popCloseSub(false);
   const level = POP_STACK[POP_STACK.length - 1];
   const items = POP_SAID
     ? [{kind: 'said', text: POP_SAID, why: POP_SAID}, ...level.items]
@@ -758,7 +878,16 @@ function popDraw() {
   // this box — that guard is cut 2's, written before there was anything to
   // scroll, and this is the second thing standing on it.
   POP.scrollTop = 0;
-  popPlace();
+  if (keep) popKeep(); else popPlace();
+}
+
+// Where the box is, and only as far up as its new foot needs to stay inside the
+// window: a level drawn in place on a phone.
+function popKeep() {
+  const room = 8;
+  const box = POP.getBoundingClientRect();
+  if (box.bottom > innerHeight - room)
+    POP.style.top = `${Math.max(room, innerHeight - room - box.height)}px`;
 }
 
 // **The menu never moves once placed, and a drill-down is not a move.**
@@ -790,11 +919,18 @@ function popPlace() {
   placeFloat(POP, POP_AT.x, POP_AT.y);
 }
 
-function popDrill(item) {
+// Into the list behind an item: beside it, or, on a phone, in its place.
+// `focusIn` is false only for the pointer's hover, which opens the list without
+// taking the keyboard off the item it is resting on.
+function popDrill(item, from, focusIn = true) {
+  if (popCascades() && from && !(POP_SUB && POP_SUB.contains(from))) {
+    popOpenSub(item, from, focusIn);
+    return;
+  }
   // **Exactly one level of nesting**, enforced here rather than promised in a
-  // comment. The design traded the flyout for one level; a descriptor carrying
-  // `items` two deep would get a `‹ Back` that pops to a list nothing else can
-  // reach, and the keyboard would have two meanings for ArrowLeft.
+  // comment. A descriptor carrying `items` two deep would get a `‹ Back` that
+  // pops to a list nothing else can reach, and the keyboard would have two
+  // meanings for ArrowLeft.
   if (POP_STACK.length > 1) return;
   POP_SAID = '';
   const chosen = item.items() || [];
@@ -803,7 +939,7 @@ function popDrill(item) {
     from: item.kind,
     items: [{kind: 'back', text: '‹ Back', stays: true, run: popBack}, ...chosen],
   });
-  popDraw();
+  popDraw(true);
   // Where the keyboard lands on the way in: the current value if this list has
   // one, because that is where somebody reading a ladder is looking, and the
   // first real item otherwise. Never `‹ Back` — that is the way out of a list
@@ -816,7 +952,7 @@ function popBack() {
   if (POP_STACK.length < 2) return;
   POP_SAID = '';
   const from = POP_STACK.pop().from;
-  popDraw();
+  popDraw(true);
   // Back onto the item that was drilled into, found by its stable slug rather
   // than by the index it had. `POP_SAID` is cleared two lines above precisely so
   // that a refusal drawn over the level below cannot shift everything by one —
@@ -862,6 +998,17 @@ function popSay(text) {
   if (POP_CONFIRM) {
     popConfirmSays([text]);
     POP_CONFIRM.why.focus();
+    return;
+  }
+  // A refusal of something pressed in a submenu is drawn at the top of that
+  // submenu, which is where the reader is looking, and the menu beside it is not
+  // redrawn: it does not move and its items are the same elements they were.
+  if (POP_SUB && POP_SUB.isConnected) {
+    const was = POP_SUB.querySelector(':scope > .popitem[data-kind="said"]');
+    if (was) was.remove();
+    POP_SUB.prepend(popControl({kind: 'said', text: text, why: text}));
+    popPlaceSub();
+    popFocusIn(POP_SUB, 0);
     return;
   }
   POP_SAID = text;
@@ -926,6 +1073,7 @@ let POP_SHUTTING = false;
 function popClose() {
   if (POP.hidden) return;
   if (POP_FORM && !POP_SHUTTING) return;
+  popCloseSub(false);
   POP.hidden = true;
   POP_ID = null;
   POP_GEN += 1;
@@ -1009,9 +1157,9 @@ POP.addEventListener('keydown', event => {
   if (event.key === 'ArrowUp') { event.preventDefault(); popFocus(here - 1); return; }
   if (event.key === 'Home') { event.preventDefault(); popFocus(0); return; }
   if (event.key === 'End') { event.preventDefault(); popFocus(items.length - 1); return; }
-  // ArrowRight drills in, ArrowLeft pops out — the two keys a desktop menu binds
-  // for a submenu, kept even though this one replaces the list rather than
-  // opening a panel to the right.
+  // ArrowRight opens the list beside an item and goes into it; ArrowLeft comes
+  // back out onto the item it opened from, or pops the drilled level on a phone.
+  // The two keys a desktop menu binds for a submenu.
   //
   // Enter and Space are deliberately NOT answered here. A submenu parent is a
   // `<button>`, the browser fires `click` on both keys by itself, and
@@ -1020,10 +1168,14 @@ POP.addEventListener('keydown', event => {
   if (event.key === 'ArrowRight') {
     event.preventDefault();
     const item = POP_OF.get(document.activeElement);
-    if (item && item.items) popDrill(item);
+    if (item && item.items && !item.why) popDrill(item, document.activeElement);
     return;
   }
-  if (event.key === 'ArrowLeft') { event.preventDefault(); popBack(); return; }
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault();
+    if (popLevel() === POP_SUB) popCloseSub(true); else popBack();
+    return;
+  }
   // A `<button>` is activated by both Enter and Space by the browser itself, and
   // an `<a>` only by Enter. So Space on a link is the one key this has to
   // answer; answering Enter as well would activate a button twice.
@@ -1063,18 +1215,20 @@ POP.addEventListener('keydown', event => {
   // branch on purpose: an Escape that merely backed out of a submenu must not
   // reach the document either, or the table's bulk selection is dropped by a key
   // that did not even shut the menu.
+  // An open submenu goes first, whether the keyboard is in it or on the item it
+  // opened from, and the keyboard lands on that item.
+  if (POP_SUB) { event.preventDefault(); popCloseSub(true); return; }
   if (POP_STACK.length > 1) { event.preventDefault(); popBack(); return; }
   popDone();
 });
 
 // The roving tabindex. Exactly one item is in the Tab sequence and it is the one
 // with focus, so Tab leaves the menu instead of walking it.
-function popFocus(at) {
-  // `.popitem` and not `POP.children`, which is the same list today and is one
-  // element away from not being: everything drawn in this box is an item, and a
-  // query that says so cannot be thrown off by whatever a later cut puts beside
-  // them.
-  const items = popControls();
+function popFocus(at) { popFocusIn(popLevel(), at); }
+function popFocusIn(box, at) {
+  // `.popitem` and not `POP.children`: everything drawn in a level is an item,
+  // and a query that says so cannot be thrown off by the submenu beside them.
+  const items = popControls(box);
   if (!items.length) return;
   const want = (at + items.length) % items.length;
   items.forEach((item, index) => { item.tabIndex = index === want ? 0 : -1; });
@@ -1170,6 +1324,27 @@ addEventListener('openproj:wrote', event => { if (event.detail) popClose(); });
 // `contextmenu` listener, which is on the document on at least one of the three
 // and would answer it by rebuilding this box under the press.
 POP.addEventListener('contextmenu', event => { event.stopPropagation(); });
+
+// **Hover intent.** Resting on an item with a list behind it opens the list after
+// a beat, and the pointer crossing other items on its way across to an open list
+// has a beat before that list closes, so a diagonal from the item to the list
+// does not lose it. A press opens it at once (`popRan`). Not on a phone, where
+// there is no pointer to rest and no room beside the box.
+POP.addEventListener('pointerover', event => {
+  if (POP_FORM || POP_CONFIRM || !popCascades()) return;
+  const control = event.target.closest && event.target.closest('.popitem');
+  if (!control) return;
+  if (POP_SUB && POP_SUB.contains(control)) { clearTimeout(POP_SUB_CLOSING); return; }
+  clearTimeout(POP_SUB_OPENING);
+  if (POP_SUB_FROM === control) { clearTimeout(POP_SUB_CLOSING); return; }
+  const item = POP_OF.get(control);
+  if (item && item.items && !item.why)
+    POP_SUB_OPENING = setTimeout(() => popDrill(item, control, false), 150);
+  if (POP_SUB) {
+    clearTimeout(POP_SUB_CLOSING);
+    POP_SUB_CLOSING = setTimeout(() => popCloseSub(false), 300);
+  }
+});
 
 // --- copy link --------------------------------------------------------------
 
@@ -1354,19 +1529,25 @@ function popControl(item) {
   // only a sighted reader gets.
   control.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
   if (item.checked !== undefined) control.setAttribute('aria-checked', String(item.checked));
-  // Drills down in the same box, so the list this opens REPLACES this control:
-  // there is no moment at which it is expanded, and `aria-expanded` would have
-  // to be permanently false. `haspopup` alone is the honest half.
-  if (item.items) control.setAttribute('aria-haspopup', 'menu');
-  if (item.glyph) control.append(popPart('popglyph', item.glyph, true));
-  // A drawing where a character will not do: the priority meter. Markup out of
-  // the shell's `priBars`, which only ever hands out the server's own drawing.
-  if (item.bars) {
-    const part = popPart('popbars', '', true);
-    part.innerHTML = item.bars;
-    control.append(part);
+  // A list behind it, opened beside it (`popOpenSub`), which keeps
+  // `aria-expanded` true while it is open. On a phone the list replaces this
+  // control instead, and the attribute simply never turns true there.
+  if (item.items) {
+    control.setAttribute('aria-haspopup', 'menu');
+    control.setAttribute('aria-expanded', 'false');
   }
-  control.append(popPart('poptext', item.text, false));
+  // A status or a priority is its chip, the same one the picker's list draws:
+  // cloned from that list (`rungChip` in the shell), so there is one markup for
+  // a rung and the colour comes from the ladder's tokens. The chip's word is the
+  // item's name; its mark is hidden from the accessibility tree inside it.
+  const chip = item.rung && typeof rungChip === 'function' ? rungChip(...item.rung) : null;
+  if (chip) {
+    control.classList.add('poprung');
+    const part = popPart('popchip', '', false);
+    part.dataset.vocab = item.rung[0];
+    part.append(chip);
+    control.append(part);
+  } else control.append(popPart('poptext', item.text, false));
   // One slot behind the word, and the two things that can be in it never
   // co-occur: `›` means there is a list behind this, `•` means this is the value
   // the record holds.
@@ -1435,7 +1616,7 @@ function popRan(event, item) {
   }
   // A submenu parent replaces the list and the box stays up, so it must not fall
   // through to the dismissal below the way every other item does.
-  if (item.items) { popDrill(item); return; }
+  if (item.items) { popDrill(item, event.currentTarget); return; }
   // **A `run` that returns a promise owns the dismissal.** Everything else an
   // item does here is instantaneous — navigate, copy, say something — and the
   // box goes with it. A write is not: it has to stay up long enough to draw a
@@ -1587,9 +1768,10 @@ function popStatusItem(row) {
 }
 
 function popStatusChoice(row, status) {
+  // Drawn as the status chip, the picker's own row (`popControl`), so a status
+  // looks the same wherever it is chosen; the dot beside it says which it is on.
   const item = {kind: 'status-' + status, text: popHuman(status),
-                glyph: (POP_SCHEMA.glyphs || {})[status] || '',
-                checked: row.status === status};
+                rung: ['status', status], checked: row.status === status};
   // The status it already has writes nothing. The server would take it — every
   // write path here relies on `_merge_frontmatter` skipping a key whose stored
   // value equals the one being sent — but a commit is a line in somebody's
@@ -1661,11 +1843,10 @@ function popPriorityItem(row) {
 }
 
 function popPriorityChoice(row, priority) {
+  // Drawn as the priority chip, the picker's own row (`popControl`), so the menu
+  // cannot disagree with the card it opens over or with the picker in a cell.
   const item = {kind: 'priority-' + priority, text: popHuman(priority),
-                // The meter the chips and the graph's nodes draw, off the
-                // shell's own map, so the menu cannot disagree with the card it
-                // opens over.
-                bars: typeof priBars === 'function' ? priBars(priority) : '',
+                rung: ['priority', priority],
                 checked: (row.priority || null) === priority};
   // Already there writes nothing, for the reason the status choice says: the
   // server would take it, and "set it to what it is" is not a line anybody meant
@@ -2107,6 +2288,7 @@ function popDrawForm() {
   // back for the other face.
   POP.setAttribute('role', 'dialog');
   POP.setAttribute('aria-label', form.label);
+  popCloseSub(false);
   POP.replaceChildren(box);
   POP.scrollTop = 0;
   form.controls = new Map();
@@ -3104,6 +3286,7 @@ function popAsk(row) {
   // arriving inside one would be told they were in a menu with no items in it.
   POP.setAttribute('role', 'dialog');
   POP.setAttribute('aria-label', `Delete "${asking.title}"?`);
+  popCloseSub(false);
   POP.replaceChildren(box);
   POP.scrollTop = 0;
   popPlace();
@@ -3705,7 +3888,6 @@ def _pop_schema(index: Index | None) -> dict | None:
         # container's cells by. `owner` is in it for a product, which is why the
         # Owner submenu is refused there before anything is sent.
         "unread": {name: list(unread_fields(name)) for name in RUNG},
-        "glyphs": STATUS_GLYPH,
         "human": HUMAN,
         "labels": LABELS,
         # Which statuses demand which fields, derived by running the gate over a

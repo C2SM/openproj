@@ -1849,7 +1849,7 @@ span.bar > span { display: block; height: 100%; background: var(--accent); }
 .chip > .rungpick-chev { display: none; }
 .rungpick > .chip > .rungpick-chev { display: inline-block; }
 td.edit > .chip > .rungpick-chev, .chip.popopens > .rungpick-chev,
-.rungpop .chip > .rungpick-chev {
+.rungpop .chip > .rungpick-chev, .popchip > .chip > .rungpick-chev {
   display: inline-block; visibility: hidden;
 }
 /* ONE WIDTH PER VOCABULARY. Chips stacked in a column read as a ragged edge when
@@ -1863,11 +1863,13 @@ td.edit > .chip > .rungpick-chev, .chip.popopens > .rungpick-chev,
 :root { --rungword-priority: {{ rung_width.priority }};
         --rungword-status: {{ rung_width.status }}; }
 td[data-col="priority"] > .chip .chipword, .rungpick[data-vocab="priority"] .chipword,
-.rungpop[data-vocab="priority"] .chipword, #pop .card-chips .chip[data-field="priority"] .chipword {
+.rungpop[data-vocab="priority"] .chipword, #pop .card-chips .chip[data-field="priority"] .chipword,
+.popchip[data-vocab="priority"] .chipword {
   display: inline-block; min-width: calc(var(--rungword-priority) * (1ch + .04em));
 }
 td[data-col="status"] > .chip .chipword, .rungpick[data-vocab="status"] .chipword,
-.rungpop[data-vocab="status"] .chipword, #pop .card-chips .chip[data-field="status"] .chipword {
+.rungpop[data-vocab="status"] .chipword, #pop .card-chips .chip[data-field="status"] .chipword,
+.popchip[data-vocab="status"] .chipword {
   display: inline-block; min-width: calc(var(--rungword-status) * (1ch + .04em));
 }
 /* The record page makes its fields blocks; this one is a chip, as wide as itself,
@@ -3317,6 +3319,17 @@ function rungFace(button) {
     const word = chip.querySelector('.chipword');
     if (word) word.textContent = button.value || button.dataset.nothing || '—';
   }
+}
+
+// The chip a field's value is drawn as, cloned from that field's list, which the
+// server drew: the right-click menu's status and priority items wear it. Found by
+// comparing values rather than by a selector built from one. Null for a value no
+// row holds.
+function rungChip(field, value) {
+  const list = document.querySelector(`.rungpop[data-vocab="${field}"]`);
+  const row = list && [...list.querySelectorAll('[role="option"]')]
+    .find(one => one.dataset.value === value);
+  return row ? row.querySelector('.chip').cloneNode(true) : null;
 }
 
 // A picker for an editor a script builds, cloned from the shell's template for
