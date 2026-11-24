@@ -645,6 +645,10 @@ async function run(html, expression, options) {
     // and the parser would take a `</div>` inside a template literal for markup.
     options.page ? html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ') : null,
   );
+  // A browser's `document.title` is always a string: the `<title>`'s text, in
+  // either mode. Absent, it was `undefined`, and the export's record page, which
+  // reads it at load, threw on a line no browser can throw on.
+  document.title = decoded((/<title>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || '');
   const listeners = {};
 
   // What the server said, in order, and what was asked of it. A write path is
@@ -738,7 +742,10 @@ async function run(html, expression, options) {
 
   // Where the page believes it is standing, split the way a browser splits it.
   const here = String(options.here || '/');
-  const [herePath, hereRest] = here.split('?');
+  // The fragment first, as a URL is read: `/?a=1#id` has the query `?a=1`.
+  const [hereAddress, hereFragment] = here.split('#');
+  const hereHash = hereFragment === undefined ? '' : '#' + hereFragment;
+  const [herePath, hereRest] = hereAddress.split('?');
   const hereQuery = hereRest === undefined ? '' : '?' + hereRest;
 
   // Storage, in the three states a browser really has: empty, already holding
@@ -916,7 +923,7 @@ async function run(html, expression, options) {
     // were on, so that a filtered table is what a record page sends you back to
     // and not the bare view.
     location: {
-      search: hereQuery, pathname: herePath, href: 'http://localhost' + here,
+      search: hereQuery, pathname: herePath, hash: hereHash, href: 'http://localhost' + here,
       reload: () => { reloads += 1; },
     },
     __reloads: () => reloads,

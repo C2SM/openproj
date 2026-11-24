@@ -1844,7 +1844,7 @@ def render_deck(
     """
     view = _deck_view(index, number, links, asset)
     return _page(
-        f"openproj — cycle {number} review",
+        f"Cycle {number} review",
         _compiled(_DECK + _DECK_SCRIPT).render(
             d=view,
             links=links,
@@ -1867,4 +1867,5 @@ def render_deck(
         # page is not — and "← deck 37" is what somebody who walked here from the
         # rail is looking for.
         origin=f"deck {number}",
+        face=index.face,
     )

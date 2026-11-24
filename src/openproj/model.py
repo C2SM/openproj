@@ -801,6 +801,16 @@ class Config(BaseModel):
     # vocabulary is off the kind ladder and the ladder is further down this file.
     views: tuple[str, ...] = Field(default_factory=lambda: VIEWS)
     kinds: frozenset[str] = Field(default_factory=lambda: frozenset(KIND_NAMES))
+    # What the plan calls itself, and the colour of its mark: the tab title, the
+    # favicon and the start of the nav. jcanton, 2026-11-24, with icon4py and
+    # plan-d open side by side and both tabs reading `openproj — table`. In the
+    # plan rather than in a deployment, so the static export carries them too.
+    # Resolved like the switches above (`resolve_face`): `name: 2026` or an
+    # unquoted `colour: #e08a1e`, which YAML reads as a comment, costs that one
+    # setting, never the file around it. Empty means unset; the shell falls back
+    # to `openproj` and the mark's own teal.
+    name: str = ""
+    colour: str = ""
 
     # Which config file each setting above was taken from, keyed by field name.
     # Private for the same reason `Record._source` is: it is where the value came
@@ -1025,9 +1035,11 @@ def read_config(
         # Unknown keys are ignored so a repository with a half-written config
         # still loads rather than taking the whole index down.
         taken = {
-            k: v for k, v in mapping.items() if k in Config.model_fields and k not in _SWITCHES
+            k: v
+            for k, v in mapping.items()
+            if k in Config.model_fields and k not in _SWITCHES and k not in _FACE
         }
-        switched = {k: mapping[k] for k in _SWITCHES if k in mapping}
+        switched = {k: mapping[k] for k in (*_SWITCHES, *_FACE) if k in mapping}
         candidate = {**data, **taken}
         try:
             Config.model_validate(candidate)
@@ -1047,9 +1059,17 @@ def read_config(
         came_from.get("views", SWITCHES_FILE),
         came_from.get("kinds", SWITCHES_FILE),
     )
-    config = Config.model_validate({**data, "views": views, "kinds": kinds})
+    name, colour, unfaced = resolve_face(
+        switches.get("name", _MISSING),
+        switches.get("colour", _MISSING),
+        came_from.get("name", SWITCHES_FILE),
+        came_from.get("colour", SWITCHES_FILE),
+    )
+    config = Config.model_validate(
+        {**data, "views": views, "kinds": kinds, "name": name, "colour": colour}
+    )
     config._from = came_from
-    config._unusable = unusable
+    config._unusable = [*unusable, *unfaced]
     return config, refused
 
 
@@ -1807,6 +1827,8 @@ VIEW_NEEDS: dict[str, str] = {
 # file wrote the key, since that is where somebody adding it should look.
 _SWITCHES = ("views", "kinds")
 SWITCHES_FILE = "config/defaults.yaml"
+# The plan's name and colour, pulled out of the merge for the switches' reason.
+_FACE = ("name", "colour")
 # Absent, as distinct from `views:` with nothing after it: the first is every
 # view and says nothing, the second is a value that is not a list and is reported.
 _MISSING = object()
@@ -1987,6 +2009,88 @@ def resolve_switches(
                 f"({', '.join(VIEWS)}), so it is left out",
             )
     return tuple(views), frozenset(kinds), unusable
+
+
+# A plan name longer than this is cut. A tab shows a few dozen characters and the
+# nav has a row to share, so past this a name is a sentence, not a name.
+MAX_PLAN_NAME = 60
+# `#e08a1e`, `e08a1e` or `#e81`, and `rgb(224, 138, 30)`: the spellings a person
+# copies out of a colour picker. An allowlist, because the value ends up inside
+# an SVG attribute in the favicon and in a stylesheet.
+_HEX = re.compile(r"#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+_RGB = re.compile(r"rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)", re.IGNORECASE)
+
+
+def plan_colour(raw: str) -> str | None:
+    """`raw` as `#rrggbb`, or None when it is not a colour this takes."""
+    if hexed := _HEX.fullmatch(raw):
+        digits = hexed.group(1).lower()
+        return "#" + (digits if len(digits) == 6 else "".join(c * 2 for c in digits))
+    if rgb := _RGB.fullmatch(raw):
+        channels = [int(c) for c in rgb.groups()]
+        if all(c <= 255 for c in channels):
+            return "#" + "".join(f"{c:02x}" for c in channels)
+    return None
+
+
+def resolve_face(
+    name_raw: object, colour_raw: object, name_from: str, colour_from: str
+) -> tuple[str, str, list[Unusable]]:
+    """The plan's name and colour, out of `name` and `colour` as written.
+
+    `resolve_switches`'s bargain: the answer is always usable, and what could not
+    be used is one `Unusable` each. Absent is silent and means unset. Written and
+    unusable is said, because a plan that set its colour and still gets the teal
+    has nothing on screen to say why.
+    """
+    unusable: list[Unusable] = []
+    name = ""
+    if isinstance(name_raw, int) and not isinstance(name_raw, bool):
+        name_raw = str(name_raw)
+    if isinstance(name_raw, str) and " ".join(name_raw.split()):
+        name = " ".join(name_raw.split())
+        if len(name) > MAX_PLAN_NAME:
+            name = name[:MAX_PLAN_NAME].rstrip()
+            unusable.append(
+                Unusable(
+                    path=name_from,
+                    field="name",
+                    why=f"name is longer than {MAX_PLAN_NAME} characters, so it is cut to {name!r}",
+                )
+            )
+    elif name_raw is not _MISSING:
+        unusable.append(
+            Unusable(
+                path=name_from,
+                field="name",
+                why="name is not a line of text, so the pages say openproj; "
+                "write it as name: icon4py",
+            )
+        )
+
+    colour = ""
+    if isinstance(colour_raw, str) and (parsed := plan_colour(colour_raw.strip())):
+        colour = parsed
+    elif colour_raw is None:
+        # What an unquoted `colour: #e08a1e` reads as, since `#` opens a comment.
+        unusable.append(
+            Unusable(
+                path=colour_from,
+                field="colour",
+                why="colour is empty, so the mark keeps its own teal; a # starts a comment "
+                "in YAML, so write it in quotes, as colour: '#e08a1e'",
+            )
+        )
+    elif colour_raw is not _MISSING:
+        unusable.append(
+            Unusable(
+                path=colour_from,
+                field="colour",
+                why=f"colour {colour_raw!r} is not a colour, so the mark keeps its own teal; "
+                "write it as colour: '#e08a1e' or colour: 'rgb(224, 138, 30)'",
+            )
+        )
+    return name, colour, unusable
 
 
 def kind_refusal(kind: str, config: Config) -> str | None:

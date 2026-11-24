@@ -9,14 +9,14 @@ from markupsafe import Markup
 from pydantic import BaseModel
 
 from .. import __version__
-from ..index import Index
+from ..index import Face, Index
 from ..model import RUNG, SWITCHES_FILE, VIEW_NEEDS, VIEWS, Unreadable, Unusable
 from ..themes import FAMILIES
 from ..vendor import _font_uri
 from .controls import _PLAN_FACETS
 from .env import _compiled
 from .hill import hill_geometry
-from .icons import _icon_uri
+from .icons import MARK_COLOUR, _icon_uri, mark_svg
 from .keys import keys_for
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
 from .tokens import (
@@ -770,6 +770,29 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
    587px wide and every page under it scrolled horizontally. */
 nav { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin-bottom: 1rem;
       font-size: 13px; align-items: center; }
+/* The nav and the footer are two bars of one surface, edge to edge, so the page
+   reads as a frame with the plan inside it and the mark reads as part of the
+   app rather than as one more word in the row (jcanton, 2026-11-24, choosing
+   between three drawings of it: "A but thinner"). Full width by giving back the
+   body's own padding as negative margin and taking it again inside, so the first
+   glyph of each bar still sits on the content's left edge. No top margin and no
+   stripe: the background is what separates it, and height is what this row is
+   short of. */
+body > nav { margin: -1rem -1.25rem 1rem; padding: .3rem 1.25rem;
+             background: var(--surface-2); border-bottom: 1px solid var(--line); }
+nav a.planmark, nav a.planmark:visited { font-size: 14px; }
+/* The plan's mark and name, in the ink of the page rather than a link's: the
+   accent means "here" in this row, and this is the plan, not a view of it.
+   `nav a.planmark` to outrank `nav a, nav a:visited` below, (0,1,2) and (0,2,2)
+   against (0,0,2) and (0,1,2). The name folds away on a phone (see the 40rem
+   block) and the mark stays, which is the half that tells two plans apart. */
+nav a.planmark, nav a.planmark:visited {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-weight: 600; color: var(--fg); text-decoration: none;
+}
+nav a.planmark:hover .planname { text-decoration: underline; }
+.planmark-icon { width: 16px; height: 16px; flex: none; }
+.navsep { align-self: stretch; width: 1px; background: var(--line-strong); }
 /* Every link, not only the nav. The browser's default blue and its visited
    purple are both close to unreadable on a dark ground, and a link is the most
    clicked thing on every one of these pages. */
@@ -985,8 +1008,8 @@ pre.mermaid[data-processed] svg { height: auto; }
    from the content" — it was "be measurable". */
 #build {
   display: flex; flex-wrap: nowrap; align-items: center; gap: .3rem .5rem;
-  margin: 0; padding: .55rem 0 0;
-  border-top: 1px solid var(--line);
+  margin: 0 -1.25rem; padding: .3rem 1.25rem;
+  background: var(--surface-2); border-top: 1px solid var(--line);
   font-size: 11px; color: var(--muted); font-family: var(--font-mono);
 }
 /* **One line, at every width.** It wrapped, and on a phone, with the corner
@@ -1083,9 +1106,10 @@ pre.mermaid[data-processed] svg { height: auto; }
    of text and below it one empty line or some space, can you swap so the text is
    at the very bottom?" Swapped: the gap that was under the line is now above it,
    between the content and the footer's rule, where it separates two things
-   instead of trailing off one. The 2px left is the descender room the glyphs
-   need; at 0 a `p` or a `j` in the plan's sha sits on the window's edge. */
-body:has([data-fills]) { padding-bottom: 2px; }
+   instead of trailing off one. It was 2px, the descender room the glyphs need,
+   until the footer became a bar with padding of its own: now that 2px is a strip
+   of page under the bar, and the bar's padding is the descender room. */
+body:has([data-fills]) { padding-bottom: 0; }
 /* The measurement is of the room the box gets, so the box has to be that size
    including its own frame. On content-box a 1px border makes it 2px taller than
    the room it was handed, which is exactly enough to put the page into the
@@ -2431,6 +2455,8 @@ tr.nothing .hint { margin: 0 0 .75rem; }
   /* The nav loses the element that was forcing it wide, so what is left is
      links. Nothing else changes: they were already wrapping. */
   #build .corner { font-size: 13px; }
+  /* The mark alone: the nav already wraps here, and the name is in the tab. */
+  .planname { display: none; }
   /* The key's handle and the window controls', drawn as the filter bar's is. One
      phone, one way of folding something away, so the second and third cost no
      learning. */
@@ -2500,7 +2526,17 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     and from nothing else, so what a screen reader announces and what a reader
     sees cannot come apart. Whitespace between the links is a whitespace-only text
     node in a flex container, which is not a flex item and draws nothing. -#}
-<nav>{% for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
+{#- The plan's mark and name, first in the nav, and a link home. jcanton,
+    2026-11-24: the tab was the only place the plan was named and a full-screen
+    window shows no tab; then, on seeing it, "instinctively I'd like to click it
+    to go to a home page". Home is Records, the page the tool opens on. No
+    `data-keys`: Records already answers to its letter, and one letter is one
+    place. `--plan` is the plan's colour for the bar's own rules, already held
+    to `#rrggbb` by `model.plan_colour`. -#}
+<nav style="--plan: {{ plan_colour }}"><a class="planmark" href="{{ links.records }}">
+  {{- mark }}<span class="planname">{{ plan }}</span></a>
+<span class="navsep" aria-hidden="true"></span>
+{%- for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
   {%- if item.current %} aria-current="page"{% endif %}>{{ item.label }}</a>
 {% endfor %}<span class="corner">
 {#- Who you are, and the only way in from the page. Reads are public here by
@@ -5740,6 +5776,10 @@ _OFF_NAV = frozenset({"detail", "help"})
 _PAGE_KEYS = _NAV_KEYS | _OFF_NAV
 
 
+# A plan that names nothing: `Table · openproj` and the teal mark.
+_UNNAMED = Face()
+
+
 def _page(
     title: str,
     content: str,
@@ -5751,6 +5791,7 @@ def _page(
     origin: str | None = None,
     fills: bool = False,
     cardtitles: dict[str, str] | None = None,
+    face: Face = _UNNAMED,
 ) -> str:
     """Autoescaping protects record titles inside the inner templates; the already
     rendered body and stylesheet are marked safe here so the shell does not escape
@@ -5794,19 +5835,28 @@ def _page(
     count, which was twelve here until the switched-off page made it wrong;
     `test_every_page_says_so_when_a_config_file_holds_a_number_that_is_not_one`
     is the tripwire that the next one cannot forget it.
+
+    `title` is the page's own part, the most specific thing first, and `face` is
+    the plan's: the tab reads `Table · icon4py`. Page first because a tab strip
+    truncates from the right, so ten squeezed tabs of one plan still say which is
+    which (jcanton, 2026-11-24). A plan with no name is `Table · openproj`.
     """
     if current and current not in _PAGE_KEYS:
         raise ValueError(f"{current!r} is not a page: {sorted(_PAGE_KEYS)}")
     labels = dict(_NAV)
     settings = len({(one.path, one.field) for one in unusable})
+    plan = face.name or "openproj"
     return _compiled(_SHELL).render(
-        title=title,
+        title=f"{title} · {plan}",
+        plan=plan,
+        plan_colour=face.colour or MARK_COLOUR,
+        mark=mark_svg(face.colour),
         content=Markup(content),
         style=Markup(style),
         csp=Markup(CSP),
         keys=keys_for(links),
         font=_font_uri(),
-        icon=_icon_uri(),
+        icon=_icon_uri(face.colour),
         links=links,
         # The word map, on every page rather than in the three payloads that
         # happened to carry it. The hover card is drawn by the table, the graph
@@ -5992,7 +6042,7 @@ def render_not_found(index: Index, links: Links = STATIC, said: str = "", path: 
         '<p><a href="{}">Go to Records</a></p>\n</section>'
     )
     return _page(
-        "openproj — not found",
+        "Not found",
         body.format(sentence, links.records),
         _OFF_STYLE,
         links,
@@ -6000,6 +6050,7 @@ def render_not_found(index: Index, links: Links = STATIC, said: str = "", path: 
         index.unreadable,
         index.unusable,
         fills=True,
+        face=index.face,
     )
 
 
@@ -6064,7 +6115,7 @@ def render_switched_off(
         out = Markup('<a href="{}">Go to Records</a>').format(links.records)
     body = Markup('<section class="switched-off">\n<h1>{}</h1>\n<p>{}</p>\n<p>{}</p>\n</section>')
     return _page(
-        f"openproj — {heading.lower()}, turned off",
+        f"{heading}, turned off",
         body.format(heading, said, out),
         _OFF_STYLE,
         links,
@@ -6072,4 +6123,5 @@ def render_switched_off(
         index.unreadable,
         index.unusable,
         fills=True,
+        face=index.face,
     )

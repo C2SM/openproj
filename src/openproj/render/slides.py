@@ -1064,7 +1064,7 @@ def render_slide_editor(
     # docstring says so.
     ace = _ace_wanted(editor, base_commit, may_write)
     return _page(
-        f"openproj — {record.title}: the slide",
+        f"{record.title or record.id}: the slide",
         _fragment(
             _SLIDE,
             e=view,
@@ -1118,4 +1118,5 @@ def render_slide_editor(
         "detail",
         index.unreadable,
         index.unusable,
+        face=index.face,
     )
