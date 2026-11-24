@@ -1945,6 +1945,13 @@ table.tight-status td[data-col="status"] .chip { padding: .1rem .3rem; }
 table.tight-priority td[data-col="priority"] .chipword { display: none; }
 table.tight-priority td[data-col="priority"] .chipmark { margin-right: 0; }
 table.tight-priority td[data-col="priority"] .chip.pri { padding: .1rem .3rem; }
+/* And the chevron the cell's chip reserves goes with the word. It is reserved so
+   that opening the picker moves nothing, which is a promise about a column wide
+   enough for the word; a column down to its mark has nowhere to keep it, and the
+   reserve alone hung the priority chip 4px out of the cell. (0,4,2), over the
+   reserve's `td.edit > .chip > .rungpick-chev` at (0,3,1). */
+table.tight-status td[data-col="status"] > .chip > .rungpick-chev,
+table.tight-priority td[data-col="priority"] > .chip > .rungpick-chev { display: none; }
 
 /* One grid for both rows: the row's name, then one column per rung. Each list is
    `display: contents`, so its keys are the grid's own items and a key in one row
