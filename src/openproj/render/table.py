@@ -666,16 +666,15 @@ function clamped(pieces, one, many) {
     ` data-collapse="Show ${rest.length} fewer ${word}">${rest.length}</button>`;
 }
 
+// The picker's chevron, reserved and unseen in an editable cell's chip so the chip
+// is already the width the picker will be: entering edit then changes nothing
+// but the chevron and a focus ring (`.rungpick-chev` in the shell says where it
+// shows). jcanton, 2026-11-24: the status picker spilled out of its cell.
+const CHEVRON = '<span class="rungpick-chev" aria-hidden="true"></span>';
 // The two marks a row wears, off the payload rather than restated here.
 // `GLYPHS` is what the graph and the timeline already draw; a row's priority is
 // the shell's `priBars`.
 const GLYPHS = DATA.glyphs || {};
-// What an `<option>` says: a status takes its glyph in front of the word. A
-// priority has no options here; it is the app's own picker (`priPicker`).
-function optionFor(field, value) {
-  const glyph = field === 'status' && GLYPHS[value] ? GLYPHS[value] + ' ' : '';
-  return esc(glyph) + esc(human(value));
-}
 
 function shown(row, key) {
   const value = row[key];
@@ -726,7 +725,7 @@ function shown(row, key) {
         // The word in its own element so a narrow column can drop it and keep
         // the mark. A bare text node cannot be hidden without hiding the mark
         // with it.
-        `<span class="chipword">${esc(human(row.status))}</span></span>`
+        `<span class="chipword">${esc(human(row.status))}</span>${CHEVRON}</span>`
       : '';
   // Bars and the word. The bars are what the eye picks out of a column of
   // fifteen rows; the word is what settles which rung it is. Priority was text
@@ -736,7 +735,7 @@ function shown(row, key) {
     return row.priority
       ? `<span class="chip pri pri-${esc(row.priority)}">` +
         `<span class="chipmark" aria-hidden="true">${priBars(row.priority)}</span>` +
-        `<span class="chipword">${esc(human(row.priority))}</span></span>`
+        `<span class="chipword">${esc(human(row.priority))}</span>${CHEVRON}</span>`
       : '';
   // Counted out of the body's own checklist. Empty where there is no checklist,
   // rather than "0/0" — a body nobody has written a list in has no progress to
@@ -1640,7 +1639,7 @@ tbody.addEventListener('contextmenu', event => {
   // The open editor is asked of the DOM, the way `createDraft` and the bulk
   // selection's Escape already ask it, and a right press inside a text box has
   // to reach the browser's menu anyway: that is where Paste is.
-  if (tbody.querySelector('td.edit input, td.edit select, td.edit .pripick')) return;
+  if (tbody.querySelector('td.edit input, td.edit select, td.edit .rungpick')) return;
   // The move is asked of the class and not of `MOVING`, which is reachable from
   // out here on every render mode now and would answer the same thing.
   // `startMoving` sets both and `stopMoving` clears both, and the class is on the TABLE
@@ -2381,7 +2380,7 @@ function openEditor(cell) {
   // answers a double-click: a cell that ignores Enter is indistinguishable from
   // a cell that is broken.
   if (!cell.classList.contains('edit')) { refuse(cell); return; }
-  if (cell.querySelector('input, select, .pripick')) return;
+  if (cell.querySelector('input, select, .rungpick')) return;
   rove(cell);
   const field = cell.dataset.field;
   // The record this cell is part of, or the one that does not exist yet: a cell
@@ -2427,14 +2426,11 @@ function openEditor(cell) {
   // this is the one cell whose contents are replaced without a redraw, and the
   // connector belongs to the row rather than to what is in the cell at the time.
   cell.innerHTML = treeHtml(cell.dataset.rungs) + (closed
-    // The same mark the cell was showing a moment ago, so opening an editor does
-    // not swap a marked value for an unmarked list of words. `optionFor` draws
-    // each option. A priority is not a select at all: it is the app's own picker,
-    // put in below, because a select's list cannot hold the meter in every browser.
-    ? (field === 'priority' ? '' : `<select data-type="text" aria-label="${named}">` +
-      closed.map(o =>
-        `<option value="${esc(o)}" ${o === was ? 'selected' : ''}>${optionFor(field, o)}</option>`
-      ).join('') + '</select>')
+    // A closed set (a priority or a status) is the app's own picker, put in below:
+    // its face is the chip the cell was showing a moment ago, so opening an editor
+    // changes nothing but the chevron, and its list draws the meter and the glyph
+    // in every browser, where a select's list could not.
+    ? ''
     // `type` and `data-type` are two different questions and both are asked:
     // `type` is what the browser draws, `data-type` is what `coerce` and the
     // suggestion widget read — the widget completes the last comma-separated
@@ -2443,11 +2439,12 @@ function openEditor(cell) {
     : `<input value="${esc(was)}" type="${type}"` +
       ` data-type="${esc(EDITABLE[field])}" aria-label="${named}"` +
       `${suggest ? ` data-suggest="${esc(suggest)}"` : ''} autocomplete="off">`);
-  // The priority picker is a node and not a string, cloned from the shell's
-  // template so its markup is `priority_picker`'s and nobody else's.
-  if (closed && field === 'priority')
-    cell.append(priPicker(was, FIELD_LABELS[field] || field));
-  const input = cell.querySelector('select, input, .pripick');
+  // The picker is a node and not a string, cloned from the shell's template so
+  // its markup is `rung_picker`'s and nobody else's. It offers what the select
+  // offered: this column's closed set.
+  if (closed)
+    cell.append(rungPicker(field, was, FIELD_LABELS[field] || field, closed));
+  const input = cell.querySelector('select, input, .rungpick');
   // The table gets the autocomplete the detail page has. Suggestions that only
   // appear in one of the two places are suggestions nobody relies on.
   if (suggest) attachSuggest(input);
@@ -2469,8 +2466,9 @@ function openEditor(cell) {
   clearOfFrozen(cell);
 
   let abandoned = false;
-  // A priority is the app's own picker (`priority_picker`), whose list keeps the
-  // focus on the button while somebody picks, so a blur here is always leaving.
+  // A priority and a status are the app's own picker (`rung_picker`), whose list
+  // keeps the focus on the button while somebody picks, so a blur here is always
+  // leaving.
   input.onblur = () => leave();
   function leave() {
     // **A half-written date must not clear the date that is there.** A native
@@ -3503,7 +3501,7 @@ if (EDITABLE) {
     // `stage` for a draft cell, `saveCell` for a stored one — so Create writes
     // the row that is on the screen rather than the row as it was one cell ago.
     if (pressed === 'draft-create') {
-      const open = tbody.querySelector('td.edit input, td.edit select, td.edit .pripick');
+      const open = tbody.querySelector('td.edit input, td.edit select, td.edit .rungpick');
       if (open) open.blur();
     }
     if (pressed === 'add-row') openDraft();
@@ -3739,7 +3737,7 @@ tbody.addEventListener('click', event => {
 // and it cancels a move. A selection is the fourth thing it can be holding.
 addEventListener('keydown', event => {
   if (event.key !== 'Escape' || !PICKED.size) return;
-  if (tbody.querySelector('td.edit input, td.edit select, td.edit .pripick')) return;
+  if (tbody.querySelector('td.edit input, td.edit select, td.edit .rungpick')) return;
   unpick();
 });
 

@@ -363,13 +363,10 @@ _CYCLE = """
         Both are offered on a carried row. What a carried row may not have is a
         second cycle stamped onto it, which is the checkbox; its priority is a
         fact about the work and stays as editable as anybody's. -#}
-    <td><select class="pick {{ status_class(row.status) }}" data-field="status"
-        aria-label="{{ row.title }} status">
-      {% for value in statuses %}<option value="{{ value }}"
-        {{- ' selected' if value == row.status else '' }}>{{ mark('status', value) }}{{
-        value|human }}</option>{% endfor %}</select></td>
-    <td>{{ pripick(row.priority, classes="pick", label=row.title ~ " priority",
-                   extra={"data-field": "priority"}) }}</td>
+    <td>{{ rungpick("status", row.status, offers=statuses, classes="pick",
+                    label=row.title ~ " status", extra={"data-field": "status"}) }}</td>
+    <td>{{ rungpick("priority", row.priority, classes="pick", label=row.title ~ " priority",
+                    extra={"data-field": "priority"}) }}</td>
     <td><input class="live" data-field="{{ row.size_field }}" data-type="number"
                aria-label="{{ row.title }} appetite in weeks"
                autocomplete="off" value="{{ row.size }}"
@@ -849,16 +846,8 @@ function wirePick(pick) {
   pick.onchange = () => {
     if (pick.value === was) return;
     was = pick.value;
-    // The rung's own colour travels with the picker, so the status column still
-    // reads DOWN at a glance — which is the whole reason it was a chip and not a
-    // word. Rewritten on change rather than left on the value it was drawn with:
-    // a picker showing `Done` in the ready tint is worse than an uncoloured one,
-    // because it is confidently wrong. The class list is rebuilt from `st-`
-    // rather than toggled, so nothing has to know which rung it was.
-    if (pick.dataset.field === 'status') {
-      pick.className = [...pick.classList].filter(one => !one.startsWith('st-')).join(' ')
-        + ' st-' + pick.value;
-    }
+    // The rung's own colour travels with the picker without a word here: its face
+    // is the chip of what it holds, redrawn by the shell whenever `value` moves.
     pend(pick.closest('tr').dataset.id, pick.dataset.field, pick.value);
   };
 }
@@ -871,7 +860,7 @@ function wirePick(pick) {
 function wireBets(root) {
   for (const box of root.querySelectorAll('input.bet')) wireTick(box);
   for (const input of root.querySelectorAll('input.live')) wireLive(input);
-  for (const pick of root.querySelectorAll('select.pick, .pripick.pick')) wirePick(pick);
+  for (const pick of root.querySelectorAll('.rungpick.pick')) wirePick(pick);
 }
 
 // The rows as served: wired, and read at the commit this page was drawn at.
@@ -1258,16 +1247,13 @@ function betCell(row, at) {
   //
   // Padded, so `parseFloat` in `betSort` takes this branch and compares numbers.
   // Returning the raw index would work by luck until a ladder grew a tenth rung.
-  const pick = cell.querySelector('select');
-  if (pick) return String(pick.selectedIndex).padStart(3, '0');
-  // A priority is the app's own picker, a button with no `selectedIndex`; its rung
-  // is where its value sits in the page's one list (`#pripop`), which is drawn in
-  // `PRIORITIES` order. Read as text it would sort by every rung's word at once,
-  // since the button holds them all to keep its width. A word no rung lists goes
-  // last.
-  const picker = cell.querySelector('.pripick');
+  // A status and a priority are the app's own picker, a button: its rung is where
+  // its value sits in the page's list for that field, which is drawn in ladder
+  // order. A word no rung lists goes last.
+  const picker = cell.querySelector('.rungpick');
   if (picker) {
-    const rung = priRows().findIndex(row => row.dataset.value === picker.value);
+    const rung = [...rungList(picker).querySelectorAll('[role="option"]')]
+      .findIndex(row => row.dataset.value === picker.value);
     return String(rung < 0 ? 999 : rung).padStart(3, '0');
   }
   const box = cell.querySelector('input:not([type=checkbox])');
@@ -1600,23 +1586,9 @@ input.rate { width: 4rem; }
    the word above it, and `border-box` keeps the padding inside the cell. */
 #bets input.live.wide { width: 100%; min-width: 11rem; box-sizing: border-box; }
 #bets input.live:hover { border-color: var(--line); }
-/* The two closed-set cells. Dressed as the boxes beside them rather than as the
-   browser's own control: a betting table is one grid of things you are filling
-   in, and a native select among five bordered inputs reads as a different kind
-   of thing that must therefore do a different kind of job.
-   `max-width: 100%` because a status word plus its glyph is wider than the
-   column header, and the two frozen columns are not this table's problem —
-   without it the picker sets the column width and `title` pays for it. */
-#bets select.pick, #bets .pripick.pick {
-  font: inherit; font-size: 13px; max-width: 100%;
-  color: inherit; background: var(--bg);
-  border: 1px solid var(--surface-2); border-radius: 2px; padding: .1rem .15rem;
-}
-/* The rung's colour comes from the shell, where `select.pick.st-X` is generated
-   beside `.chip.st-X` from the one loop over `STATUSES` — see the note there.
-   Nothing about the ladder is written in this file. */
-#bets select.pick:hover, #bets .pripick.pick:hover { border-color: var(--line); }
-#bets select.pick:focus, #bets .pripick.pick:focus { border-color: var(--accent); }
+/* The two closed-set cells are the app's own picker (`rung_picker`), whose face
+   is the status or priority chip itself, styled where every chip is. Nothing
+   about the ladder or its colours is written in this file. */
 /* The border is the hover affordance, not the focus one. Suppressing the outline
    here left the only keyboard-reachable cell on the page with nothing to say it
    had focus; the shell's :focus-visible ring draws it now. */

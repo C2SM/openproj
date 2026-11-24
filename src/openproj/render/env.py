@@ -16,7 +16,8 @@ from .tokens import (
     _read_date,
     _status_class,
     priority_bars,
-    priority_picker,
+    rung_chip,
+    rung_picker,
 )
 
 # The three characters that can end a `<script>` block, spelled as JSON escapes.
@@ -167,18 +168,15 @@ _ENV.filters["human"] = _human
 # The mark that says the same thing the colour says, for every legend and every
 # shape that draws one. Unknown values get nothing rather than a box glyph.
 _ENV.globals["glyph"] = lambda status: STATUS_GLYPH.get(str(status), "")
-# The status glyph in front of a word where only a string will do: a status
-# `<option>`. A priority option holds the meter itself (`pri`), since its select
-# is a customizable one, so this has no second ladder to reach into any more.
-_ENV.globals["mark"] = lambda kind, value: (
-    f"{STATUS_GLYPH.get(str(value), '')} " if kind == "status" else ""
-)
 # The bars, of which the rung's level are lit. `priority_bars` is also what the
 # browser is handed, so the markup the browser writes and the markup Jinja writes
 # are the same markup.
 _ENV.globals["pri"] = priority_bars
-# A priority, picked: the button whose list the page draws (`priority_picker`).
-_ENV.globals["pripick"] = priority_picker
+# A priority or a status, picked: the button whose list the page draws
+# (`rung_picker`).
+_ENV.globals["rungpick"] = rung_picker
+# The chip a priority or a status is drawn as, the list rows' and the picker's face.
+_ENV.globals["rungchip"] = rung_chip
 
 
 _ENV.globals["on"] = _read_date

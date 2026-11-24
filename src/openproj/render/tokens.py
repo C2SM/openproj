@@ -1101,29 +1101,82 @@ def card_facts() -> dict[str, list[dict[str, str]]]:
     }
 
 
-# The id of the one listbox a page holds for every priority picker on it. The
-# shell draws it once, hanging off the body, and `aria-controls` on each button
-# names it.
-PRIORITY_LIST_ID = "pripop"
+# What a picker offers, per field: the priority ladder, and every status any kind
+# reads, in the ladder's order. A button narrows it to its own record's kind
+# (`offers`), so an issue is offered the four statuses an issue has.
+RUNG_VOCAB = {
+    "priority": PRIORITIES,
+    "status": tuple(
+        dict.fromkeys([*STATUSES, *(word for rung in KIND_LADDER for word in rung.statuses)])
+    ),
+}
+# How many characters the longest word in each vocabulary is, as it is drawn: the
+# chip's text is uppercase monospace, so a column of chips is one width when
+# every word is given this many `ch` (`--rungword-*` in the shell). Derived, so a
+# renamed rung resizes every chip of its field. Statuses are all kinds' together,
+# because one list serves every kind and a narrower note column would make the
+# list and its button disagree; only `note`, whose longest word is shorter, gives
+# anything up.
+RUNG_WIDTH = {
+    field: max(len(_human(word)) for word in words) for field, words in RUNG_VOCAB.items()
+}
+# The one list a page holds per field, drawn once by the shell, hanging off the
+# body; `aria-controls` on each button names it.
+RUNG_LIST_ID = {"priority": "pripop", "status": "stpop"}
 
 
-def priority_picker(
+# The picker's chevron: seen on its face, reserved and unseen in every chip that
+# stands beside one (an editable cell, the edit card, a row of its list), so all of
+# them are one width.
+RUNG_CHEVRON = Markup('<span class="rungpick-chev" aria-hidden="true"></span>')
+
+
+def rung_chip(field: str, value: object, tail: Markup | None = None) -> Markup:
+    """The chip a priority or a status is drawn as, the mark and the word: the one
+    the table's cells, the record page and the edit card wear, and now the face of
+    the picker and every row of its list, so the three states are one object.
+
+    A value no rung lists still gets a chip with its own word, in the ladder's
+    fallback colour (`_status_class`, `_priority_class`); no value gets a dash.
+    `tail` goes inside the chip's border, after the word: the picker's chevron.
+    """
+    text = str(value or "")
+    if not text:
+        klass, mark = "empty-chip", Markup("")
+    elif field == "priority":
+        klass, mark = f"pri {_priority_class(text)}", priority_bars(text)
+    else:
+        klass, mark = _status_class(text), Markup(STATUS_GLYPH.get(text, ""))
+    return Markup(
+        '<span class="chip {}">{}<span class="chipword">{}</span>{}</span>'
+    ).format(
+        klass,
+        Markup('<span class="chipmark" aria-hidden="true">{}</span>').format(mark) if mark else "",
+        _human(text) if text else "—",
+        tail or "",
+    )
+
+
+def rung_picker(
+    field: str,
     value: object = "",
     *,
-    name: str = "priority",
+    offers: object = None,
+    name: str = "",
     label: str = "",
     id: str = "",
     classes: str = "",
     extra: dict[str, object] | None = None,
     disabled: bool = False,
 ) -> Markup:
-    """A priority, picked: a button showing the meter and the word, opening the
-    page's own listbox of rungs (`PRIORITY_LIST_ID`, drawn by the shell).
+    """A priority or a status, picked: a button whose face is the chip it replaces
+    plus a chevron, opening the page's own list for that field (`RUNG_LIST_ID`,
+    drawn by the shell), every row the same chip.
 
-    It replaces a `<select>`, whose open list a browser draws where the meter
+    It replaces a `<select>`, whose open list a browser draws where the mark
     cannot go: Firefox draws it in its parent process with no page fonts, and
-    Safari as a native menu. This list is the page's, so it draws `priority_bars`
-    in every browser.
+    Safari as a native menu. This list is the page's, so it draws the meter and
+    the status glyph in every browser.
 
     A button and not a div because it already is what the select was to every
     page that reads one: it has a `name` and a `value`, it is labelable, it can
@@ -1132,43 +1185,29 @@ def priority_picker(
     left on it while the list is open (the select-only combobox pattern), so the
     table's blur-to-commit sees no blur while somebody is picking.
 
-    The only place this markup is made. Pages render it here, and the browser
-    clones the copy the shell renders into a `<template>` for the editors it
-    builds itself. `extra` is any other attribute a page's control carried
-    (`aria-describedby`, `data-required-at`, `data-field`), escaped here and left
-    out when empty, so a page passes values rather than markup.
+    `offers` narrows the list to what this record's kind accepts, as the select's
+    options did. The only place this markup is made: pages render it here, and
+    the browser clones the copy the shell renders into a `<template>` for the
+    editors it builds itself. `extra` is any other attribute a page's control
+    carried, escaped here and left out when empty.
     """
+    words = " ".join(str(one) for one in offers) if offers else ""
     rest = Markup("").join(
         Markup(' {}="{}"').format(key, one) for key, one in (extra or {}).items() if one
     )
-    # A dash where there is no priority. A select showed its first option there,
-    # `Very high`, which was never stored and was not true.
-    word = _human(value) if value else "\u2014"
-    # Every rung's meter and word, stacked in one grid cell and invisible, so the
-    # button is as wide as its widest value, as a select is, and does not change
-    # width when the value does.
-    ghosts = Markup("").join(
-        Markup('<span class="pripick-ghost" aria-hidden="true">{}<span>{}</span></span>').format(
-            priority_bars(rung), _human(rung)
-        )
-        for rung in PRIORITIES
-    )
     return Markup(
-        '<button type="button" class="pripick{}" name="{}" value="{}" data-type="text"'
-        ' role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="{}"'
-        "{}{}{}>"
-        '<span class="pripick-face"><span class="pripick-now">{}<span class="pripick-word">{}'
-        "</span></span>{}</span>"
-        '<span class="pripick-chev" aria-hidden="true"></span></button>'
+        '<button type="button" class="rungpick{}" data-vocab="{}" name="{}" value="{}"'
+        ' data-type="text" role="combobox" aria-haspopup="listbox" aria-expanded="false"'
+        ' aria-controls="{}"{}{}{}{}>{}</button>'
     ).format(
         f" {classes}" if classes else "",
-        name,
+        field,
+        name or field,
         value or "",
-        PRIORITY_LIST_ID,
+        RUNG_LIST_ID[field],
+        Markup(' data-offers="{}"').format(words) if words else "",
         Markup(' id="{}"').format(id) if id else "",
         Markup(' aria-label="{}"').format(label) if label else "",
         rest + (Markup(" disabled") if disabled else ""),
-        priority_bars(value),
-        word,
-        ghosts,
+        rung_chip(field, value, RUNG_CHEVRON),
     )

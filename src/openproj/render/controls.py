@@ -4235,9 +4235,9 @@ _CONTROL = """
 {#- The meter in front of the word, the same one the table draws in a cell —
     jcanton, 2026-08-20: "can we have the status and priority icons and colours
     also in the dropdowns for editing a record". The app's own picker
-    (`priority_picker`), whose list the page draws, so the meter is in it in
-    every browser; a native select's list is drawn where it cannot go. -#}
-{{ pripick(f.value, name=f.name, id=f.id, classes="field", disabled=f.disabled,
+    (`rung_picker`), whose face is the chip the read view shows and whose list
+    the page draws, so the meter is in it in every browser. -#}
+{{ rungpick("priority", f.value, name=f.name, id=f.id, classes="field", disabled=f.disabled,
            extra={"aria-describedby": describedby,
                   "data-required-at": (f.gates or [])|join(' ')}) }}
 {% elif f.type == "bool" %}

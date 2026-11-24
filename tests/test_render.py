@@ -9544,9 +9544,9 @@ def test_a_refresh_keeps_what_the_room_is_doing_and_wires_what_it_brings_in(
       held.blur();
       const box = betRow(TICK).querySelector('input.bet');
       box.click();
-      // The priority picker (`priority_picker`), written as the shell's list writes
+      // The priority picker (`rung_picker`), written as the shell's list writes
       // it: the value, then `change` from the control.
-      const pick = betRow(RENAMED).querySelector('.pripick[data-field="priority"]');
+      const pick = betRow(RENAMED).querySelector('.rungpick[data-field="priority"]');
       pick.value = pick.value === 'low' ? 'high' : 'low';
       pick.dispatchEvent(new Event('change'));
       const named = betRow(RENAMED).querySelector('input.live[data-field="developers"]');
@@ -9706,30 +9706,26 @@ def test_the_betting_tables_closed_sets_are_chosen_and_never_typed(server_pages:
     a control that can express something the model will refuse is a control that
     wastes somebody's afternoon at a meeting.
 
-    So status is a `<select>` carrying the ladder and its glyphs, and priority is
-    the app's own picker (`priority_picker`), a button whose list is the page's
-    and carries the meter. The mark is half of what a rung says, the channel that
-    survives colour blindness, and a picker that drops it says less than the cell
-    it replaced.
+    So both are the app's own picker (`rung_picker`): a button whose face is the
+    chip and whose list is the page's, every row the chip with its mark. The mark
+    is half of what a rung says, the channel that survives colour blindness, and a
+    picker that drops it says less than the cell it replaced.
     """
     page = server_pages["cycle"]
-    picker = re.search(r'<select class="pick[^"]*" data-field="status".*?</select>', page, re.S)
-    assert picker, "status is not a picker"
-    for rung in STATUSES:
-        assert f'value="{rung}"' in picker.group(0), f"status cannot choose {rung}"
-        assert STATUS_GLYPH[rung] in picker.group(0), f"status's {rung} lost its mark"
-    assert "input" not in tags(picker.group(0)), "status can still be typed into"
-
-    buttons = re.findall(r'<button[^>]*class="pripick pick"[^>]*>', page)
-    assert buttons and all('data-field="priority"' in one for one in buttons), buttons[:2]
-    assert all('role="combobox"' in one for one in buttons), "the picker lost its role"
-    listed = re.search(r'<ul id="pripop".*?</ul>', page, re.S)
-    assert listed, "priority has nothing to choose from"
-    for rung in PRIORITIES:
-        assert f'data-value="{rung}"' in listed.group(0), f"priority cannot choose {rung}"
-        assert f'<svg class="pribars" data-rung="{rung}"' in listed.group(0), (
-            f"priority's {rung} lost its mark"
-        )
+    for field, list_id, ladder, mark in (
+        ("status", "stpop", STATUSES, lambda rung: STATUS_GLYPH[rung]),
+        ("priority", "pripop", PRIORITIES, lambda rung: f'<svg class="pribars" data-rung="{rung}"'),
+    ):
+        buttons = [one for one in re.findall(r'<button[^>]*class="rungpick pick"[^>]*>', page)
+                   if f'data-field="{field}"' in one]
+        assert buttons, f"{field} is not a picker"
+        assert all('role="combobox"' in one for one in buttons), "the picker lost its role"
+        listed = re.search(rf'<ul id="{list_id}".*?</ul>', page, re.S)
+        assert listed, f"{field} has nothing to choose from"
+        for rung in ladder:
+            assert f'data-value="{rung}"' in listed.group(0), f"{field} cannot choose {rung}"
+            assert mark(rung) in listed.group(0), f"{field}'s {rung} lost its mark"
+        assert "<input" not in listed.group(0), f"{field} can still be typed into"
 
 
 def test_a_carried_row_may_be_repriced_but_not_re_bet(server_pages: dict[str, str]):
@@ -9756,7 +9752,7 @@ def test_a_carried_row_may_be_repriced_but_not_re_bet(server_pages: dict[str, st
             "a carried row can be bet into this cycle again"
         )
         # Status is a select; priority is the app's own picker, a button.
-        for field, tag in (("status", "select"), ("priority", "button")):
+        for field, tag in (("status", "button"), ("priority", "button")):
             picker = re.search(rf'<{tag} [^>]*class="[^"]*pick[^"]*"[^>]*data-field="{field}"', row)
             assert picker and "disabled" not in picker.group(0), (
                 f"a carried row cannot have its {field} changed"

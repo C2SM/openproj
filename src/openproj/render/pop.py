@@ -280,6 +280,10 @@ _POP_STYLE = """
    ring is drawn on the thing itself. `outline-offset` rather than a margin,
    because a card's chip line must not move when you point at it. */
 #pop .popopens:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* A chip being edited holds the picker, whose face is the same chip: the outer one
+   gives up its box while it does, or the card draws a chip inside a chip. (1,2,0)
+   over the rung's own `.chip.pri-*` and `.chip.st-*` (0,2,0). */
+#pop .chip.popediting { border-color: transparent; background: none; padding: 0; }
 /* A field this box will not open: the parent of a new child, a value this view
    does not carry. Dimmed rather than removed, for the reason a refused item is
    drawn rather than left out — a row that disappears teaches nothing about why —
@@ -316,6 +320,13 @@ _POP_STYLE = """
   font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
   width: auto; padding: 0 .1rem; border-color: var(--accent);
   background: none; color: inherit;
+}
+/* Except the picker (`rung_picker`), whose face is the chip itself: dressed as a
+   box here as well, it drew a border round the chip and stood 5px wider and 2px
+   taller than the chip it replaced. (1,3,0) over the (1,2,0) above. */
+#pop .card-chips .popbox.rungpick {
+  font: inherit; letter-spacing: inherit; text-transform: inherit;
+  padding: 0; border: 0; background: none;
 }
 /* The mark on a field the chosen status will make the server refuse the record
    without. `--sev-blocker` and not `--warn`: it is the same news the table's own
@@ -2192,8 +2203,8 @@ function popOpenField(name) {
   const control = popControlOf(name, type);
   control.id = 'pop-f-' + (++POP_FIELD_N);
   control.dataset.field = name;
-  // Added and not assigned: a priority arrives as `pripick`, which is what the
-  // shell's picker answers to, and assigning the class took that away.
+  // Added and not assigned: a priority or a status arrives as `rungpick`, which
+  // is what the shell's picker answers to, and assigning the class took that away.
   control.classList.add('popbox');
   // No `<label>` to point at: the card names a field with a `<dt>` that is not
   // this control's label, and the title line and the chips name nothing at all.
@@ -2569,28 +2580,22 @@ function popControlOf(name, type) {
 
 function popSelectOf(name, value) {
   const raw = popRawOf(value);
-  // A priority is the app's own picker (`priority_picker`, cloned through the
-  // shell's `priPicker`), whose list draws the meter in every browser and keeps
-  // the focus on the button. Whatever the file holds is what it shows, a word no
+  // A priority and a status are the app's own picker (`rung_picker`, cloned
+  // through the shell's `rungPicker`): its face is the chip the card was showing,
+  // its list draws the meter and the glyph in every browser, and it keeps the
+  // focus on the button. A status is offered only what this kind reads, as the
+  // select's options were. Whatever the file holds is what it shows, a word no
   // rung lists included, and nothing is written until somebody picks.
-  if (name === 'priority') {
-    const picker = priPicker(raw);
+  if (name === 'priority' || name === 'status') {
+    const offers = name === 'status' ? (POP_SCHEMA.statuses || {})[POP_FORM.kind] || [] : null;
+    const picker = rungPicker(name, raw, null, offers);
     // The card's own word for an empty field, drawn as the face until a pick.
     picker.dataset.nothing = POP_NOTHING;
-    priFace(picker);
+    rungFace(picker);
     return picker;
   }
   const box = document.createElement('select');
-  let options;
-  if (name === 'status')
-    options = ((POP_SCHEMA.statuses || {})[POP_FORM.kind] || []).map(status => ({
-      value: status,
-      // The glyph in front of the word, exactly as the status submenu and the
-      // table's own `<select>` draw it. `STATUS_GLYPH` is in the vendored
-      // subset — that is the argument the six marks are characters at all.
-      text: (((POP_SCHEMA.glyphs || {})[status] || '') + ' ' + popHuman(status)).trim(),
-    }));
-  else options = popParentOptions();
+  const options = popParentOptions();
   // **Whatever the file holds, first and selected, even when it is not on the
   // ladder.** `status` and `priority` are plain `str` in the model on purpose —
   // parse permissively, validate strictly — so a record can hold a word no rung
