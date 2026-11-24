@@ -118,7 +118,11 @@ _FACETS = """
           beside it is what a person reads. They are the same string for a status
           and a login and are not for a project, whose values are ids — `Project:
           proj-370001` is a menu that asks you to know the plan by heart. -#}
+      {#- A priority wears its meter here too, so a filter reads as the column it
+          narrows: jcanton, 2026-11-24, "same meter everywhere". `pri` draws
+          nothing for a word that is not a rung. -#}
       <label><input type="checkbox" value="{{ value }}">{{
+        pri(value) if field == "priority" else "" }}{{
         titles.get(value) or value|human }}</label>{% endfor %}
     </div>
   </div>
@@ -4229,19 +4233,20 @@ for (const input of document.querySelectorAll('[data-suggest]')) attachSuggest(i
 # control on the detail page or the create page had a name.
 _CONTROL = """
 {% if f.type == "priority" %}
-<select name="{{ f.name }}" id="{{ f.id }}" data-type="text" class="field"
+<select name="{{ f.name }}" id="{{ f.id }}" data-type="text" class="field prisel"
         {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}
         {% if f.disabled %}disabled{% endif %}
         {% if f.gates %}data-required-at="{{ f.gates|join(' ') }}"{% endif %}>
-  {#- The mark in front of the word, the same one the graph draws on a node and
-      the table draws in a cell — jcanton, 2026-08-20: "can we have the status and
-      priority icons and colours also in the dropdowns for editing a record".
-      Status used to share this branch and left when it became the hill; priority
-      keeps the native `<select>`, and the mark-as-text is the honest cost of
-      keeping one. -#}
+  {#- The meter in front of the word, the same one the table draws in a cell —
+      jcanton, 2026-08-20: "can we have the status and priority icons and colours
+      also in the dropdowns for editing a record". A customizable select
+      (`select.prisel` in the shell), so the option holds the drawing itself, and
+      the closed control shows it too through `<selectedcontent>`. A browser
+      without one drops every tag here and shows the word. -#}
+  <button><selectedcontent></selectedcontent></button>
   {% for s in priorities %}
   <option value="{{ s }}" {% if s == f.value %}selected{% endif %}>{{
-    mark(f.type, s) }}{{ s|human }}</option>
+    pri(s) }}<span>{{ s|human }}</span></option>
   {% endfor %}
 </select>
 {% elif f.type == "bool" %}

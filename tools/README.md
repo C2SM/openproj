@@ -1,6 +1,9 @@
 # Rebuilding `static/excalidraw.js`
 
-This is the only build step in the repository. Everything else here is either
+(`meter_font.py`, the other file here, rebuilds `static/openproj-meter.ttf`; see the
+section at the end.)
+
+This is the only build step that needs Node. Everything else here is either
 plain Python, run through `uv`, or a file vendored verbatim under `static/` and
 checked in as bytes somebody else published. `static/excalidraw.js` cannot be
 that: upstream ships Excalidraw ESM-only, with roughly thirty externalised bare
@@ -26,7 +29,7 @@ After it runs, refresh the checksum file the way `static/VENDOR.md` says to,
 from the `static/` directory:
 
 ```
-cd static && shasum -a 256 *.js *.mjs *.woff2 > SHA256SUMS
+cd static && shasum -a 256 *.js *.mjs *.woff2 *.ttf > SHA256SUMS
 ```
 
 ## Why it never touches `node_modules` in this checkout
@@ -85,3 +88,15 @@ If a re-vendoring ever needs Liberation back, that means Excalidraw's own
 `dist/prod` has picked up the 2012-or-later OFL release under its own name —
 check the family's licence again from scratch rather than assuming the cut
 above still applies to whatever ships next.
+
+## Rebuilding `static/openproj-meter.ttf`
+
+```
+uv run python tools/meter_font.py
+```
+
+The priority meter as five glyphs, for the graph's canvas labels, which cannot hold
+the SVG every other page draws. Our own drawing, from the geometry in the script;
+needs fontTools from the dev group and nothing else. It prints the sha256 of the file
+it wrote, and the output is reproducible byte for byte, so a rebuild that changes the
+checksum is a rebuild that changed the drawing. Refresh `static/SHA256SUMS` as above.

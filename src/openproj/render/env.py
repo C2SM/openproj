@@ -11,7 +11,6 @@ from markupsafe import Markup
 from ..model import what_json_can_carry
 from .tokens import (
     LABELS,
-    PRIORITY_TEXT,
     STATUS_GLYPH,
     _human,
     _read_date,
@@ -167,13 +166,11 @@ _ENV.filters["human"] = _human
 # The mark that says the same thing the colour says, for every legend and every
 # shape that draws one. Unknown values get nothing rather than a box glyph.
 _ENV.globals["glyph"] = lambda status: STATUS_GLYPH.get(str(status), "")
-# The mark that goes in front of a word where only a string will do. One function
-# for both ladders, so a template asks for "the mark for this value" rather than
-# knowing which map to reach into.
+# The status glyph in front of a word where only a string will do: a status
+# `<option>`. A priority option holds the meter itself (`pri`), since its select
+# is a customizable one, so this has no second ladder to reach into any more.
 _ENV.globals["mark"] = lambda kind, value: (
-    f"{STATUS_GLYPH.get(str(value), '')} "
-    if kind == "status"
-    else f"{PRIORITY_TEXT.get(str(value), '')} "
+    f"{STATUS_GLYPH.get(str(value), '')} " if kind == "status" else ""
 )
 # The bars, of which the rung's level are lit. `priority_bars` is also what the
 # browser is handed, so the markup the browser writes and the markup Jinja writes

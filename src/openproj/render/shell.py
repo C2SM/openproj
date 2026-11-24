@@ -25,7 +25,6 @@ from .tokens import (
     HUMAN,
     KINDS,
     PRIORITY_LEVEL,
-    PRIORITY_TEXT,
     STATUS_GLYPH,
     STATUSES,
     card_facts,
@@ -1819,6 +1818,60 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    page and darker than every rung on the dark one. */
 .pribars .track { fill: color-mix(in oklab, var(--line) 50%, var(--line-strong)); }
 .pribars .lit { fill: currentColor; }
+/* The rung's colour is on the drawing and not on whatever holds it, so a chip, an
+   `<option>`, a filter's checkbox and a menu item all light it the same way. */
+.pribars[data-rung="very_low"]  { color: var(--pri-very-low); }
+.pribars[data-rung="low"]       { color: var(--pri-low); }
+.pribars[data-rung="medium"]    { color: var(--pri-medium); }
+.pribars[data-rung="high"]      { color: var(--pri-high); }
+.pribars[data-rung="very_high"] { color: var(--pri-very-high); }
+/* A SELECT WHOSE OPTIONS ARE PRIORITIES. Chrome's customizable select, so each
+   `<option>` holds the meter and the word rather than a string of characters
+   standing in for it: the block characters those options carried were in no
+   face the page has, and five of them made the open list twice as wide as the
+   closed control. jcanton, 2026-11-24: "same meter everywhere".
+
+   A browser without `base-select` never sees the drawing at all, and that is the
+   HTML parser and not this sheet: its select parser drops every tag inside an
+   `<option>` and keeps the text, so the option is the word and nothing else, and
+   the `<button>` and `<selectedcontent>` are dropped the same way.
+
+   Here in the shell and not on a page, because these selects are on three pages
+   (the table's cell editor, the record page and the cycle page) and the rules
+   match `select.prisel` and nothing else. */
+select.prisel { appearance: base-select; }
+select.prisel::picker(select) {
+  appearance: base-select;
+  border: 1px solid var(--line-strong); border-radius: 4px; padding: .2rem 0;
+  background: var(--surface); color: var(--fg);
+  box-shadow: 0 6px 18px rgb(0 0 0 / .18);
+}
+select.prisel option { display: flex; align-items: center; gap: .4rem; }
+/* Inline, because the record page makes its fields `display: block` and a block
+   here put the chevron on a line of its own. Not fought over with a heavier
+   `display`: anything heavy enough to beat `.record.editing .field` also beats
+   the `[hidden]` and `.folded` rules beside it and shows a field that is meant
+   to be away. */
+select.prisel selectedcontent { display: inline-flex; align-items: center; gap: .4rem;
+                                vertical-align: middle; }
+select.prisel option { padding: .2rem .6rem; white-space: nowrap; }
+/* The list's own checkmark is a second mark beside a meter that already says
+   which rung it is; the chosen row is the ground the hovered one gets. */
+select.prisel option::checkmark { display: none; }
+select.prisel option:checked { background: var(--surface-2); font-weight: 600; }
+select.prisel option:hover { background: var(--surface-2); }
+select.prisel option:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* The chevron a native select draws, and not base-select's own solid triangle:
+   on the cycle page this select stands beside a native status select, and two
+   carets side by side read as two kinds of control. */
+select.prisel::picker-icon {
+  content: ""; width: .32em; height: .32em; margin: 0 .15em .2em .5em;
+  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+}
+/* At the right edge, where a native select keeps it: pushed there in a select
+   laid out as flex (the table, the cycle page), floated there in one the record
+   page has made a block, and centred on the line in both. */
+select.prisel::picker-icon { margin-left: auto; float: right; margin-top: .45em; }
 /* The colour is on the mark and not on the chip: a chip with a coloured ground
    in the column next to Status would be two ladders competing at one weight, and
    the ground is what Status uses. */
@@ -1831,11 +1884,6 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
 .chip.pri { color: var(--kind-ink); border: 1px solid var(--kind-line);
             padding: .1rem .4rem; }
 .chip.pri .chipmark { opacity: 1; }
-.chip.pri-very_low .chipmark  { color: var(--pri-very-low); }
-.chip.pri-low .chipmark       { color: var(--pri-low); }
-.chip.pri-medium .chipmark    { color: var(--pri-medium); }
-.chip.pri-high .chipmark      { color: var(--pri-high); }
-.chip.pri-very_high .chipmark { color: var(--pri-very-high); }
 /* The status mark inside the chip it has always had. Slightly dimmed, because
    the word is the thing being read and the mark is what finds it — a glyph at
    full weight beside a short word reads as two words. */
@@ -1925,11 +1973,6 @@ table.tight-priority td[data-col="priority"] .chip.pri { padding: .1rem .3rem; }
    swatch leaves nothing in the middle — the thickest rung was a box with its own
    meter squeezed out of it. */
 .legend .swatch.pri .primark { display: flex; line-height: 1; }
-.legend .swatch.pri-very_low .primark  { color: var(--pri-very-low); }
-.legend .swatch.pri-low .primark       { color: var(--pri-low); }
-.legend .swatch.pri-medium .primark    { color: var(--pri-medium); }
-.legend .swatch.pri-high .primark      { color: var(--pri-high); }
-.legend .swatch.pri-very_high .primark { color: var(--pri-very-high); }
 .legend .swatch.pri-very_high { border-width: 6px; }
 .legend .swatch.pri-high      { border-width: 4px; }
 .legend .swatch.pri-medium    { border-width: 2px; }
@@ -5484,11 +5527,9 @@ def _page(
         # ladder, so a card says the rung the same way on all three views.
         # The priority meter as the server draws it, so a row the table draws
         # in the browser is the markup a chip Jinja draws: `priBars` looks it up
-        # by key and builds nothing of its own. `priority` stays the text form,
-        # for the menus that can only hold a string.
+        # by key and builds nothing of its own.
         cardmarks={
             "status": STATUS_GLYPH,
-            "priority": PRIORITY_TEXT,
             "bars": {rung: str(priority_bars(rung)) for rung in PRIORITY_LEVEL},
         },
         # And which facts a card lists under them, per kind. The same list the

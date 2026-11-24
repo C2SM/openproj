@@ -168,16 +168,19 @@ PRIORITY_LEVEL = {"very_low": 1, "low": 2, "medium": 3, "high": 4, "very_high": 
 # 3px tall and each next one 2px taller.
 PRIORITY_BARS = tuple((3 * i, 8 - 2 * i, 2, 3 + 2 * i) for i in range(len(PRIORITIES)))
 
-# The ladder where only text will go: an `<option>` is a string, and a graph box's
-# name is canvas text. The same meter in two characters, filled and empty, so a
-# menu still counts the rung out of five rather than naming it a second way.
-PRIORITY_TEXT = {
-    rung: "\u25ae" * level + "\u25af" * (len(PRIORITIES) - level)
-    for rung, level in PRIORITY_LEVEL.items()
-}
+# Where only text will go, which since the selects became customizable is one
+# place: a graph box's name, which cytoscape draws as canvas text. There the meter
+# is one character per rung, in Private Use Area codepoints that only the face
+# `tools/meter_font.py` draws (`static/openproj-meter.ttf`), so the rung's level
+# `n` is `chr(METER_FONT_BASE + n)`. The block characters this replaces were in
+# no face the page carries, and five of them made a box's name spill its box.
+METER_FONT_BASE = 0xE000
+PRIORITY_METER_CHAR = {rung: chr(METER_FONT_BASE + level) for rung, level in PRIORITY_LEVEL.items()}
 
+# `data-rung` so the meter colours itself, through one rule per rung in the shell,
+# wherever it is put: a chip, an `<option>`, a filter's checkbox, a menu item.
 _PRIORITY_SVG = Markup(
-    '<svg class="pribars" viewBox="0 0 14 11" width="14" height="11" '
+    '<svg class="pribars" data-rung="{}" viewBox="0 0 14 11" width="14" height="11" '
     'shape-rendering="crispEdges" aria-hidden="true" focusable="false">{}</svg>'
 )
 
@@ -199,7 +202,7 @@ def priority_bars(priority: object) -> Markup:
         )
         for i, (x, y, width, height) in enumerate(PRIORITY_BARS)
     )
-    return _PRIORITY_SVG.format(bars)
+    return _PRIORITY_SVG.format(priority, bars)
 
 
 # The redundant channel. On the graph and the timeline a fill is the only thing

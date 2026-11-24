@@ -497,7 +497,7 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
     the first box measured was `kiln4py`, whose label starts `ki`. The record is
     right and the assertion was over-claiming.
     """
-    from openproj.render import PRIORITIES, PRIORITY_TEXT, STATUS_GLYPH
+    from openproj.render import PRIORITIES, PRIORITY_METER_CHAR, STATUS_GLYPH
 
     def marks_of(kind: str) -> tuple[bool, bool]:
         """Whether this rung reads a priority and a status, off the ladder."""
@@ -558,7 +558,7 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
         pri, stat = marks_of(box["kind"])
         words = box["label"].split(" ")
         if pri:
-            assert words[0] in PRIORITY_TEXT.values(), (
+            assert words[0] in PRIORITY_METER_CHAR.values(), (
                 f"a {box['kind']} box does not lead with its priority meter: {box['label']!r}"
             )
         if stat:

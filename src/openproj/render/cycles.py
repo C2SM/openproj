@@ -368,10 +368,11 @@ _CYCLE = """
       {% for value in statuses %}<option value="{{ value }}"
         {{- ' selected' if value == row.status else '' }}>{{ mark('status', value) }}{{
         value|human }}</option>{% endfor %}</select></td>
-    <td><select class="pick" data-field="priority" aria-label="{{ row.title }} priority">
+    <td><select class="pick prisel" data-field="priority" aria-label="{{ row.title }} priority">
+      <button><selectedcontent></selectedcontent></button>
       {% for value in priorities %}<option value="{{ value }}"
-        {{- ' selected' if value == row.priority else '' }}>{{ mark('priority', value) }}{{
-        value|human }}</option>{% endfor %}</select></td>
+        {{- ' selected' if value == row.priority else '' }}>{{ pri(value) }}<span>{{
+        value|human }}</span></option>{% endfor %}</select></td>
     <td><input class="live" data-field="{{ row.size_field }}" data-type="number"
                aria-label="{{ row.title }} appetite in weeks"
                autocomplete="off" value="{{ row.size }}"

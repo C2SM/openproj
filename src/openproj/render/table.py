@@ -28,7 +28,6 @@ from .tokens import (
     LABELS,
     PRIORITIES,
     PRIORITY_LEVEL,
-    PRIORITY_TEXT,
     STATUS_GLYPH,
     STATUSES,
     SUGGESTS,
@@ -135,7 +134,7 @@ _MARK_COLUMN = {field: column for column, field in _COLUMN_SHOWS.items()}
 # between "this fits" and "this does not" is the whole reason the cell is drawn.
 #
 # Shipped as a map keyed by the state rather than as a character on every row,
-# which is what `GLYPHS` and `RUNGS` already do with the status and priority
+# which is what `GLYPHS` and `chipmarks` already do with the status and priority
 # marks: a constant repeated once per record is a constant that arrives in the
 # payload four hundred times and can still only ever say one thing.
 #
@@ -263,9 +262,6 @@ def _payload(index: Index) -> dict:
         # the legend are drawn here, and a second copy of either map is a rung
         # that agrees until somebody adds one.
         "glyphs": STATUS_GLYPH,
-        # The priority meter in the two characters a menu can hold. The chip
-        # in a cell is the drawing, which the shell's `priBars` hands out.
-        "marks": PRIORITY_TEXT,
         "levels": PRIORITY_LEVEL,
         # Which statuses demand which fields, derived from the gate itself by
         # `required_at` (`model.py`). The detail page has had this since it grew
@@ -671,16 +667,17 @@ function clamped(pieces, one, many) {
 }
 
 // The two marks a row wears, off the payload rather than restated here.
-// `GLYPHS` is what the graph and the timeline already draw. A row's priority is
-// the shell's `priBars`, and `RUNGS` below is the same meter as text.
+// `GLYPHS` is what the graph and the timeline already draw; a row's priority is
+// the shell's `priBars`.
 const GLYPHS = DATA.glyphs || {};
-// The mark that goes in front of a word inside an `<option>`, which is text and
-// nothing else — the same string `mark()` writes on the server, for both ladders.
-const RUNGS = DATA.marks || {};
-function markFor(field, value) {
-  if (field === 'status') return GLYPHS[value] ? GLYPHS[value] + ' ' : '';
-  if (field === 'priority') return RUNGS[value] ? RUNGS[value] + ' ' : '';
-  return '';
+// What goes in front of a word inside an `<option>`. A status option is text and
+// takes its glyph; a priority option is in a customizable select and takes the
+// meter itself, the same markup the cell shows, ahead of the word in a `<span>`
+// so a browser without `base-select` drops the drawing and keeps the word.
+function optionFor(field, value) {
+  if (field === 'priority') return `${priBars(value)}<span>${esc(human(value))}</span>`;
+  const glyph = field === 'status' && GLYPHS[value] ? GLYPHS[value] + ' ' : '';
+  return esc(glyph) + esc(human(value));
 }
 
 function shown(row, key) {
@@ -2434,12 +2431,14 @@ function openEditor(cell) {
   // connector belongs to the row rather than to what is in the cell at the time.
   cell.innerHTML = treeHtml(cell.dataset.rungs) + (closed
     // The same mark the cell was showing a moment ago, so opening an editor does
-    // not swap a marked value for an unmarked list of words. `markFor` reaches
-    // the two maps the payload already carries.
-    ? `<select data-type="text" aria-label="${named}">${closed.map(o =>
-        `<option value="${esc(o)}" ${o === was ? 'selected' : ''}>` +
-        `${esc(markFor(field, o))}${esc(human(o))}</option>`
-      ).join('')}</select>`
+    // not swap a marked value for an unmarked list of words. `optionFor` draws
+    // each option, and a priority list is a customizable select (`select.prisel`).
+    ? `<select data-type="text" aria-label="${named}"` +
+      (field === 'priority'
+        ? ' class="prisel"><button><selectedcontent></selectedcontent></button>' : '>') +
+      closed.map(o =>
+        `<option value="${esc(o)}" ${o === was ? 'selected' : ''}>${optionFor(field, o)}</option>`
+      ).join('') + '</select>'
     // `type` and `data-type` are two different questions and both are asked:
     // `type` is what the browser draws, `data-type` is what `coerce` and the
     // suggestion widget read — the widget completes the last comma-separated
@@ -2470,7 +2469,44 @@ function openEditor(cell) {
   clearOfFrozen(cell);
 
   let abandoned = false;
-  input.onblur = () => {
+  // A customizable select (`select.prisel`) is a box whose list is part of the
+  // page: opening it moves focus onto one of its own `<option>`s. That is not
+  // leaving the cell. Read as a blur it redrew the cell and took the editor away
+  // under the pointer that had just opened it, so focus moving INTO the control
+  // is ignored, and focus leaving from inside its list is the blur instead.
+  const inside = target => !!target && typeof input.contains === 'function'
+    && input.contains(target);
+  const pickerOpen = () => { try { return input.matches(':open'); } catch { return false; } };
+  input.addEventListener('focusout', event => {
+    if (event.target !== input && event.relatedTarget !== input && !inside(event.relatedTarget))
+      leave();
+  });
+  // Opened from the keyboard, the select is blurred inside the keydown that opens
+  // it, before the list is open and before an option has the focus, with no
+  // `relatedTarget` at all, so nothing in the blur can tell opening from leaving.
+  // The key that opens the list is seen first and the blur it causes is let go,
+  // until the focus lands inside the list. Not a tick later: the list opens in a
+  // task of its own after the keydown, and a flag cleared by `setTimeout(0)` was
+  // already gone when the blur arrived. The timeout is only for a list that
+  // never opened. And not by deferring every blur instead: the draft row's
+  // Create blurs the open cell and needs it staged before its next line runs.
+  let opening = false;
+  if (input.classList.contains('prisel')) {
+    input.addEventListener('keydown', event => {
+      if (pickerOpen()) return;
+      if (event.key === ' ' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        opening = true;
+        setTimeout(() => { opening = false; }, 1000);
+      }
+    });
+    input.addEventListener('focusin', event => {
+      if (event.target !== input) opening = false;
+    });
+  }
+  input.onblur = event => {
+    if (!opening && !inside(event && event.relatedTarget)) leave();
+  };
+  function leave() {
     // **A half-written date must not clear the date that is there.** A native
     // picker reports `value === ''` for anything it cannot read as a whole date
     // — `2026-0`, a day typed into an empty box and then a click elsewhere — and
@@ -2515,8 +2551,12 @@ function openEditor(cell) {
       saveCells(cell, input.value);
     else if (cell.dataset.record) saveCell(cell, input.value);
     else stage(field, input.value);
-  };
+  }
   input.onkeydown = e => {
+    // Keys pressed in an open list are the list's: Enter picks the option and
+    // Escape closes the list. Acted on here as well, Enter committed the value
+    // from before the pick and Escape threw the whole edit away.
+    if (pickerOpen()) return;
     // A key the suggestion list consumed is not this editor's to act on too:
     // Escape with the list open shipped as "close the list AND discard the
     // whole cell edit". The Escape still must not bubble — the grid's own

@@ -20,13 +20,20 @@ from openproj.model import load_repo
 from openproj.render import (
     PRIORITIES,
     PRIORITY_BARS,
-    PRIORITY_TEXT,
+    PRIORITY_METER_CHAR,
     ROUTES,
     priority_bars,
+    render_detail,
+    render_graph,
     render_table,
 )
 from openproj.render.shell import _page
 from openproj.render.tokens import PRIORITY_LEVEL
+
+# Every character the meter was ever written in as text: the rising blocks, and the
+# filled and empty rectangles that briefly replaced them. None is in Inter, so each
+# was drawn by whatever font the platform fell back to.
+_BLOCKS = "\u2582\u2583\u2585\u2587\u2588\u25ae\u25af"
 
 
 def _bars(meter: str) -> list[str]:
@@ -37,7 +44,7 @@ def _bars(meter: str) -> list[str]:
 def test_every_rung_draws_every_bar_and_lights_its_own_number(rung: str):
     level = PRIORITY_LEVEL[rung]
     assert _bars(priority_bars(rung)) == ["lit"] * level + ["track"] * (len(PRIORITIES) - level)
-    assert PRIORITY_TEXT[rung] == "▮" * level + "▯" * (len(PRIORITIES) - level)
+    assert f'data-rung="{rung}"' in priority_bars(rung), "the meter cannot colour itself"
 
 
 def test_the_bars_rise_and_never_touch():
@@ -72,7 +79,7 @@ def test_the_table_draws_the_servers_meter_and_no_meter_of_its_own(seed_root: Pa
     written = "".join(str(one) for one in answer["written"])
     for rung in held:
         assert str(priority_bars(rung)) in written, f"no row drew the {rung} meter"
-    for block in "▂▃▅▇█":
+    for block in _BLOCKS:
         assert block not in written, f"a row still draws the block character {block!r}"
 
 
@@ -142,3 +149,81 @@ def test_lit_and_unlit_bars_differ_in_lightness_on_both_themes(tmp_path: Path):
                 f"{theme}: the track {one['track']} is {ground:.2f}:1 against the "
                 f"page {drawn['ground']}, so the unlit bars are not there"
             )
+
+
+def test_a_priority_option_is_the_word_to_a_browser_without_base_select(seed_root: Path):
+    """The record page's priority select is a customizable one, so each option holds
+    the meter. A browser without `base-select` parses a select the old way: every
+    tag inside an `<option>` is dropped and its text kept. What it keeps has to be
+    the word and only the word, never a block character and never nothing."""
+    import re
+
+    from openproj.render import HUMAN
+
+    records, config, unreadable = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17), unreadable)
+    record = next(one for one in index.records.values() if one.kind == "task")
+    page = render_detail(index, ROUTES, only=record.id, base_commit="deadbee", may_write=True)
+
+    (picker,) = re.findall(r'<select[^>]*class="field prisel".*?</select>', page, re.S)
+    options = re.findall(r"<option[^>]*>(.*?)</option>", picker, re.S)
+    assert len(options) == len(PRIORITIES), options
+    for rung, inner in zip(PRIORITIES, options, strict=True):
+        assert f'data-rung="{rung}"' in inner, f"the {rung} option has no meter"
+        text = re.sub(r"<[^>]+>", "", inner).strip()
+        assert text == HUMAN[rung], f"without base-select the {rung} option reads {text!r}"
+    assert not any(block in page for block in _BLOCKS)
+
+
+def test_the_meter_face_is_what_its_script_builds(tmp_path: Path):
+    """`static/openproj-meter.ttf` is our own drawing and the script beside it is the
+    source. Rebuilt here and compared byte for byte, so the shipped file, the
+    geometry and the codepoints the graph writes cannot drift apart."""
+    import sys
+
+    from openproj.render import _static_dir
+
+    pytest.importorskip("fontTools")
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    try:
+        import meter_font
+    finally:
+        sys.path.pop(0)
+    built = meter_font.build(tmp_path / "meter.ttf")
+    assert built == (_static_dir() / "openproj-meter.ttf").read_bytes(), (
+        "static/openproj-meter.ttf is not what tools/meter_font.py builds; rebuild it"
+    )
+
+    from fontTools.ttLib import TTFont
+
+    drawn = set(TTFont(tmp_path / "meter.ttf").getBestCmap())
+    assert drawn == {ord(char) for char in PRIORITY_METER_CHAR.values()}
+
+
+# A box's name, measured in the stack the graph draws labels in, once the page has
+# had time to load its faces: the meter character at 12px is the face's 1070-unit
+# advance, and any fallback face measures something else.
+_MEASURED = """
+await document.fonts.ready;
+const ctx = document.createElement('canvas').getContext('2d');
+ctx.font = `600 12px "openproj meter", ${getComputedStyle(document.documentElement)
+  .getPropertyValue('--font-sans')}`;
+return {
+  loaded: document.fonts.check('12px "openproj meter"', '\\ue003'),
+  width: ctx.measureText('\\ue003').width,
+};
+"""
+
+
+def test_a_box_name_is_measured_in_the_meter_face(seed_root: Path, tmp_path: Path):
+    """A label measured before its face loads is drawn at the wrong width, and on the
+    graph that is a box's name sitting off its box."""
+    from browser import chrome, measured_in
+
+    records, config, unreadable = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17), unreadable)
+    got = measured_in(
+        chrome(), render_graph(index, ROUTES), tmp_path / "graph.html", 1400, _MEASURED
+    )
+    assert got["loaded"], "the meter face never loaded on the graph"
+    assert abs(got["width"] - 12 * 1070 / 1000) < 0.1, got

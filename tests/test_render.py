@@ -20,7 +20,6 @@ from openproj.index import Index, build_index
 from openproj.model import KIND_NAMES, VIEW_NEEDS, VIEWS, Config, load_repo
 from openproj.render import (
     PRIORITIES,
-    PRIORITY_TEXT,
     ROUTES,
     STATIC,
     STATUS_GLYPH,
@@ -9708,9 +9707,12 @@ def test_the_betting_tables_closed_sets_are_chosen_and_never_typed(server_pages:
     state says less than the cell it replaced.
     """
     page = server_pages["cycle"]
+    # A priority option holds the meter itself, `data-rung` and all, since its
+    # select is a customizable one; a status option still holds its glyph.
+    meters = {rung: f'<svg class="pribars" data-rung="{rung}"' for rung in PRIORITIES}
     for field, ladder, glyphs in (
         ("status", STATUSES, STATUS_GLYPH),
-        ("priority", PRIORITIES, PRIORITY_TEXT),
+        ("priority", PRIORITIES, meters),
     ):
         picker = re.search(
             rf'<select class="pick[^"]*" data-field="{field}".*?</select>', page, re.S
