@@ -133,7 +133,9 @@ def test_every_page_is_titled_page_first_and_wears_the_plans_mark(named: Index):
     seen = 0
     for name, page in _drawn(named):
         found = elements(page)
-        (title,) = [el.text for el in found if el.tag == "title"]
+        # The first `<title>`, the document's, in `<head>`: an SVG drawing on the
+        # page carries `<title>`s of its own.
+        title = next(el.text for el in found if el.tag == "title")
         assert title.endswith(" · kiln & co") and not title.startswith("openproj"), (name, title)
         (icon,) = [el.attrs["href"] for el in found if el.attrs.get("rel") == "icon"]
         assert f"fill='{ORANGE}'" in unquote(icon), (name, icon[:80])
@@ -147,14 +149,14 @@ def test_an_unnamed_plan_is_still_named_openproj(seed_root: Path):
     records, config, unreadable = load_repo(seed_root)
     index = build_index(records, config, date(2026, 8, 17), unreadable)
     page = render.render_table(index, render.ROUTES)
-    (title,) = [el.text for el in elements(page) if el.tag == "title"]
+    title = next(el.text for el in elements(page) if el.tag == "title")
     assert title == "Table · openproj"
 
 
 def test_a_served_record_page_is_titled_with_the_record(named: Index):
     record = next(r for r in named.records.values() if r.title)
     page = render.render_detail(named, render.ROUTES, only=record.id)
-    (title,) = [el.text for el in elements(page) if el.tag == "title"]
+    title = next(el.text for el in elements(page) if el.tag == "title")
     assert title == f"{record.title} · kiln & co"
 
 

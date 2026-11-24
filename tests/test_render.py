@@ -5022,7 +5022,7 @@ def test_every_page_carries_a_skip_link_and_a_live_region(rendered: Path):
     for page in PAGES:
         body = read(rendered, page)
         assert '<a class="skip" href="#main">' in body, page
-        assert body.index('class="skip"') < body.index("<nav>"), f"{page}: first in the order"
+        assert body.index('class="skip"') < body.index("<nav "), f"{page}: first in the order"
         assert '<p id="announce" class="sr-only" role="status" aria-live="polite">' in body, page
         # Clipped, not hidden: display:none and visibility:hidden both take an
         # element out of the accessibility tree, which is the one place this
