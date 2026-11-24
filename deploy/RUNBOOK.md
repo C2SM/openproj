@@ -33,6 +33,10 @@ ______________________________________________________________________
 - `create_app` **refuses to start** if `OPENPROJ_REMOTE` names an https remote and
   no credential is configured. Without that check the tool looks like it is
   working while every commit stays on one container's disk until it is replaced.
+- A remote that is not on GitHub pushes with `OPENPROJ_REMOTE_USER` and
+  `OPENPROJ_REMOTE_TOKEN` instead (`forge.py`). `serve` refuses half of that pair, and
+  refuses it beside the App's variables. `OPENPROJ_PLAN_URL` names the repository's
+  web page for the footer's links when the remote is not one a browser can open.
 - `GitHubApp.from_environment` returns `None` unless all three variables are set:
   two of three is a deployment somebody stopped half way through.
 - `serve --auth github` **refuses to start** without an org, from `--org` or

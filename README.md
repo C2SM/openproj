@@ -139,6 +139,14 @@ with `OPENPROJ_FORWARDED_ALLOW_IPS=*`, which `serve` refuses in this mode. It ne
 tailscaled's socket, `OPENPROJ_TAILSCALE_SOCKET` (default `/var/run/tailscale/tailscaled.sock`), and
 no more: `whois` is in the half of the daemon's API a process that is not root may use.
 
+A remote that is not on GitHub, a Forgejo or a Gitea on the same machine say, takes an access
+token instead of the GitHub App: `OPENPROJ_REMOTE_USER` is the account that owns it and
+`OPENPROJ_REMOTE_TOKEN` the token, with write access to the plan repository. `serve` refuses half
+of the pair, and refuses it beside the App's variables, because then nobody chose which one
+pushes. `OPENPROJ_PLAN_URL` is the plan repository's page as a browser opens it, which the
+footer's `plan` and commit link into. On GitHub it is read off the remote; anywhere else it has to
+be said, since the address the server pushes to is often not one anybody can open.
+
 Putting it on Cloud Run reads the deployment from the plan rather than from here. `init` writes
 `deploy/openproj.env` into the plan when asked, or when given `--deploy KEY=VALUE`, and
 `deploy/example.env` in this repository is the same file with every value blank. From a checkout of
