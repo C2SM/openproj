@@ -1020,7 +1020,14 @@ pre.mermaid[data-processed] svg { height: auto; }
    and drew a replacement glyph and two literal characters between the version
    and the plan's sha, on every page of the app. Found by looking at the footer,
    not by reading the rule. */
-#build > * + *::before { content: "·"; margin-right: .5rem; }
+/* `inline-block` and its own colour because the dot is inside the box of the
+   element that owns it, so when that element is a link the dot is part of the
+   link. Hovering Report issue underlined the dot in front of it and turned it
+   accent. Text decoration is not propagated into an atomic inline, and the
+   colour is set here rather than inherited from a link that is being hovered.
+   Help is in a `<span>` for a different reason, given at the template. */
+#build > * + *::before { content: "·"; margin-right: .5rem;
+                         display: inline-block; color: var(--muted); }
 #build > .corner::before { content: none; }
 #planhead:empty { display: none; }
 .schemepick { min-width: 0; }

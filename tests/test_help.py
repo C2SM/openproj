@@ -403,6 +403,56 @@ def test_the_build_row_draws_the_help_mark_around_the_word_and_not_its_separator
     )
 
 
+def test_hovering_report_issue_underlines_the_link_and_not_the_dot_before_it(
+    page: str, tmp_path: Path
+):
+    """jcanton, 2026-11-24: hovering "Report issue" "underlines also the dot
+    separating it from Help, while all other links work correctly".
+
+    The dot is the link's own `::before`, and a decoration on an element is drawn
+    under every inline descendant's text, the pseudo-element's included. Asked of
+    pixels, because no computed value can answer it: a decoration is propagated
+    and not inherited, so the dot's `text-decoration-line` reads `none` whether a
+    line is drawn under it or not.
+
+    The hover is forced with the declaration `#build a:hover` makes, in red so
+    it is unmistakable, and the dot's glyph is transparent in every shot. Hiding
+    the dot can then change only a line drawn under it. Failed without
+    `display: inline-block` on the separator.
+    """
+    from browser import chrome, screenshot
+
+    browser = chrome()
+    hovered = (
+        "<style>#build #report { text-decoration: underline; color: red }"
+        " #build #report::before { color: transparent }</style>"
+    )
+
+    def shot(name: str, extra: str) -> bytes:
+        html = tmp_path / f"report-{name}.html"
+        html.write_text(page.replace("</body>", extra + "</body>"))
+        return screenshot(browser, html, tmp_path / f"report-{name}.png", 1280, 800)
+
+    # The control the nav test makes, for its reason: everything below compares
+    # bytes, and a renderer that draws one page two ways has no reading to give.
+    under = shot("under", hovered)
+    for attempt in range(3):
+        if under == shot(f"again{attempt}", hovered + "<style>/* nothing */</style>"):
+            break
+        under = shot("under", hovered)
+    else:
+        pytest.skip(
+            "this browser does not render the same page the same way twice, so no "
+            "comparison below would mean anything"
+        )
+
+    # And the forced underline is drawn at all, or the last line proves nothing.
+    plain = shot("plain", hovered + "<style>#build #report { text-decoration: none }</style>")
+    assert plain != under, "the forced underline drew nothing, so this test cannot see one"
+    hidden = shot("nodot", hovered + "<style>#build #report::before { visibility: hidden }</style>")
+    assert hidden == under, "hiding the separator changed the page: it is underlined with the link"
+
+
 def test_the_banner_is_on_this_page_like_every_other(seed_root: Path):
     """`render_help` takes an `Index` for this and for nothing else.
 
