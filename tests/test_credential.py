@@ -324,3 +324,100 @@ def test_a_reference_is_read_as_landed_dropped_or_open():
         4: ({"state": "dropped", "at": "2026-10-02"}, 41),
         5: ({"state": "open", "at": None}, 41),
     }
+
+
+# --- a forge that is not GitHub ---------------------------------------------
+
+_TOKEN_ENV = {"OPENPROJ_REMOTE_USER": "jacopo", "OPENPROJ_REMOTE_TOKEN": "f0rgej0"}
+
+
+def _bare(tmp_path: Path) -> Path:
+    import pygit2
+
+    repo = tmp_path / "plan.git"
+    pygit2.init_repository(str(repo), bare=True, initial_head="main")
+    return repo
+
+
+def test_a_forge_token_is_handed_to_git_as_its_owner_and_the_token():
+    """Forgejo and Gitea check that the token belongs to the name it comes with,
+    so the pair has to reach libgit2 as user and password, in that order."""
+    from openproj.forge import ForgeToken
+
+    token = ForgeToken.from_environment(_TOKEN_ENV)
+
+    assert token is not None
+    assert token.callbacks().credentials.credential_tuple == ("jacopo", "f0rgej0")
+    assert "f0rgej0" not in repr(token), "the token reached a repr, and so any log line"
+
+
+def test_the_push_credential_is_the_app_the_token_or_nothing(tmp_path: Path, pem: str):
+    from openproj.cli import push_credential
+    from openproj.forge import ForgeToken
+
+    key = tmp_path / "app.pem"
+    key.write_text(pem)
+    app = {"OPENPROJ_APP_ID": "1", "OPENPROJ_INSTALLATION_ID": "2", "OPENPROJ_APP_KEY": str(key)}
+
+    assert push_credential({}) is None
+    assert isinstance(push_credential(app), GitHubApp)
+    assert isinstance(push_credential(_TOKEN_ENV), ForgeToken)
+
+
+def test_both_credentials_at_once_are_refused_by_name(tmp_path: Path):
+    """Ranking them would push with whichever won, which is a credential nobody chose."""
+    from openproj.cli import push_credential
+
+    with pytest.raises(ValueError) as refusal:
+        push_credential({**_TOKEN_ENV, "OPENPROJ_APP_ID": "1"})
+
+    assert "OPENPROJ_APP_ID" in str(refusal.value)
+    assert "OPENPROJ_REMOTE_TOKEN" in str(refusal.value)
+
+
+@pytest.mark.parametrize("given", ["OPENPROJ_REMOTE_USER", "OPENPROJ_REMOTE_TOKEN"])
+def test_half_a_forge_token_names_the_half_that_is_missing(given: str):
+    from openproj.cli import push_credential
+
+    with pytest.raises(ValueError) as refusal:
+        push_credential({given: _TOKEN_ENV[given]})
+
+    (other,) = set(_TOKEN_ENV) - {given}
+    assert other in str(refusal.value)
+
+
+def test_a_remote_off_github_starts_with_a_token_and_is_refused_without_one(
+    tmp_path: Path, monkeypatch
+):
+    """Without the `with` of a TestClient, so nothing tries to reach the forge."""
+    from openproj.forge import ForgeToken
+    from openproj.web import create_app
+
+    for name in GitHubApp.NEEDS:
+        monkeypatch.delenv(name, raising=False)
+    repo = _bare(tmp_path)
+    remote = "http://127.0.0.1:3000/jacopo/plan-d.git"
+
+    create_app(repo, remote=remote, credentials=ForgeToken("jacopo", "f0rgej0"))
+
+    with pytest.raises(ValueError, match="needs a credential") as refusal:
+        create_app(_bare(tmp_path / "again"), remote=remote)
+    # The App's variables are not what a Forgejo remote is missing.
+    assert "OPENPROJ_REMOTE_TOKEN" in str(refusal.value)
+    assert "OPENPROJ_INSTALLATION_ID" not in str(refusal.value)
+
+
+def test_a_parked_branch_on_a_forge_is_left_on_the_remote_without_a_word(tmp_path: Path):
+    """Opening a pull request is the App's alone. With a forge token the store has
+    nobody to tell, and the pusher thread must not die finding that out."""
+    from openproj.forge import ForgeToken
+    from openproj.store import Store
+
+    repo = _bare(tmp_path)
+    store = Store(repo, remote=f"file://{tmp_path}/remote.git", credentials=ForgeToken("j", "t"))
+    store._parked_reasons["f" * 40] = ["refused"]
+
+    store._offer_pull_requests(store._repo, ["f" * 40])
+
+    assert "f" * 40 not in store._parked_reasons, "a settled branch would be offered again"
+    store.close()

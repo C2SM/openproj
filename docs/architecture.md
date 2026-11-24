@@ -132,6 +132,7 @@ src/openproj/coedit.py     the co-editing rooms — one Y.Text per record, in me
 src/openproj/web.py        the server: routes, auth, the write endpoints
 src/openproj/auth.py       sign-in: the OAuth dance, the session, who may write
 src/openproj/github.py     what the server asks GitHub — the App token, open PRs and issues
+src/openproj/forge.py      the push token for a remote that is not on GitHub (Forgejo, Gitea)
 src/openproj/vendor.py     static/ and docs/ on disk, read once and inlined
 src/openproj/bootstrap.py  openproj init — the config files with nothing invented, one commit
 src/openproj/cli.py        init / check / new / render / serve / schedule / demo
