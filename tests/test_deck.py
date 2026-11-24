@@ -1382,7 +1382,9 @@ def test_the_chips_carry_the_marks_every_other_view_carries():
     # The priority is the meter, all five bars and four of them lit for `high`.
     from pages import elements
 
-    (meter,) = re.findall(r'<svg class="pribars".*?</svg>', page, re.S)
+    # The slide's own, without the shell's priority list (a meter per rung).
+    slides = re.sub(r'<ul id="pripop".*?</ul>', "", page, flags=re.S)
+    (meter,) = re.findall(r'<svg class="pribars".*?</svg>', slides, re.S)
     bars = [one.attrs.get("class") for one in elements(meter) if one.tag == "rect"]
     assert bars == ["lit"] * 4 + ["track"], bars
 
