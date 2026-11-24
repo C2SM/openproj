@@ -16,7 +16,7 @@ from ..vendor import _font_uri
 from .controls import _PLAN_FACETS
 from .env import _compiled
 from .hill import hill_geometry
-from .icons import _icon_uri, mark_svg
+from .icons import MARK_COLOUR, _icon_uri, mark_svg
 from .keys import keys_for
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
 from .tokens import (
@@ -765,13 +765,18 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
    587px wide and every page under it scrolled horizontally. */
 nav { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin-bottom: 1rem;
       font-size: 13px; align-items: center; }
-/* The plan's mark and name, in the ink of the page and not of a link: it is a
-   label, and the accent means "here" in this row. The name folds away on a phone
-   (see the 40rem block) and the mark stays, which is the half that tells two
-   plans apart at a glance. */
-.planmark { display: inline-flex; align-items: center; gap: .4rem;
-            font-weight: 600; color: var(--fg); }
+/* The plan's mark and name, in the ink of the page rather than a link's: the
+   accent means "here" in this row, and this is the plan, not a view of it.
+   `nav a.planmark` to outrank `nav a, nav a:visited` below, (0,1,2) and (0,2,2)
+   against (0,0,2) and (0,1,2). The name folds away on a phone (see the 40rem
+   block) and the mark stays, which is the half that tells two plans apart. */
+nav a.planmark, nav a.planmark:visited {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-weight: 600; color: var(--fg); text-decoration: none;
+}
+nav a.planmark:hover .planname { text-decoration: underline; }
 .planmark-icon { width: 16px; height: 16px; flex: none; }
+.navsep { align-self: stretch; width: 1px; background: var(--line-strong); }
 /* Every link, not only the nav. The browser's default blue and its visited
    purple are both close to unreadable on a dark ground, and a link is the most
    clicked thing on every one of these pages. */
@@ -2436,12 +2441,16 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     and from nothing else, so what a screen reader announces and what a reader
     sees cannot come apart. Whitespace between the links is a whitespace-only text
     node in a flex container, which is not a flex item and draws nothing. -#}
-{#- The plan's mark and name, first in the nav. jcanton, 2026-11-24: the tab is
-    the only place the plan was named, and a full-screen window shows no tab.
-    Not a link: Records is the next item and already goes home, and a second
-    way there would be a second stop for every keyboard and screen reader on
-    every page. -#}
-<nav><span class="planmark">{{ mark }}<span class="planname">{{ plan }}</span></span>
+{#- The plan's mark and name, first in the nav, and a link home. jcanton,
+    2026-11-24: the tab was the only place the plan was named and a full-screen
+    window shows no tab; then, on seeing it, "instinctively I'd like to click it
+    to go to a home page". Home is Records, the page the tool opens on. No
+    `data-keys`: Records already answers to its letter, and one letter is one
+    place. `--plan` is the plan's colour for the bar's own rules, already held
+    to `#rrggbb` by `model.plan_colour`. -#}
+<nav style="--plan: {{ plan_colour }}"><a class="planmark" href="{{ links.records }}">
+  {{- mark }}<span class="planname">{{ plan }}</span></a>
+<span class="navsep" aria-hidden="true"></span>
 {%- for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
   {%- if item.current %} aria-current="page"{% endif %}>{{ item.label }}</a>
 {% endfor %}<span class="corner">
@@ -5477,6 +5486,7 @@ def _page(
     return _compiled(_SHELL).render(
         title=f"{title} · {plan}",
         plan=plan,
+        plan_colour=face.colour or MARK_COLOUR,
         mark=mark_svg(face.colour),
         content=Markup(content),
         style=Markup(style),

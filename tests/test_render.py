@@ -5759,7 +5759,7 @@ const way = off && off.querySelector('p:last-of-type a');
 return {
   viewport: vw,
   sideways: root.scrollWidth - vw,
-  nav: [...document.querySelectorAll('nav > a')].map(seen),
+  nav: [...document.querySelectorAll('nav > a[data-keys]')].map(seen),
   heading: seen(off && off.querySelector('h1')),
   said: seen(off && off.querySelector('p')),
   codes: off ? [...off.querySelectorAll('p code')].map(seen) : [],
@@ -6033,7 +6033,7 @@ _GEOMETRY = """
 const nav = document.querySelector('nav').getBoundingClientRect();
 const box = document.querySelector('[data-fills]').getBoundingClientRect();
 const here = document.querySelector('nav a[aria-current="page"]');
-const other = [...document.querySelectorAll('nav a')].find(a => a !== here);
+const other = [...document.querySelectorAll('nav a[data-keys]')].find(a => a !== here);
 const at = el => { const r = el.getBoundingClientRect();
                    return {top: r.top, bottom: r.bottom, height: r.height}; };
 return {
