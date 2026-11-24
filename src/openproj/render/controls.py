@@ -16,7 +16,6 @@ from .tokens import (
     HISTORY_MARKS,
     KINDS,
     PEOPLE_FIELDS,
-    PRIORITIES,
     TEMPLATE_ART,
     TEMPLATES,
     _human,
@@ -118,7 +117,11 @@ _FACETS = """
           beside it is what a person reads. They are the same string for a status
           and a login and are not for a project, whose values are ids — `Project:
           proj-370001` is a menu that asks you to know the plan by heart. -#}
+      {#- A priority wears its meter here too, so a filter reads as the column it
+          narrows: jcanton, 2026-11-24, "same meter everywhere". `pri` draws
+          nothing for a word that is not a rung. -#}
       <label><input type="checkbox" value="{{ value }}">{{
+        pri(value) if field == "priority" else "" }}{{
         titles.get(value) or value|human }}</label>{% endfor %}
     </div>
   </div>
@@ -4229,21 +4232,14 @@ for (const input of document.querySelectorAll('[data-suggest]')) attachSuggest(i
 # control on the detail page or the create page had a name.
 _CONTROL = """
 {% if f.type == "priority" %}
-<select name="{{ f.name }}" id="{{ f.id }}" data-type="text" class="field"
-        {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}
-        {% if f.disabled %}disabled{% endif %}
-        {% if f.gates %}data-required-at="{{ f.gates|join(' ') }}"{% endif %}>
-  {#- The mark in front of the word, the same one the graph draws on a node and
-      the table draws in a cell — jcanton, 2026-08-20: "can we have the status and
-      priority icons and colours also in the dropdowns for editing a record".
-      Status used to share this branch and left when it became the hill; priority
-      keeps the native `<select>`, and the mark-as-text is the honest cost of
-      keeping one. -#}
-  {% for s in priorities %}
-  <option value="{{ s }}" {% if s == f.value %}selected{% endif %}>{{
-    mark(f.type, s) }}{{ s|human }}</option>
-  {% endfor %}
-</select>
+{#- The meter in front of the word, the same one the table draws in a cell —
+    jcanton, 2026-08-20: "can we have the status and priority icons and colours
+    also in the dropdowns for editing a record". The app's own picker
+    (`rung_picker`), whose face is the chip the read view shows and whose list
+    the page draws, so the meter is in it in every browser. -#}
+{{ rungpick("priority", f.value, name=f.name, id=f.id, classes="field", disabled=f.disabled,
+           extra={"aria-describedby": describedby,
+                  "data-required-at": (f.gates or [])|join(' ')}) }}
 {% elif f.type == "bool" %}
 <input type="checkbox" name="{{ f.name }}" id="{{ f.id }}" data-type="bool" class="field"
        {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}
@@ -4408,7 +4404,7 @@ def _control_html(
     # `aria-describedby` is a property of a control, and a template where
     # three of four branches silently drop it is the copy that goes stale the
     # day a fourth hint is written.
-    return _fragment(_CONTROL, f=field, priorities=PRIORITIES, describedby=describedby)
+    return _fragment(_CONTROL, f=field, describedby=describedby)
 
 
 def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> dict:

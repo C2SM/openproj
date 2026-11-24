@@ -96,7 +96,7 @@ def page(client: TestClient) -> str:
 
 def controls(html: str) -> set[str]:
     """Every named form control on the page."""
-    return set(re.findall(r'<(?:input|textarea|select)[^>]*\bname="([^"]+)"', html))
+    return set(re.findall(r'<(?:input|textarea|select|button)[^>]*\bname="([^"]+)"', html))
 
 
 def control(html: str, name: str) -> str:
@@ -738,7 +738,10 @@ def test_the_kind_is_read_before_the_name_on_every_page_that_has_one(client: Tes
     # stated where it can be changed, and drawn in the one way a word cannot be —
     # `shaping` and `in_progress` are one rung apart in a list and opposite sides
     # of a hill.
-    assert '<span class="chip st-' not in detail, (
+    # The shell's status list is chips on every page, a picker's rows and not a
+    # statement about this record, so it is left out of the question.
+    stated = re.sub(r'<ul id="stpop".*?</ul>', "", detail, flags=re.S)
+    assert '<span class="chip st-' not in stated, (
         "the status is a hill on this page, and a chip is the thing it replaced"
     )
     facts = detail.index('<dl id="facts">')
@@ -1264,7 +1267,7 @@ def test_every_control_on_the_form_has_a_name(page: str):
     assert named, "the labels are the whole of the fix"
     for control_id, word in named.items():
         assert control_id.startswith(f"{TASK}-"), control_id
-        assert re.search(rf'<(?:input|select|textarea)[^>]*\bid="{control_id}"', page), word
+        assert re.search(rf'<(?:input|select|textarea|button)[^>]*\bid="{control_id}"', page), word
     for field in ("owner", "developers", "reviewers", "priority", "cycle"):
         assert named[f"{TASK}-{field}"] == LABELS[field], field
 

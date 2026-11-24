@@ -9,7 +9,16 @@ from jinja2 import Environment, Template
 from markupsafe import Markup
 
 from ..model import what_json_can_carry
-from .tokens import LABELS, PRIORITY_GLYPH, STATUS_GLYPH, _human, _read_date, _status_class
+from .tokens import (
+    LABELS,
+    STATUS_GLYPH,
+    _human,
+    _read_date,
+    _status_class,
+    priority_bars,
+    rung_chip,
+    rung_picker,
+)
 
 # The three characters that can end a `<script>` block, spelled as JSON escapes.
 # A translation table rather than a chain of `str.replace`: same result, and this
@@ -159,18 +168,15 @@ _ENV.filters["human"] = _human
 # The mark that says the same thing the colour says, for every legend and every
 # shape that draws one. Unknown values get nothing rather than a box glyph.
 _ENV.globals["glyph"] = lambda status: STATUS_GLYPH.get(str(status), "")
-# The five slots, of which `level` are lit. A macro rather than a string built in
-# each template, so the markup the browser writes and the markup Jinja writes are
-# the same markup.
-# The mark that goes in front of a word where only a string will do. One function
-# for both ladders, so a template asks for "the mark for this value" rather than
-# knowing which map to reach into.
-_ENV.globals["mark"] = lambda kind, value: (
-    f"{STATUS_GLYPH.get(str(value), '')} "
-    if kind == "status"
-    else f"{PRIORITY_GLYPH.get(str(value), '')} "
-)
-_ENV.globals["pri"] = lambda value: PRIORITY_GLYPH.get(str(value), "")
+# The bars, of which the rung's level are lit. `priority_bars` is also what the
+# browser is handed, so the markup the browser writes and the markup Jinja writes
+# are the same markup.
+_ENV.globals["pri"] = priority_bars
+# A priority or a status, picked: the button whose list the page draws
+# (`rung_picker`).
+_ENV.globals["rungpick"] = rung_picker
+# The chip a priority or a status is drawn as, the list rows' and the picker's face.
+_ENV.globals["rungchip"] = rung_chip
 
 
 _ENV.globals["on"] = _read_date

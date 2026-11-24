@@ -24,10 +24,15 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
-    PRIORITY_GLYPH,
+    PRIORITY_LEVEL,
+    RUNG_CHEVRON,
+    RUNG_LIST_ID,
+    RUNG_VOCAB,
+    RUNG_WIDTH,
     STATUS_GLYPH,
     STATUSES,
     card_facts,
+    priority_bars,
 )
 
 
@@ -1739,23 +1744,8 @@ span.bar > span { display: block; height: 100%; background: var(--accent); }
     hover card — "why type and priority chips look different from the status
     ones, the border!". Three chips on one line that are three shapes read as
     three kinds of thing. -#}
-{#- `select.pick` beside the chip: a second RULE and not a second selector on
-    the first one, which cost a round — `test_a_status_carries_a_chip_palette_as_
-    well_as_a_fill` looks for the literal `.chip.st-thinking {`, and a selector
-    list moves the brace off the end of it. Two rules say the same thing to a
-    browser and leave that claim readable.
-
-    Generated from the same loop rather than The betting table's status column
-    was a chip and is a picker now — it has to be chosen, not typed, because a
-    ladder is a closed set — and a control drawn in the page's own ink would have
-    taken the ladder away to buy editability. Five hand-written rules there would
-    be a second copy of this ladder, which is the thing this loop exists to
-    prevent: a rung added in `STATUSES` must not need a second edit to get a
-    colour. -#}
 {% for s in statuses %}
 .chip.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ s }}-text);
-                   border: 1px solid var(--st-{{ s }}-line); }
-select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ s }}-text);
                    border: 1px solid var(--st-{{ s }}-line); }
 {%- endfor %}
 /* Kind never competes with status for attention: no hue, only a hairline. One
@@ -1825,18 +1815,112 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    is believed. The swatch carries the glyph too: colour is no longer the only
    channel on a bar or a node, so a key to the colour alone keys half the
    drawing. */
-/* PRIORITY, AS ONE BLOCK. A character whose height is the rung — `\u2581` up to
-   `\u2588` — in the rung's own colour, on the text baseline of whatever word it
-   sits beside. It is the second channel for a fact the graph also draws as line
-   thickness, and jcanton had seen two earlier answers to the same question: five
-   `<i>` elements in an `inline-flex` meter, which had to be aligned against a
-   word inside a chip inside a cell inside a column that tightens, and then no
-   mark at all in menus, where an element cannot go.
+/* PRIORITY, AS A METER. Five bars rising, all of them always drawn: the lit ones
+   in the rung's colour (`currentColor`, which the chip and the legend key set
+   per rung) and the rest a faint track. `priority_bars` in `tokens.py` carries
+   the argument, and why it is not a block character any more.
 
-   `PRIORITY_GLYPH` in `render.py` carries the argument for the characters, the
-   fallback they rely on, and what it costs.
+   One SVG, so it is one inline box on the word's line and not five elements to
+   align inside a chip inside a cell. Pixel-sized, because the bars are two whole
+   pixels wide with one between them, and an em-sized meter at 12px lands each
+   bar across two device pixels and greys it out. */
+.pribars { width: 14px; height: 11px; flex: none; vertical-align: -1px; }
+/* Half way from `--line` to `--line-strong`. `--line` alone is the rule between
+   rows and on the dark ground it was nearly the ground, so a very-low meter read
+   as one bar and nothing. Mixed, it is still lighter than every rung on the light
+   page and darker than every rung on the dark one. */
+:root { --pri-track: color-mix(in oklab, var(--line) 50%, var(--line-strong)); }
+.pribars .track { fill: var(--pri-track); }
+.pribars .lit { fill: currentColor; }
+/* The rung's colour is on the drawing and not on whatever holds it, so a chip, an
+   `<option>`, a filter's checkbox and a menu item all light it the same way. */
+.pribars[data-rung="very_low"]  { color: var(--pri-very-low); }
+.pribars[data-rung="low"]       { color: var(--pri-low); }
+.pribars[data-rung="medium"]    { color: var(--pri-medium); }
+.pribars[data-rung="high"]      { color: var(--pri-high); }
+.pribars[data-rung="very_high"] { color: var(--pri-very-high); }
+/* A PRIORITY OR A STATUS, PICKED. A button whose face is the chip it replaces plus
+   a chevron, and the page's own list of the field's rungs hanging off the body,
+   each row the same chip (`rung_picker` and `rung_chip` in `tokens.py`, and the
+   controller in the shell's script). It replaced a `<select>`, whose open list a
+   browser draws where the mark cannot go: Firefox in its parent process without
+   the page's fonts, Safari as a native menu.
 
-   The colour is on the mark and not on the chip: a chip with a coloured ground
+   **One object in three states.** jcanton, 2026-11-24, with screenshots of a
+   small uppercase chip, a taller sans button and a third shape for the list, and
+   a table row that grew when its cell went into edit. So the button has no box
+   of its own: no border, no padding, no font, no line height, every one of them
+   inherited, so what is drawn is the chip, at the chip's size, and entering edit
+   adds the chevron inside its border and a focus ring and nothing else. The
+   shell's `button` rule sets all five, and `.rungpick` (0,1,0) outweighs it;
+   `button:hover` is (0,1,1) and outweighs that, hence the hover rule here. */
+.rungpick { appearance: none; background: none; border: 0; padding: 0; margin: 0;
+            font: inherit; color: inherit; line-height: inherit; text-align: left;
+            cursor: pointer; border-radius: 2px; vertical-align: baseline; }
+.rungpick:hover { color: inherit; background: none; }
+.rungpick .chip { cursor: inherit; }
+.rungpick-chev {
+  display: inline-block; width: .3em; height: .3em; margin: 0 .1em .2em .5em;
+  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+}
+/* Where the chevron is. Seen in a picker. Reserved and unseen in a chip that can
+   become one: an editable table cell's and the edit card's, so that chip is
+   already the picker's width and entering edit moves nothing. Absent from every
+   other chip (a read-only cell, the hover card), which has no picker to make
+   room for. Direct children throughout, so a picker inside an editable cell is
+   still a picker: the cell's own chip is `td.edit > .chip`, the picker's is
+   `td.edit > .rungpick > .chip`. */
+.chip > .rungpick-chev { display: none; }
+.rungpick > .chip > .rungpick-chev { display: inline-block; }
+td.edit > .chip > .rungpick-chev, .chip.popopens > .rungpick-chev,
+.rungpop .chip > .rungpick-chev, .popchip > .chip > .rungpick-chev {
+  display: inline-block; visibility: hidden;
+}
+/* ONE WIDTH PER VOCABULARY. Chips stacked in a column read as a ragged edge when
+   each is as wide as its own word, so where they stack, every chip of a field is
+   as wide as that field's longest word (`RUNG_WIDTH`, derived from the labels):
+   the table's two columns, the picker's face and every row of its list, the
+   edit card. The text is uppercase monospace, so a word of n characters is
+   exactly n `ch` plus the chip's letter spacing after each. Left-aligned, so the
+   marks line up. Inline chips in running text (the hover card's header, the
+   record page's) keep their own width: they do not stack. */
+:root { --rungword-priority: {{ rung_width.priority }};
+        --rungword-status: {{ rung_width.status }}; }
+td[data-col="priority"] > .chip .chipword, .rungpick[data-vocab="priority"] .chipword,
+.rungpop[data-vocab="priority"] .chipword, #pop .card-chips .chip[data-field="priority"] .chipword,
+.popchip[data-vocab="priority"] .chipword {
+  display: inline-block; min-width: calc(var(--rungword-priority) * (1ch + .04em));
+}
+td[data-col="status"] > .chip .chipword, .rungpick[data-vocab="status"] .chipword,
+.rungpop[data-vocab="status"] .chipword, #pop .card-chips .chip[data-field="status"] .chipword,
+.popchip[data-vocab="status"] .chipword {
+  display: inline-block; min-width: calc(var(--rungword-status) * (1ch + .04em));
+}
+/* The record page makes its fields blocks; this one is a chip, as wide as itself,
+   in the place the read view's chip stands. */
+.rungpick.field { width: fit-content; }
+/* The list. Fixed and hanging off the body, so the table's scroll box and the
+   edit card cannot clip it, and placed by the controller under its button and
+   inside the viewport, which is how the right-click menu (`#pop`, z-index 25)
+   is placed. Above that menu and the hover card (`#card`, 20), which can both be
+   open where it opens. At least as wide as the button (set by the controller). */
+.rungpop {
+  position: fixed; z-index: 1200; margin: 0; padding: .2rem; list-style: none;
+  width: max-content; max-width: calc(100vw - 16px); overflow-y: auto; box-sizing: border-box;
+  border: 1px solid var(--line-strong); border-radius: 4px;
+  background: var(--surface); color: var(--fg); box-shadow: 0 6px 18px rgb(0 0 0 / .18);
+}
+.rungpop [role="option"] { display: block; padding: .15rem .3rem; border-radius: 3px;
+                           cursor: pointer; white-space: nowrap; }
+.rungpop [role="option"][hidden] { display: none; }
+/* Where Enter would land, which the pointer moves as well as the keys: one
+   highlight for both, so mouse and keyboard never disagree. A tint of the accent
+   and not the menu's full accent fill, which would fight the chip's own colours. */
+.rungpop [role="option"].on { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+/* Which rung is held: a bar at the row's edge, since the chip's own weight and
+   size are the thing the three states have to share. */
+.rungpop [role="option"][aria-selected="true"] { box-shadow: inset 2px 0 0 var(--accent); }
+/* The colour is on the mark and not on the chip: a chip with a coloured ground
    in the column next to Status would be two ladders competing at one weight, and
    the ground is what Status uses. */
 /* In a table cell the mark leads and the word follows: the mark is what the eye
@@ -1847,13 +1931,7 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
    No hue on the ground, for the reason above: the mark carries the colour. */
 .chip.pri { color: var(--kind-ink); border: 1px solid var(--kind-line);
             padding: .1rem .4rem; }
-.chip.pri .chipmark { opacity: 1; font-size: 15px; line-height: 0;
-                      vertical-align: -1px; }
-.chip.pri-very_low .chipmark  { color: var(--pri-very-low); }
-.chip.pri-low .chipmark       { color: var(--pri-low); }
-.chip.pri-medium .chipmark    { color: var(--pri-medium); }
-.chip.pri-high .chipmark      { color: var(--pri-high); }
-.chip.pri-very_high .chipmark { color: var(--pri-very-high); }
+.chip.pri .chipmark { opacity: 1; }
 /* The status mark inside the chip it has always had. Slightly dimmed, because
    the word is the thing being read and the mark is what finds it — a glyph at
    full weight beside a short word reads as two words. */
@@ -1867,6 +1945,13 @@ table.tight-status td[data-col="status"] .chip { padding: .1rem .3rem; }
 table.tight-priority td[data-col="priority"] .chipword { display: none; }
 table.tight-priority td[data-col="priority"] .chipmark { margin-right: 0; }
 table.tight-priority td[data-col="priority"] .chip.pri { padding: .1rem .3rem; }
+/* And the chevron the cell's chip reserves goes with the word. It is reserved so
+   that opening the picker moves nothing, which is a promise about a column wide
+   enough for the word; a column down to its mark has nowhere to keep it, and the
+   reserve alone hung the priority chip 4px out of the cell. (0,4,2), over the
+   reserve's `td.edit > .chip > .rungpick-chev` at (0,3,1). */
+table.tight-status td[data-col="status"] > .chip > .rungpick-chev,
+table.tight-priority td[data-col="priority"] > .chip > .rungpick-chev { display: none; }
 
 /* One grid for both rows: the row's name, then one column per rung. Each list is
    `display: contents`, so its keys are the grid's own items and a key in one row
@@ -1942,12 +2027,7 @@ table.tight-priority td[data-col="priority"] .chip.pri { padding: .1rem .3rem; }
    It sits ON the border rather than inside it, because a 6px border on a 12px
    swatch leaves nothing in the middle — the thickest rung was a box with its own
    meter squeezed out of it. */
-.legend .swatch.pri .primark { font-size: 12px; line-height: 1; }
-.legend .swatch.pri-very_low .primark  { color: var(--pri-very-low); }
-.legend .swatch.pri-low .primark       { color: var(--pri-low); }
-.legend .swatch.pri-medium .primark    { color: var(--pri-medium); }
-.legend .swatch.pri-high .primark      { color: var(--pri-high); }
-.legend .swatch.pri-very_high .primark { color: var(--pri-very-high); }
+.legend .swatch.pri .primark { display: flex; line-height: 1; }
 .legend .swatch.pri-very_high { border-width: 6px; }
 .legend .swatch.pri-high      { border-width: 4px; }
 .legend .swatch.pri-medium    { border-width: 2px; }
@@ -2536,6 +2616,21 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     instead: the toolbar drew its buttons into a script tag, and the editor's own
     tests caught it as an SVG laid out at 0x0. -#}
 <script id="chipmarks" type="application/json">{{ cardmarks|tojson }}</script>
+{#- One list per field every picker on the page opens (`rung_picker`), and the
+    picker itself in a template per field, for the editors a script builds: the
+    table's cell and the edit card clone it rather than writing a second copy of
+    the markup. Hanging off the body and fixed, so no scroll box or card clips it.
+    Every row is the field's chip (`rung_chip`). -#}
+{%- for field, list_id in rung_lists.items() %}
+<ul id="{{ list_id }}" class="rungpop" role="listbox" data-vocab="{{ field }}"
+    aria-label="{{ field|capitalize }}" hidden>
+  {%- for word in rung_vocab[field] %}
+  <li id="{{ list_id }}-{{ word }}" role="option" data-value="{{ word }}"
+      aria-selected="false">{{ rungchip(field, word, rungchev) }}</li>
+  {%- endfor %}
+</ul>
+<template id="rungpick-{{ field }}">{{ rungpick(field) }}</template>
+{%- endfor %}
 {#- The hill's geometry, beside them and for the same reason again. The detail
     page's hill is drawn in Jinja and the card's is drawn in JavaScript, and this
     is the one set of numbers both read: a second implementation of the curve is
@@ -3207,6 +3302,260 @@ const CARD_MARKS = (() => {
 function cardMark(ladder, value) {
   return (CARD_MARKS[ladder] || {})[value] || '';
 }
+// The priority meter, as markup: the server's own drawing, picked by key, so it
+// is written into a page unescaped and is still never anything a person typed.
+// A word that is not a rung picks nothing.
+function priBars(priority) {
+  const bars = CARD_MARKS.bars || {};
+  return Object.prototype.hasOwnProperty.call(bars, priority) ? bars[priority] : '';
+}
+
+// **A PRIORITY OR A STATUS, PICKED** (`rung_picker` in `tokens.py`). One controller
+// for every picker on every page, parameterised by the field its button names
+// (`data-vocab`) and delegated from the document, so the editors the table and
+// the edit card build later need nothing wired of their own.
+//
+// Focus stays on the button while the list is open, and the row the keyboard is
+// on is named by `aria-activedescendant` on it: the select-only combobox. That is
+// the whole of why the table's blur-to-commit keeps working, since nothing blurs
+// while somebody picks, and why a press on a row is `preventDefault`ed on the way
+// down. The keys are taken in the capture phase while the list is open, so no
+// page's own Enter, Escape or arrows see a key the list answered.
+//
+// Built on the People page's icon picker (a button and a `role="listbox"`), with
+// the list hung off the body instead of beside the button, as the right-click
+// menu is, so neither the table's scroll box nor the edit card clips it.
+let RUNG_FOR = null;   // the button a list is open for
+let RUNG_AT = 0;       // the row the keyboard and the pointer are on
+const rungList = button => document.getElementById(button.getAttribute('aria-controls'));
+// The rows this button may pick: its field's list, narrowed to what its record's
+// kind accepts (`data-offers`), as the select's options were.
+function rungRows(button) {
+  const list = rungList(button);
+  if (!list) return [];
+  const offers = (button.dataset.offers || '').split(' ').filter(Boolean);
+  const rows = [...list.querySelectorAll('[role="option"]')];
+  for (const row of rows) row.hidden = !!offers.length && !offers.includes(row.dataset.value);
+  return rows.filter(row => !row.hidden);
+}
+
+// What the button shows: the row's own chip, cloned from the list the server
+// drew, with the chevron put back inside it, so the face is the same markup as
+// the row it was picked from. A value no row holds (whatever a hand-edited file
+// holds) keeps the chip the server drew, its word rewritten.
+function rungFace(button) {
+  const chip = button.querySelector('.chip');
+  const chevron = button.querySelector('.rungpick-chev');
+  const list = rungList(button);
+  const row = list && [...list.querySelectorAll('[role="option"]')]
+    .find(one => one.dataset.value === button.value);
+  if (row) {
+    // The row reserves the chevron unseen, so it is the button's width; the face
+    // wears the button's own, seen.
+    const face = row.querySelector('.chip').cloneNode(true);
+    const reserved = face.querySelector('.rungpick-chev');
+    if (reserved) reserved.remove();
+    if (chevron) face.append(chevron);
+    // The chip is the button's only child; the chevron is inside it.
+    button.replaceChildren(face);
+  } else if (chip) {
+    const word = chip.querySelector('.chipword');
+    if (word) word.textContent = button.value || button.dataset.nothing || '—';
+  }
+}
+
+// The chip a field's value is drawn as, cloned from that field's list, which the
+// server drew: the right-click menu's status and priority items wear it. Found by
+// comparing values rather than by a selector built from one. Null for a value no
+// row holds.
+function rungChip(field, value) {
+  const list = document.querySelector(`.rungpop[data-vocab="${field}"]`);
+  const row = list && [...list.querySelectorAll('[role="option"]')]
+    .find(one => one.dataset.value === value);
+  return row ? row.querySelector('.chip').cloneNode(true) : null;
+}
+
+// A picker for an editor a script builds, cloned from the shell's template for
+// that field. `content` is where a browser keeps a template's children; the node
+// harness keeps them as ordinary children, and the picker is the same either way.
+function rungPicker(field, value, label, offers) {
+  const template = document.getElementById('rungpick-' + field);
+  const button = (template.content || template).firstElementChild.cloneNode(true);
+  button.value = value || '';
+  if (label) button.setAttribute('aria-label', label);
+  if (offers && offers.length) button.dataset.offers = offers.join(' ');
+  rungFace(button);
+  return button;
+}
+
+function rungMark(index) {
+  const rows = rungRows(RUNG_FOR);
+  if (!rows.length) return;
+  RUNG_AT = (index + rows.length) % rows.length;
+  rows.forEach((row, i) => row.classList.toggle('on', i === RUNG_AT));
+  RUNG_FOR.setAttribute('aria-activedescendant', rows[RUNG_AT].id);
+  rows[RUNG_AT].scrollIntoView({block: 'nearest'});
+}
+
+// Under the button, or over it when there is more room above, at least as wide
+// as the button, and inside the viewport on both axes with 8px to spare, which
+// is what a phone needs.
+function rungPlace() {
+  if (!RUNG_FOR) return;
+  const list = rungList(RUNG_FOR);
+  const at = RUNG_FOR.getBoundingClientRect();
+  const room = 8;
+  list.style.minWidth = `${Math.ceil(at.width)}px`;
+  list.style.maxHeight = '';
+  const tall = list.offsetHeight, wide = list.offsetWidth;
+  const below = innerHeight - at.bottom - room, above = at.top - room;
+  const down = below >= tall || below >= above;
+  list.style.maxHeight = `${Math.max(80, down ? below : above) - 2}px`;
+  const height = Math.min(tall, list.offsetHeight);
+  list.style.top = `${down ? at.bottom + 2 : at.top - 2 - height}px`;
+  // Shifted left by how far the rows' chips sit inside the list, so they stand
+  // exactly under the button's chip: one width, one left edge.
+  const first = list.querySelector('[role="option"]:not([hidden]) .chip');
+  const inset = first ? first.getBoundingClientRect().left - list.getBoundingClientRect().left : 0;
+  list.style.left = `${Math.max(room, Math.min(at.left - inset, innerWidth - wide - room))}px`;
+}
+
+function rungOpen(button) {
+  const list = rungList(button);
+  if (!list || button.disabled) return;
+  if (RUNG_FOR && RUNG_FOR !== button) rungClose();
+  // The hover card shares the space the list opens into, and a card drawn over
+  // the list is a card over the thing being picked from. It goes, and stays
+  // gone while a list is open (`showCard` asks). Now and not after the grace a
+  // pointer leaving a row gets, and with any card already queued cancelled.
+  if (typeof hideCardNow === 'function') hideCardNow();
+  RUNG_FOR = button;
+  const rows = rungRows(button);
+  for (const row of rows)
+    row.setAttribute('aria-selected', String(row.dataset.value === button.value));
+  list.setAttribute('aria-label', button.getAttribute('aria-label') || list.dataset.vocab);
+  list.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  rungPlace();
+  rungMark(Math.max(0, rows.findIndex(row => row.dataset.value === button.value)));
+}
+
+function rungClose() {
+  if (!RUNG_FOR) return;
+  const list = rungList(RUNG_FOR);
+  RUNG_FOR.setAttribute('aria-expanded', 'false');
+  RUNG_FOR.removeAttribute('aria-activedescendant');
+  if (list) list.hidden = true;
+  RUNG_FOR = null;
+}
+
+// Written the way a select writes: the value, then `input` and `change` from the
+// control, bubbling, so the record page's dirty state, the cycle page's staging
+// and the edit card's chip all answer exactly as they did to the select.
+function rungPick(row) {
+  const button = RUNG_FOR;
+  rungClose();
+  if (!button || !row || button.value === row.dataset.value) return;
+  button.value = row.dataset.value;
+  button.dispatchEvent(new Event('input', {bubbles: true}));
+  button.dispatchEvent(new Event('change', {bubbles: true}));
+}
+
+// The next row whose word starts with the letter, from the one after the
+// keyboard's, as a select's type-ahead goes.
+function rungTypeAhead(letter) {
+  const rows = rungRows(RUNG_FOR);
+  for (let step = 1; step <= rows.length; step++) {
+    const i = (RUNG_AT + step) % rows.length;
+    if (rows[i].textContent.trim().toLowerCase().startsWith(letter)) return rungMark(i);
+  }
+}
+
+if (document.querySelector('.rungpop')) {
+  // Any write to `value` redraws the face, whoever made it: a pick, the record
+  // page's Reset, a refresh that redraws a row. Watched rather than routed
+  // through one setter, because pages assign `.value` to every control alike.
+  // Guarded, because a constructor that is missing throws, and a throw here would
+  // stop everything after it in the shell's script on every page. The node
+  // harness has none; a picker there still works and only skips the redraw.
+  if (typeof MutationObserver === 'function')
+    new MutationObserver(changes => {
+      for (const change of changes)
+        if (change.target.matches && change.target.matches('.rungpick')) rungFace(change.target);
+    }).observe(document, {subtree: true, attributes: true, attributeFilter: ['value']});
+
+  document.addEventListener('click', event => {
+    const button = event.target.closest && event.target.closest('.rungpick');
+    if (!button || !button.isConnected) return;
+    // A click the keyboard made (`detail` 0) on a button that no longer has the
+    // focus is the tail of a key a page already answered: Enter in the table's
+    // cell commits and blurs, and the button's own activation follows it.
+    // Opening the list then would hang it off a button about to be redrawn.
+    if (!event.detail && document.activeElement !== button) return;
+    if (RUNG_FOR === button) rungClose(); else rungOpen(button);
+  });
+  for (const list of document.querySelectorAll('.rungpop')) {
+    list.addEventListener('mousedown', event => event.preventDefault());
+    list.addEventListener('click', event => {
+      const row = event.target.closest('[role="option"]');
+      if (row) rungPick(row);
+    });
+    // The pointer moves the row Enter would pick, as a native list's does, so
+    // the highlight under the mouse and the one the arrows move are one.
+    list.addEventListener('mousemove', event => {
+      const row = event.target.closest('[role="option"]');
+      if (!row || !RUNG_FOR) return;
+      const at = rungRows(RUNG_FOR).indexOf(row);
+      if (at >= 0 && at !== RUNG_AT) rungMark(at);
+    });
+  }
+  document.addEventListener('pointerdown', event => {
+    if (!RUNG_FOR || RUNG_FOR.contains(event.target)) return;
+    if (event.target.closest && event.target.closest('.rungpop')) return;
+    rungClose();
+  }, true);
+  document.addEventListener('focusout', event => {
+    if (RUNG_FOR && event.target === RUNG_FOR) rungClose();
+  }, true);
+  addEventListener('resize', rungPlace);
+  document.addEventListener('scroll', event => {
+    if (RUNG_FOR && !(event.target.closest && event.target.closest('.rungpop'))) rungPlace();
+  }, true);
+
+  document.addEventListener('keydown', event => {
+    const button = event.target.closest && event.target.closest('.rungpick');
+    if (!button) return;
+    const key = event.key;
+    const letter = key.length === 1 && /\S/.test(key) && !event.ctrlKey && !event.metaKey
+      && !event.altKey;
+    if (RUNG_FOR !== button) {
+      // Closed: the arrows and a letter open it, as on a select. Enter and Space
+      // are left to the button, whose click opens it, and to the page, whose
+      // Enter on a closed control commits it in the table and takes the field in
+      // the edit card, as it did on the select.
+      if (key === 'ArrowDown' || key === 'ArrowUp' || letter) {
+        event.preventDefault();
+        event.stopPropagation();
+        rungOpen(button);
+        if (letter) rungTypeAhead(key.toLowerCase());
+      }
+      return;
+    }
+    // Open: Tab closes without picking and goes where it was going.
+    if (key === 'Tab') { rungClose(); return; }
+    const rows = rungRows(button);
+    if (key === 'ArrowDown') rungMark(RUNG_AT + 1);
+    else if (key === 'ArrowUp') rungMark(RUNG_AT - 1);
+    else if (key === 'Home') rungMark(0);
+    else if (key === 'End') rungMark(rows.length - 1);
+    else if (key === 'Enter' || key === ' ') rungPick(rows[RUNG_AT]);
+    else if (key === 'Escape') rungClose();
+    else if (letter) rungTypeAhead(key.toLowerCase());
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+}
 
 // Bodies already fetched, by id. A pointer crossing a column of rows asks for the
 // same document several times a second otherwise — and the answer cannot change
@@ -3360,10 +3709,16 @@ function cardHtml(row, extra) {
   // them. It says nothing on a card, which is only read; it is what the box that
   // edits a record finds the thing you clicked by, and the card and that box are
   // the same markup drawn by this one function.
-  const chip = (klass, glyph, word, field) =>
+  // `mark` is markup, already safe: a status glyph through `esc`, a priority
+  // meter out of `priBars`.
+  // A status or a priority chip reserves the picker's chevron, unseen, so the edit
+  // card's chip is already the width its picker will be (`.rungpick-chev`).
+  const chip = (klass, mark, word, field) =>
     `<span class="chip ${klass}"${field ? ` data-field="${field}"` : ''}>` +
-    (glyph ? `<span class="chipmark" aria-hidden="true">${esc(glyph)}</span>` : '') +
-    `<span class="chipword">${esc(word)}</span></span>`;
+    (mark ? `<span class="chipmark" aria-hidden="true">${mark}</span>` : '') +
+    `<span class="chipword">${esc(word)}</span>` +
+    (field === 'status' || field === 'priority'
+      ? '<span class="rungpick-chev" aria-hidden="true"></span>' : '') + '</span>';
   //
   // **A chip per ladder this kind READS, filled or not.** It used to be a chip
   // per value the record happened to hold, which is right for a box that is only
@@ -3381,8 +3736,8 @@ function cardHtml(row, extra) {
     const value = row[name];
     if (!value) return chip('empty-chip', '', CARD_NOTHING, name);
     return name === 'status'
-      ? chip(stClass(value), cardMark('status', value), cardWord(value), 'status')
-      : chip(`pri pri-${esc(value)}`, cardMark('priority', value), cardWord(value), 'priority');
+      ? chip(stClass(value), esc(cardMark('status', value)), cardWord(value), 'status')
+      : chip(`pri pri-${esc(value)}`, priBars(value), cardWord(value), 'priority');
   };
   const marks = [
     chip(`kind-${esc(row.kind)}`, '', cardWord(row.kind)),
@@ -3409,6 +3764,9 @@ let cardShowing = null;
 // as a card that draws nothing.
 function showCard(row, x, y, extra) {
   if (!CARD || !row) return Promise.resolve();
+  // Not over an open picker's list (`rungOpen`): the card and the list open into
+  // the same space beside the row, and a card on top is a card over the choice.
+  if (RUNG_FOR) return Promise.resolve();
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardPinned = false;
@@ -5517,7 +5875,13 @@ def _page(
         words=HUMAN,
         # The marks that go with those words, for the hover card: one map per
         # ladder, so a card says the rung the same way on all three views.
-        cardmarks={"status": STATUS_GLYPH, "priority": PRIORITY_GLYPH},
+        # The priority meter as the server draws it, so a row the table draws
+        # in the browser is the markup a chip Jinja draws: `priBars` looks it up
+        # by key and builds nothing of its own.
+        cardmarks={
+            "status": STATUS_GLYPH,
+            "bars": {rung: str(priority_bars(rung)) for rung in PRIORITY_LEVEL},
+        },
         # And which facts a card lists under them, per kind. The same list the
         # right-click box draws its controls from, because they are one box:
         # `card_facts` asks `_editable_for` over a blank record of each kind.
@@ -5641,6 +6005,10 @@ def _page(
         # not about the page, and `pyproject.toml` and `__init__.py` have already
         # disagreed with each other and with the newest tag once.
         version=__version__,
+        rung_lists=RUNG_LIST_ID,
+        rung_vocab=RUNG_VOCAB,
+        rung_width=RUNG_WIDTH,
+        rungchev=RUNG_CHEVRON,
     )
 
 
