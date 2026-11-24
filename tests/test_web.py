@@ -6542,6 +6542,54 @@ def test_the_footer_links_the_plan_only_when_its_remote_is_on_github(
     assert head.attrs.get("data-plan") == linked, head.attrs
 
 
+@pytest.mark.parametrize(
+    ("remote", "plan_url", "linked"),
+    [
+        # A forge on the loopback: the push address is no page, so it is named.
+        (
+            "file:///srv/origin.git",
+            "https://git.ciccia.synology.me/jacopo/plan-d/",
+            "https://git.ciccia.synology.me/jacopo/plan-d",
+        ),
+        # Named, it wins over the page a GitHub remote would give.
+        (
+            "https://github.com/kilnlab/plan.git",
+            "https://mirror.example.org/kilnlab/plan",
+            "https://mirror.example.org/kilnlab/plan",
+        ),
+    ],
+)
+def test_a_plan_url_the_deployment_names_is_where_the_footer_links(
+    repo_path: Path, remote: str, plan_url: str, linked: str
+):
+    app = create_app(
+        repo_path, auth="dev", secret=SECRET, remote=remote, credentials=object(), plan_url=plan_url
+    )
+    page = TestClient(app).get("/table").text
+    (head,) = [el for el in elements(page) if el.attrs.get("id") == "planhead"]
+    assert head.attrs.get("data-plan") == linked, head.attrs
+    assert "srv/origin" not in page and "kilnlab/plan.git" not in page, "the remote reached a page"
+
+
+@pytest.mark.parametrize(
+    "plan_url",
+    [
+        "javascript:alert(1)",
+        "https://jacopo:f0rgej0@git.example.org/jacopo/plan",
+        "https://git.example.org/jacopo/plan?x=1",
+        "https://git.example.org/jacopo/plan#top",
+        "//git.example.org/jacopo/plan",
+        "ftp://git.example.org/jacopo/plan",
+        'https://git.example.org/jacopo/plan" onmouseover="x',
+    ],
+)
+def test_a_plan_url_that_is_not_a_repository_page_refuses_to_start(repo_path: Path, plan_url: str):
+    """Refused rather than dropped: dropped, it is a footer with no link and
+    nothing saying why. Userinfo would print a credential on every page."""
+    with pytest.raises(ValueError, match="OPENPROJ_PLAN_URL"):
+        create_app(repo_path, auth="dev", secret=SECRET, plan_url=plan_url)
+
+
 # --- the open pull requests, live -------------------------------------------
 
 

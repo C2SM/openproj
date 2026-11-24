@@ -1107,6 +1107,44 @@ def _demo(args) -> int:
         return _exit_aware_server(app, args.host, args.port).run() or 0
 
 
+def push_credential(environ: dict[str, str]) -> object | None:
+    """The credential the store pushes with: the GitHub App, a forge token, or none.
+
+    Both at once is refused rather than ranked. Each names a different host's way
+    of being let in, so a deployment that sets both has copied one environment
+    over another, and whichever won would push with a credential nobody chose. A
+    token half set is refused by name for `GitHubApp.missing`'s reason: on its
+    own it would surface as a remote refusing an anonymous push, several layers
+    away from the line that left it out.
+    """
+    from .github import GitHubApp
+
+    app_set = [name for name in GitHubApp.NEEDS if environ.get(name, "").strip()]
+    # Spelled out rather than read off `ForgeToken.NEEDS`, so a deployment with
+    # no forge token never imports the module that knows about one.
+    token_set = [
+        name
+        for name in ("OPENPROJ_REMOTE_USER", "OPENPROJ_REMOTE_TOKEN")
+        if environ.get(name, "").strip()
+    ]
+    if app_set and token_set:
+        raise ValueError(
+            f"refusing to start: both a GitHub App ({', '.join(app_set)}) and a forge "
+            f"token ({', '.join(token_set)}) are set. Keep the one for the host "
+            "OPENPROJ_REMOTE names."
+        )
+    if token_set:
+        from .forge import ForgeToken
+
+        if absent := ForgeToken.missing(environ):
+            raise ValueError(
+                f"refusing to start: {', '.join(token_set)} is set and {', '.join(absent)} "
+                "is not. A forge token needs both: the token, and the user who owns it."
+            )
+        return ForgeToken.from_environment(environ)
+    return GitHubApp.from_environment(environ)
+
+
 def _serve(args) -> int:
     """Run the server against a plan repository.
 
@@ -1166,7 +1204,11 @@ def _serve(args) -> int:
             file=sys.stderr,
         )
         return 2
-    credentials = GitHubApp.from_environment(dict(os.environ))
+    try:
+        credentials = push_credential(dict(os.environ))
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
     app = create_app(
         args.repo,
         auth=args.auth,
@@ -1178,6 +1220,7 @@ def _serve(args) -> int:
         # development run needs neither and a deployment sets both or is refused.
         remote=os.environ.get("OPENPROJ_REMOTE", ""),
         credentials=credentials,
+        plan_url=os.environ.get("OPENPROJ_PLAN_URL", "").strip(),
         tailscale_users=tailscale_users,
         tailscale_socket=os.environ.get("OPENPROJ_TAILSCALE_SOCKET", SOCKET),
     )
@@ -1203,7 +1246,8 @@ def _serve(args) -> int:
     # the first push, where the failure has somebody to report it to. Refusing to
     # start would turn a GitHub outage into a service that will not boot, and
     # then into a Cloud Run revision that never goes ready.
-    if credentials is not None:
+    # The App's alone: a forge token is already the credential, with nothing to mint.
+    if isinstance(credentials, GitHubApp):
         begun = time.perf_counter()
         try:
             credentials.token()

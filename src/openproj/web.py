@@ -1894,6 +1894,35 @@ def own_links(request: Request, links: render.Links) -> render.Links:
     return render.opened(links, render.ROUTES, view) if view else links
 
 
+def _plan_page(url: str) -> str:
+    """`OPENPROJ_PLAN_URL` as the footer may link it: the repository's web page.
+
+    Refused at startup rather than dropped. Dropped, a mistyped value is a footer
+    with no link and nothing saying why, found weeks later by somebody who
+    expected one. An allowlist of the one shape a repository page has: http or
+    https, a host, a path, and nothing else. Userinfo would publish a credential
+    on every page, and a query or fragment would sit in the middle of the
+    `/commit/<sha>` the page appends.
+    """
+    parts = urlsplit(url)
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.hostname
+        or "@" in parts.netloc
+        or parts.query
+        or parts.fragment
+        or url != url.strip()
+        or any(ord(char) < 0x21 or char in "\"'<>\\" for char in url)
+    ):
+        raise ValueError(
+            f"refusing to start: OPENPROJ_PLAN_URL={url!r} is not a repository's web "
+            "page. It is the address of the plan repository as a browser opens it, "
+            "like https://git.example.org/owner/plan, with no credentials, query or "
+            "fragment."
+        )
+    return url.rstrip("/")
+
+
 def create_app(
     repo: Path,
     *,
@@ -1904,6 +1933,7 @@ def create_app(
     client_secret: str = "",
     remote: str = "",
     credentials: object | None = None,
+    plan_url: str = "",
     dev_login: str = "dev",
     today: date | None = None,
     github_transport: httpx.BaseTransport | None = None,
@@ -1937,8 +1967,16 @@ def create_app(
         # GitHub refuses — and `_finish` swallows that into `pushed: False`. The
         # tool would look like it was working while every commit stayed on one
         # container's disk until it was replaced.
-        from .github import GitHubApp
+        from .github import GitHubApp, plan_repository
 
+        if not plan_repository(remote):
+            # Not GitHub, so the App's three variables are not what is missing.
+            raise ValueError(
+                f"refusing to start: a remote at {remote} needs a credential and none is "
+                "configured. Set OPENPROJ_REMOTE_USER and OPENPROJ_REMOTE_TOKEN (an access "
+                "token with write access to the repository, and its owner), or drop "
+                "OPENPROJ_REMOTE to run against the local repository."
+            )
         absent = GitHubApp.missing(dict(os.environ)) or list(GitHubApp.NEEDS)
         raise ValueError(
             f"refusing to start: a remote at {remote} needs a credential and none is "
@@ -1947,6 +1985,7 @@ def create_app(
             f"{'it' if len(absent) == 1 else 'them'}, or drop OPENPROJ_REMOTE to run "
             "against the local repository."
         )
+    plan_page = _plan_page(plan_url) if plan_url else ""
     tailscale: tailnet.Tailnet | None = None
     if auth == "tailscale":
         if not tailscale_users:
@@ -1968,14 +2007,18 @@ def create_app(
         credentials=credentials,
         addresses=tailscale.addresses() if tailscale else None,
     )
-    # Where every page links: the routes, plus the plan's own repository when the
-    # remote is on GitHub, for the footer's `plan` and sha. Parsed by the same
-    # allowlist the pusher opens pull requests through, so the footer never links
-    # a host that function would refuse, and never carries the remote verbatim.
-    # Imported here because `github` is imported only by a deployment that has a
-    # remote.
+    # Where every page links: the routes, plus the plan's own repository for the
+    # footer's `plan` and sha. `OPENPROJ_PLAN_URL` when the deployment names one,
+    # because a self-hosted forge's page is not derivable from the remote: plan-d
+    # pushes to Forgejo on the loopback, and that address is no page anybody can
+    # open. Otherwise the GitHub repository the remote names, parsed by the same
+    # allowlist the pusher opens pull requests through. The remote itself never
+    # reaches a page. Imported here because `github` is imported only by a
+    # deployment that has a remote.
     routes = render.ROUTES
-    if remote:
+    if plan_page:
+        routes = routes.model_copy(update={"plan": plan_page})
+    elif remote:
         from .github import plan_repository
 
         if repository := plan_repository(remote):
