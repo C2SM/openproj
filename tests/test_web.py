@@ -6517,6 +6517,30 @@ def test_a_hidden_tab_lets_its_stream_go_and_catches_up_when_shown(client: TestC
     assert "The plan changed." in got["shown"]["said"], got["shown"]["said"]
 
 
+@pytest.mark.parametrize(
+    ("remote", "linked"),
+    [
+        ("https://github.com/kilnlab/plan.git", "https://github.com/kilnlab/plan"),
+        # The remote every test and development run uses, which has no page.
+        ("file:///srv/origin.git", None),
+        ("", None),
+    ],
+)
+def test_the_footer_links_the_plan_only_when_its_remote_is_on_github(
+    repo_path: Path, remote: str, linked: str | None
+):
+    """The footer's `plan` and sha link into the plan repository on GitHub, and
+    only `plan_repository`'s allowlist decides that there is one.
+
+    Without the `with`, so the lifespan never starts a pusher that would try to
+    reach github.com: drawing a page does not need one.
+    """
+    app = create_app(repo_path, auth="dev", secret=SECRET, remote=remote, credentials=object())
+    page = TestClient(app).get("/table").text
+    (head,) = [el for el in elements(page) if el.attrs.get("id") == "planhead"]
+    assert head.attrs.get("data-plan") == linked, head.attrs
+
+
 # --- the open pull requests, live -------------------------------------------
 
 
