@@ -501,6 +501,7 @@ def render_records(
         filters=_FILTER_JS,
     )
     return _page(
-        f"openproj — {key}", body, _RECORDS_STYLE, links, key,
+        key.capitalize(), body, _RECORDS_STYLE, links, key,
         index.unreadable, index.unusable,
+        face=index.face,
     )

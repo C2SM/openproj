@@ -96,7 +96,7 @@ def page(client: TestClient) -> str:
 
 def controls(html: str) -> set[str]:
     """Every named form control on the page."""
-    return set(re.findall(r'<(?:input|textarea|select)[^>]*\bname="([^"]+)"', html))
+    return set(re.findall(r'<(?:input|textarea|select|button)[^>]*\bname="([^"]+)"', html))
 
 
 def control(html: str, name: str) -> str:
@@ -738,7 +738,10 @@ def test_the_kind_is_read_before_the_name_on_every_page_that_has_one(client: Tes
     # stated where it can be changed, and drawn in the one way a word cannot be —
     # `shaping` and `in_progress` are one rung apart in a list and opposite sides
     # of a hill.
-    assert '<span class="chip st-' not in detail, (
+    # The shell's status list is chips on every page, a picker's rows and not a
+    # statement about this record, so it is left out of the question.
+    stated = re.sub(r'<ul id="stpop".*?</ul>', "", detail, flags=re.S)
+    assert '<span class="chip st-' not in stated, (
         "the status is a hill on this page, and a chip is the thing it replaced"
     )
     facts = detail.index('<dl id="facts">')
@@ -1264,7 +1267,7 @@ def test_every_control_on_the_form_has_a_name(page: str):
     assert named, "the labels are the whole of the fix"
     for control_id, word in named.items():
         assert control_id.startswith(f"{TASK}-"), control_id
-        assert re.search(rf'<(?:input|select|textarea)[^>]*\bid="{control_id}"', page), word
+        assert re.search(rf'<(?:input|select|textarea|button)[^>]*\bid="{control_id}"', page), word
     for field in ("owner", "developers", "reviewers", "priority", "cycle"):
         assert named[f"{TASK}-{field}"] == LABELS[field], field
 
@@ -4652,7 +4655,7 @@ _LEAVING = (
     + """
 const article = document.querySelector('article.record');
 const nav = document.querySelector('body > nav');
-const link = nav.querySelector('a');
+const link = nav.querySelector('a[data-keys]');
 // Whether a pointer aimed at the middle of the first nav link would actually
 // reach it. The defect this file spent a branch on was a surface painting over
 // the nav, so a class name is not the question — `elementFromPoint` is.
@@ -4737,7 +4740,7 @@ _SAVED_IN_A_ROOM = (
     + """
 const article = document.querySelector('article.record');
 const nav = document.querySelector('body > nav');
-const link = nav.querySelector('a');
+const link = nav.querySelector('a[data-keys]');
 const corner = document.querySelector('.corner');
 const overLink = () => {
   const box = link.getBoundingClientRect();
@@ -5342,6 +5345,21 @@ def test_the_theme_toggle_and_the_way_in_never_leave_the_corner(client: TestClie
     assert got["after"]["themeReachable"] and got["after"]["signInReachable"]
 
 
+# The page's left edge, as the nav draws it. The nav is a full-width bar with its
+# links inset by its own padding, so the edge everything else lines up with is its
+# content box and not its border box. Calls `box`, which each script defines.
+_NAV_EDGE = """
+const navBox = () => {
+  const b = box('body > nav');
+  const style = getComputedStyle(document.querySelector('body > nav'));
+  const left = parseFloat(style.paddingLeft), right = parseFloat(style.paddingRight);
+  const inset = {...b, left: Math.round(b.left + left), width: Math.round(b.width - left - right)};
+  if ('right' in b) inset.right = Math.round(b.right - right);
+  return inset;
+};
+"""
+
+
 # Every box above the document, watched through all three views. `facts` is
 # top and left only, deliberately: its CONTENT changes with the mode — read
 # values swap for controls, which is the point of a session — so its height is
@@ -5353,6 +5371,7 @@ def test_the_theme_toggle_and_the_way_in_never_leave_the_corner(client: TestClie
 # every one of them and about their right edges as well as their left.
 _THE_HEADER_STAYS = (
     _STUB_PREVIEW
+    + _NAV_EDGE
     + """
 const box = sel => {
   const b = document.querySelector(sel).getBoundingClientRect();
@@ -5386,7 +5405,7 @@ const SWITCHER = ['#views', '#view-edit', '#view-both', '#preview'];
 // where the nav begins — is the same either way, and a selector written down
 // here would have to be edited every time one of them moves.
 const header = () => ({
-  nav: box('body > nav'),
+  nav: navBox(),
   ...Object.fromEntries(HEADER.map(sel => [sel, box(sel)])),
   ...Object.fromEntries(SWITCHER.map(sel => [sel, box(sel)])),
   'editbar-first': (el => {
@@ -5543,6 +5562,7 @@ def test_opening_a_session_moves_nothing_above_the_document(client: TestClient, 
 # left align everything in the editor".
 _THE_COLUMN_STARTS_LEFT = (
     _STUB_PREVIEW
+    + _NAV_EDGE
     + """
 const box = sel => {
   const b = document.querySelector(sel).getBoundingClientRect();
@@ -5552,7 +5572,7 @@ const box = sel => {
 // `.panes > .main` is the document that rides it.
 const COLUMN = ['.panes', '.panes > .main'];
 const seen = () => ({
-  nav: box('body > nav'),
+  nav: navBox(),
   h1: box('article.record h1'),
   ...Object.fromEntries(COLUMN.map(sel => [sel, box(sel)])),
 });
@@ -5641,6 +5661,7 @@ def test_the_document_starts_where_its_own_title_starts(client: TestClient, tmp_
 # rather than by a rule of its own.
 _THE_BAR_UNDER_THE_COLUMN = (
     _STUB_PREVIEW
+    + _NAV_EDGE
     + """
 const box = sel => {
   const el = document.querySelector(sel);
@@ -5649,7 +5670,7 @@ const box = sel => {
   return {left: Math.round(b.left), right: Math.round(b.right),
           width: Math.round(b.width)};
 };
-return {nav: box('body > nav'), panes: box('.panes'), promote: box('#promote'),
+return {nav: navBox(), panes: box('.panes'), promote: box('#promote'),
         hint: box('#promote .hint'),
         overflow: document.documentElement.scrollWidth, window: innerWidth};
 """

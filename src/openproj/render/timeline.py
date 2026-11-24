@@ -1240,7 +1240,7 @@ def render_timeline(
     # their ties on source order — see the ladder comment in `calendar.py`.
     style = _timeline_css() + _POP_STYLE + _CALENDAR_STYLE
     return _page(
-        "openproj — timeline",
+        "Timeline",
         body,
         style,
         links,
@@ -1253,4 +1253,5 @@ def render_timeline(
         # carry every record already and pass nothing.
         cardtitles={record_id: record.title or record_id
                     for record_id, record in index.plan.items()},
+        face=index.face,
     )

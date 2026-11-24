@@ -270,3 +270,14 @@ def _inline_font(name: str) -> str:
 def _font_uri() -> str:
     """Cached, because every served page carries it and the encode is not free."""
     return _inline_font("inter-latin-wght-normal.woff2")
+
+
+@lru_cache(maxsize=1)
+def _meter_font_uri() -> str:
+    """The priority meter's face, built by `tools/meter_font.py`, for the graph.
+
+    TrueType and not woff2: the file is about a kilobyte, woff2 would need
+    `brotli` beside fontTools to rebuild it, and a kilobyte compressed is still a
+    kilobyte."""
+    raw = (_static_dir() / "openproj-meter.ttf").read_bytes()
+    return "data:font/ttf;base64," + base64.b64encode(raw).decode("ascii")

@@ -44,7 +44,7 @@ from openproj.model import (
 )
 from openproj.render import ROUTES, STATIC, STATUSES, render_cycle, render_deck
 from openproj.render.deck import _deck_order, _resolved
-from openproj.render.tokens import PRIORITY_GLYPH, STATUS_GLYPH
+from openproj.render.tokens import STATUS_GLYPH
 
 TODAY = date(2026, 8, 17)
 
@@ -1373,12 +1373,20 @@ def test_the_chips_carry_the_marks_every_other_view_carries():
     `_DECK_STYLE` deliberately gives up, so the mark was the only one left and it
     was missing."""
     record = _one()
+    page = render_deck(_index_of(record), 37)
     parsed = _Slides()
-    parsed.feed(render_deck(_index_of(record), 37))
+    parsed.feed(page)
     text = " ".join(word for slide in parsed.found for word in slide["text"])
     assert STATUS_GLYPH["in_progress"] in text
-    assert PRIORITY_GLYPH["high"] in text
     assert "High" in text
+    # The priority is the meter, all five bars and four of them lit for `high`.
+    from pages import elements
+
+    # The slide's own, without the shell's priority list (a meter per rung).
+    slides = re.sub(r'<ul id="pripop".*?</ul>', "", page, flags=re.S)
+    (meter,) = re.findall(r'<svg class="pribars".*?</svg>', slides, re.S)
+    bars = [one.attrs.get("class") for one in elements(meter) if one.tag == "rect"]
+    assert bars == ["lit"] * 4 + ["track"], bars
 
 
 def test_a_deck_order_puts_the_listed_first_and_keeps_everything_else():

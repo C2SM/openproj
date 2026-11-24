@@ -32,12 +32,12 @@ from .markdown import _drop_repeated_title, _inlined_assets, _markdown, _markdow
 from .shell import ROUTES, Links, _page
 from .styles import _DETAIL_STYLE
 from .tokens import (
-    PRIORITY_GLYPH,
     STATUS_GLYPH,
     TEMPLATES,
     _percent,
     _priority_class,
     _status_class,
+    priority_bars,
 )
 
 # --------------------------------------------------------------------------- #
@@ -101,7 +101,7 @@ _ARTICLE = """
         of a record and it is the second thing anybody asks about a piece of work
         in a review. -#}
     {% if s.priority %}<span class="chip pri {{ s.priority_class }}"><span class="chipmark"
-        aria-hidden="true">{{ s.priority_glyph }}</span><span
+        aria-hidden="true">{{ s.priority_bars }}</span><span
         class="chipword">{{ s.priority|human }}</span></span>{% endif %}
     {% if s.size %}<span class="tally">{{ s.size }} wk</span>{% endif %}
     {% if s.people %}<span class="tally">{{ s.people }}</span>{% endif %}
@@ -1639,7 +1639,7 @@ def slides_of(index: Index, record: Record, links: Links, assets: dict[str, str]
         "glyph": STATUS_GLYPH.get(record.status, ""),
         "priority": record.priority,
         "priority_class": _priority_class(record.priority),
-        "priority_glyph": PRIORITY_GLYPH.get(str(record.priority), ""),
+        "priority_bars": priority_bars(record.priority),
         "people": ", ".join(workers_on(record)),
         # Blank where nobody has sized it, and the slide leaves the whole tally
         # out. The `*` that used to hang off this number meant "this is the
@@ -1844,7 +1844,7 @@ def render_deck(
     """
     view = _deck_view(index, number, links, asset)
     return _page(
-        f"openproj — cycle {number} review",
+        f"Cycle {number} review",
         _compiled(_DECK + _DECK_SCRIPT).render(
             d=view,
             links=links,
@@ -1867,4 +1867,5 @@ def render_deck(
         # page is not — and "← deck 37" is what somebody who walked here from the
         # rail is looking for.
         origin=f"deck {number}",
+        face=index.face,
     )

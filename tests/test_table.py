@@ -105,6 +105,7 @@ from openproj.render import (
     LABELS,
     PRIORITIES,
     ROUTES,
+    STATUS_GLYPH,
     STATUSES,
     _new_row_fields,
     render_static,
@@ -539,21 +540,35 @@ def test_a_dropdown_on_either_form_offers_words_and_stores_identifiers(
         for value, word in stops:
             assert word != value, f"status: {value} is offered as its own identifier"
 
-        for name, values in (("priority", PRIORITIES),):
-            select = re.search(rf'<select name="{name}".*?</select>', page, re.S).group(0)
-            offered = re.findall(r'<option value="([^"]+)"[^>]*>([^<]*)</option>', select)
-            assert [value for value, _ in offered] == list(values), name
-            for value, word in offered:
-                # The mark leads and the word follows, on both ladders. It is a
-                # string and not markup because an `<option>` is a string, which
-                # is also why the priority mark is a character rather than the
-                # five-element meter it used to be.
-                mark, _, said = word.strip().partition(" ")
-                assert mark and mark not in said, (
-                    f"{name}: {value} is offered as {word!r} with no mark in front of it"
-                )
-                assert said == LABELS.get(value, HUMAN[value]), (name, value)
-                assert value not in word, f"{value} is its own identifier, not a word"
+        # Priority is the app's picker (`rung_picker`): a button carrying the
+        # identifier as its value, over the shell's one list, whose rows carry the
+        # identifier as `data-value` and the word as text, behind the meter.
+        found = elements(page)
+        # The form's own control, which is a `.field`: the shell's `<template>`
+        # holds another copy for the scripts to clone, inert and in no form.
+        pickers = [
+            one for one in found
+            if one.tag == "button" and one.attrs.get("name") == "priority"
+            and "field" in one.attrs.get("class", "").split()
+        ]
+        assert len(pickers) == 1, pickers
+        assert pickers[0].attrs["aria-controls"] == "pripop", pickers
+        at = {
+            one.attrs["data-value"]: n
+            for n, one in enumerate(found)
+            if one.tag == "li" and one.attrs.get("id", "").startswith("pripop-")
+        }
+        assert list(at) == list(PRIORITIES), "priority"
+        for value, n in at.items():
+            word = found[n].text
+            # The mark leads and the word follows: the row's meter is the first
+            # drawing inside it, and it draws this rung and no other.
+            meter = next(one for one in found[n:] if one.tag == "svg")
+            assert meter.attrs.get("data-rung") == value, (
+                f"priority: {value} is offered with no meter of its own in front of it"
+            )
+            assert word == LABELS.get(value, HUMAN[value]), ("priority", value)
+            assert value not in word, f"{value} is its own identifier, not a word"
 
 
 def test_the_status_gate_is_written_on_the_controls_themselves(new_page: str):
@@ -1569,7 +1584,11 @@ def test_the_badge_is_never_the_part_of_a_clamped_cell_that_gets_cut(page: str, 
     meant to produce it: this is a claim about where a box ends up, and a
     stylesheet saying `flex: none` somewhere is not that claim.
     """
-    got = measured_in(chrome(), page, tmp_path / "clamped.html", 1280, _BADGES)
+    # 1400 and not 1280: at 1280 this corpus sheds every clamped column that has a
+    # badge to show (Reviewers, and Tags since the priority and status columns
+    # took one width per vocabulary and a reserved chevron, 33px between them),
+    # and the claim is about a badge in a cell that is drawn.
+    got = measured_in(chrome(), page, tmp_path / "clamped.html", 1400, _BADGES)
     assert got["badges"], "no clamped cell on the page had a badge to check"
 
     for state, where in (
@@ -2601,11 +2620,19 @@ def test_every_identifier_a_filter_offers_is_shown_as_a_word(page: str):
     # from a cell would write the label back into the corpus. Both go through
     # `esc` — the closed set is a closed set today, and a rule with an exception
     # in it is a rule nobody applies to the next line.
-    assert re.search(
-        r'<option value="\$\{esc\(o\)\}"[^>]*>`\s*\+\s*'
-        r"`\$\{esc\(markFor\(field, o\)\)\}\$\{esc\(human\(o\)\)\}</option>",
-        script(page),
+    # That editor is the app's picker now, and its rows are the shell's: the
+    # identifier is each row's `data-value` and the word is all it says.
+    assert "cell.append(rungPicker(field, was, FIELD_LABELS[field] || field, closed));" in (
+        script(page)
     )
+    rows = {
+        one.attrs["data-value"]: one.text
+        for one in elements(page)
+        if one.tag == "li" and one.attrs.get("role") == "option" and "data-value" in one.attrs
+    }
+    # A status row is its glyph and its word; a priority row's meter is a drawing.
+    assert rows["in_progress"] == STATUS_GLYPH["in_progress"] + "In progress", rows
+    assert rows["very_high"] == "Very high", rows
 
 
 def test_the_blocking_count_is_a_link_that_pluralises_and_mutes_at_zero(page: str):
@@ -3412,7 +3439,9 @@ def test_the_editor_a_cell_opens_says_what_it_is_editing(page: str):
     body = script(page)
 
     assert "const named = esc(FIELD_LABELS[field] || field);" in body
-    assert '<select data-type="text" aria-label="${named}">' in body
+    # A closed set's editor is the picker, named the same way through its own
+    # argument: `rungPicker` sets it as an attribute, so it is not escaped twice.
+    assert "rungPicker(field, was, FIELD_LABELS[field] || field, closed)" in body
     assert 'data-type="${esc(EDITABLE[field])}" aria-label="${named}"' in body
 
 
@@ -3598,7 +3627,7 @@ def test_a_date_cell_opens_a_picker_and_every_other_cell_still_opens_a_text_box(
         "    const td = tbody.querySelector("
         '      `tr[data-id="${where.id}"] td[data-col="${where.col}"]`);'
         "    openEditor(td);"
-        '    const open = td.querySelector("input, select");'
+        '    const open = td.querySelector("input, select, .rungpick");'
         "    boxes.push({field: td.dataset.field, col: where.col, tag: open.tagName,"
         "                type: open.getAttribute('type'),"
         "                dataType: open.getAttribute('data-type'),"
@@ -4022,7 +4051,7 @@ const look = col => {
   // page rather than as a column that is not on screen at all.
   if (!cell || !cell.getBoundingClientRect().width) return null;
   openEditor(cell);
-  const box = cell.querySelector('input, select');
+  const box = cell.querySelector('input, select, .rungpick');
   const seen = {col, edge: round(frozen()), left: round(box.getBoundingClientRect().left),
                 scrolled: Math.round(scroller.scrollLeft)};
   box.blur();
@@ -4697,7 +4726,9 @@ def test_every_control_on_the_create_form_has_a_name(new_page: str):
     for control_id, word in named.items():
         # A label points at a control that is on the page, or it is a name the
         # reader is told about and cannot reach.
-        assert re.search(rf'<(?:input|select|textarea)[^>]*\bid="{control_id}"', new_page), word
+        assert re.search(
+            rf'<(?:input|select|textarea|button)[^>]*\bid="{control_id}"', new_page
+        ), word
     for field in ("owner", "developers", "reviewers", "cycle", "priority"):
         assert f"new-{field}" in named, field
         assert named[f"new-{field}"] == LABELS[field]

@@ -44,7 +44,6 @@ from .tokens import (
     KINDS,
     LABELS,
     PREFIX,
-    PRIORITY_GLYPH,
     STATUS_TEACH,
     STATUSES,
     _editable_for,
@@ -52,6 +51,7 @@ from .tokens import (
     _percent,
     _read_date,
     _status_class,
+    priority_bars,
 )
 
 # The three views of one document, drawn as one control.
@@ -3261,15 +3261,23 @@ askPullRequestStates(offerStatusFromGitHub);
 // One page, hash-routed: a stable shareable link per record without a file each.
 // With no hash you get an index; with a hash you get exactly one document. Never
 // every document at once — that is a wall of text, not a detail view.
+// The tab names the record on screen, as a served record page's does. The plan's
+// half is what the shell wrote after the list's own word, `Records`.
+const LIST_TITLE = document.title;
+const PLAN_SUFFIX = LIST_TITLE.slice(LIST_TITLE.indexOf(' · '));
 function show() {
   const wanted = location.hash.slice(1);
-  let found = false;
+  let found = null;
   for (const article of document.querySelectorAll('article.record')) {
     const match = article.id === wanted;
     article.style.display = match ? '' : 'none';
-    found = found || match;
+    if (match) found = article;
   }
   document.querySelector('.toc').style.display = found ? 'none' : '';
+  const heading = found && found.querySelector('h1 .read');
+  document.title = found
+    ? ((heading && heading.textContent.trim()) || found.id) + PLAN_SUFFIX
+    : LIST_TITLE;
   // The top of the BOX, which is what scrolls. It was `scrollTo(0, 0)` — right
   // while the document scrolled, and since the shell began giving this page the
   // box that keeps the nav and the footer in view (`_page(fills=True)`) it reset
@@ -3467,7 +3475,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
                 '<span class="chipword">{}</span></span>'
             ).format(
                 record.priority,
-                PRIORITY_GLYPH.get(str(record.priority), ""),
+                priority_bars(record.priority),
                 _human(record.priority),
             )
         elif name == _SIZE_FIELD_NAME:
@@ -4509,16 +4517,22 @@ def render_detail(
         # within the set, and pressing Table from this form abandons it rather
         # than staying put. With nothing lit, the <h1> is what names the page.
         return _page(
-            f"openproj — new {creating}",
+            f"New {creating}",
             body,
             style,
             links,
             unreadable=index.unreadable,
             unusable=index.unusable,
             fills=True,
+            face=index.face,
         )
+    # A served record page is of one record, and its tab is that record's title.
+    # The export's single page of every record is retitled by `show` as the hash
+    # moves, and opens on the list.
+    shown = index.records.get(only) if only else None
+    heading = (shown.title or shown.id) if shown else "Records"
     return _page(
-        "openproj — detail",
+        heading,
         body,
         style,
         links,
@@ -4532,6 +4546,7 @@ def render_detail(
         # commit bar's `position: sticky` holds against the box instead of
         # against the window, which is the same result by the same rule.
         fills=True,
+        face=index.face,
     )
 
 

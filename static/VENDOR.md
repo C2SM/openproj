@@ -33,6 +33,7 @@ of its own; "Mermaid, and why it is fetched," below.
 | `mermaid-LICENSE.txt` | 11.17.2 | MIT | `LICENSE` from the same tarball |
 | `datepicker.min.js` | 1.3.4 | MIT | `dist/js/datepicker-full.min.js` from https://registry.npmjs.org/vanillajs-datepicker/-/vanillajs-datepicker-1.3.4.tgz |
 | `datepicker-LICENSE.txt` | 1.3.4 | MIT | `LICENSE` from the same tarball |
+| `openproj-meter.ttf` | — | BSD-3-Clause (ours) | **our own drawing, built by `tools/meter_font.py`** — five glyphs, the priority meter for the graph's canvas labels |
 
 Not a file: the colour schemes in `src/openproj/themes.py` are data rather than a
 library, and are copied from **tinted-theming/schemes**, spec 0.11, MIT, fetched
@@ -152,7 +153,7 @@ ships beside it the way Inter's OFL does.
 Download the new file, then, from this directory:
 
 ```
-shasum -a 256 *.js *.mjs *.woff2 > SHA256SUMS && shasum -a 256 -c SHA256SUMS
+shasum -a 256 *.js *.mjs *.woff2 *.ttf > SHA256SUMS && shasum -a 256 -c SHA256SUMS
 ```
 
 `*.js` alone was the old instruction, and `>` truncates: running it wrote three lines

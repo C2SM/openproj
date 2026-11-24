@@ -26,7 +26,6 @@ nothing.
 from __future__ import annotations
 
 import json
-import re
 from datetime import date
 from pathlib import Path
 from urllib.parse import unquote
@@ -481,9 +480,8 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
     That last word is why they are a drawing rather than two characters in the
     label: cytoscape draws a label into a canvas with ONE `color` for the whole
     string, so two differently-coloured marks cannot be written into it. An SVG
-    holds two `<text>` elements and two fills, which is the same two characters
-    `PRIORITY_GLYPH` and `STATUS_GLYPH` put in a chip, a menu and a legend key,
-    with the colour the table gives them.
+    holds the priority meter as bars, lit in the rung's colour as a chip lights
+    them, and the `STATUS_GLYPH` character in an ink of its own.
 
     A box gets them as characters in its own name instead, uncoloured: a
     compound's label sits on the box's top edge with an opaque background, and an
@@ -499,7 +497,7 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
     the first box measured was `kiln4py`, whose label starts `ki`. The record is
     right and the assertion was over-claiming.
     """
-    from openproj.render import PRIORITY_GLYPH, STATUS_GLYPH
+    from openproj.render import PRIORITIES, PRIORITY_METER_CHAR, STATUS_GLYPH
 
     def marks_of(kind: str) -> tuple[bool, bool]:
         """Whether this rung reads a priority and a status, off the ladder."""
@@ -523,22 +521,29 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
         drawn = unquote(card["image"]) if card["image"] and card["image"] != "none" else ""
         if drawn:
             assert card["image"].startswith("data:image/svg+xml"), card["image"][:40]
-        # One `<text>` per mark the rung actually reads — so a card of a kind
-        # that reads neither draws no marks rather than two invented ones.
-        marks = len([one for one in elements(drawn) if one.tag == "text"])
-        assert marks == pri + stat, (
-            f"a {card['kind']} card draws {marks} marks and its rung "
-            f"reads {pri + stat}: {drawn or '(no drawing)'}"
+        # The marks the rung actually reads, and no invented ones: the whole
+        # meter for a priority, every bar of it, and one `<text>` for a status.
+        drawing = elements(drawn)
+        bars = [one for one in drawing if one.tag == "rect"]
+        texts = [one for one in drawing if one.tag == "text"]
+        assert len(bars) == len(PRIORITIES) * pri, (
+            f"a {card['kind']} card draws {len(bars)} bars: {drawn or '(no drawing)'}"
         )
-        assert any(one in drawn for one in PRIORITY_GLYPH.values()) == pri, drawn
+        assert len(texts) == stat, (
+            f"a {card['kind']} card draws {len(texts)} status marks: {drawn or '(no drawing)'}"
+        )
         assert any(one in drawn for one in STATUS_GLYPH.values()) == stat, drawn
-        # A fill each, and no two marks sharing one: the point of the drawing is
-        # that the marks are coloured apart from each other, which is the whole
-        # reason they are an SVG instead of two characters in the label.
-        fills = set(re.findall(r'fill="([^"]+)"', drawn))
-        assert len(fills) == pri + stat, (
-            f"a {card['kind']} card's {pri + stat} marks resolve to {sorted(fills)}"
-        )
+        # Lit bars and the glyph coloured apart: the point of the drawing is that
+        # the marks are coloured apart from each other, which is the whole reason
+        # they are an SVG instead of characters in the label. The track is the
+        # glyph's ink made faint, so it is told apart by its opacity.
+        lit = {one.attrs["fill"] for one in bars if "fill-opacity" not in one.attrs}
+        if pri:
+            assert len(lit) == 1, f"a {card['kind']} card's lit bars are {sorted(lit)}"
+        if pri and stat:
+            assert texts[0].attrs["fill"] not in lit, (
+                f"a {card['kind']} card's meter and glyph share {texts[0].attrs['fill']}"
+            )
     # Both branches of that rule were asked, or the loop above proves only that
     # the corpus is uniform. Every earlier version of this test measured five
     # cards off the top of one list and could not have said which kinds it saw.
@@ -551,9 +556,11 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
     assert got["boxed"], "no box was measured"
     for box in got["boxed"]:
         pri, stat = marks_of(box["kind"])
+        # Whitespace is stripped above, and the meter is one character, so the
+        # marks are the label's first one or two characters.
         if pri:
-            assert box["label"][0] in PRIORITY_GLYPH.values(), (
-                f"a {box['kind']} box does not lead with its priority mark: {box['label']!r}"
+            assert box["label"][0] in PRIORITY_METER_CHAR.values(), (
+                f"a {box['kind']} box does not lead with its priority meter: {box['label']!r}"
             )
         if stat:
             assert box["label"][pri] in STATUS_GLYPH.values(), (

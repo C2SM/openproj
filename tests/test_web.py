@@ -420,8 +420,8 @@ def bet_rows(page: str) -> list[tuple[str, str, str]]:
     """(id, kind, status) per BET on the betting table.
 
     Read off the markup each column actually draws, and the two are no longer the
-    same shape: kind is still a chip, and status is a `<select class="pick st-…">`
-    since it became editable. Both carry the rung in a class, which is the point
+    same shape: kind is still a chip, and status is the app's own picker, a button
+    whose face is the `chip st-…` it was. Both carry the rung in a class, which is the point
     — a picker that dropped the ladder's colour would have taken the one column a
     room reads DOWN and made it ink.
 
@@ -444,7 +444,8 @@ def bet_rows(page: str) -> list[tuple[str, str, str]]:
         (record_id, kind, status)
         for record_id, rung, kind, status in re.findall(
             r'<tr data-id="([^"]+)" data-rung="([^"]*)"[^>]*>.*?<span class="chip kind-(\w+)">'
-            r'.*?<select class="pick st-(\w+)"',
+            r'.*?<button[^>]*class="rungpick pick" data-vocab="status" name="status"'
+            r' value="(\w+)"',
             page,
             re.S,
         )
@@ -3512,11 +3513,11 @@ def test_the_bet_table_names_a_status_in_the_colour_every_other_page_uses(
 
     assert rows
     for record_id, kind, status in rows:
-        assert f'<select class="pick st-{status}"' in page, record_id
+        assert f'<span class="chip st-{status}">' in page, record_id
         assert f'<span class="chip kind-{kind}">' in page, record_id
         # The colour is generated, not written out here: the rule has to exist
-        # for this rung or the class on the control names nothing.
-        assert f"select.pick.st-{status} {{" in page, f"{record_id}: no rule for st-{status}"
+        # for this rung or the class on the chip names nothing.
+        assert f".chip.st-{status} {{" in page, f"{record_id}: no rule for st-{status}"
     assert "In progress" in page or "in_progress" not in [s for _, _, s in rows]
     assert ">in_progress<" not in page, "the identifier is the class, never the word"
 

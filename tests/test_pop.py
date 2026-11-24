@@ -76,7 +76,7 @@ from openproj.render.tokens import (
     HUMAN,
     LABELS,
     PRIORITIES,
-    PRIORITY_GLYPH,
+    PRIORITY_LEVEL,
     STATUS_GLYPH,
     SUGGESTS,
 )
@@ -1513,7 +1513,8 @@ const partIn = (one, part) => {
   const found = one.querySelector('.' + part);
   return found ? found.textContent : '';
 };
-const wordIn = one => partIn(one, 'poptext');
+// The item's word, which for a status or a priority is the chip's own word.
+const wordIn = one => partIn(one, 'poptext') || partIn(one, 'chipword');
 const itemIn = kind => POP.querySelector('.popitem[data-kind="' + kind + '"]');
 // An item this VIEW added through `extras`, found by its word. A host's own item
 // has no slug in any contract — `data-kind` is stable for the items `pop.py`
@@ -1767,9 +1768,11 @@ itemIn('status').click();
 const inside = popControls().map(one => ({
   kind: one.dataset.kind, role: one.getAttribute('role'),
   checked: one.getAttribute('aria-checked'), word: wordIn(one),
-  glyph: partIn(one, 'popglyph'), mark: partIn(one, 'popmark'),
+  glyph: partIn(one, 'chipmark'), mark: partIn(one, 'popmark'),
+  chip: (one.querySelector('.popchip .chip') || {}).className || '',
   haspopup: one.getAttribute('aria-haspopup')}));
-const label = POP.getAttribute('aria-label');
+// The list beside the menu is named for what it lists; the menu keeps its own.
+const label = document.getElementById('popsub').getAttribute('aria-label');
 const landed = document.activeElement.dataset.kind;
 itemIn('status-shaping').click();
 await rest(700);
@@ -1810,13 +1813,14 @@ def test_the_status_submenu_is_this_kinds_ladder_and_picking_one_writes_it(
         f"the write half is drawn below the reader's items: {got['top']}"
     )
     inside = {one["kind"]: one for one in got["inside"]}
-    assert [one["kind"] for one in got["inside"]] == ["back"] + [
+    assert [one["kind"] for one in got["inside"]] == [
         f"status-{status}" for status in got["ladder"]
     ], got["inside"]
-    assert inside["back"]["word"] == "‹ Back"
     for status in got["ladder"]:
         one = inside[f"status-{status}"]
         assert one["word"] == HUMAN[status], f"{status} is drawn as {one['word']!r}"
+        # The status chip, the picker's own row, in the ladder's colour.
+        assert one["chip"].split() == ["chip", f"st-{status}"], one["chip"]
         assert one["glyph"] == STATUS_GLYPH[status], (
             f"{status} carries {one['glyph']!r} and its mark on this plan is "
             f"{STATUS_GLYPH[status]!r}"
@@ -1832,9 +1836,8 @@ def test_the_status_submenu_is_this_kinds_ladder_and_picking_one_writes_it(
             f"{got['was']}"
         )
     assert got["label"] == "Status", (
-        f"the box still names itself {got['label']!r} inside the ladder, so a reader "
-        "who arrives in the submenu is told which record it is about and not which "
-        "list they are in"
+        f"the submenu names itself {got['label']!r}, so a reader who arrives in it is "
+        "not told which list they are in"
     )
     assert got["landed"] == f"status-{got['was']}", (
         f"the keyboard landed on {got['landed']} rather than on the rung the record is on"
@@ -1886,7 +1889,9 @@ const top = popKinds();
 itemIn('priority').click();
 const inside = popControls().map(one => ({
   kind: one.dataset.kind, role: one.getAttribute('role'), word: wordIn(one),
-  glyph: partIn(one, 'popglyph'), mark: partIn(one, 'popmark'),
+  mark: partIn(one, 'popmark'),
+  bars: one.querySelectorAll('.popchip .pribars rect').length,
+  lit: one.querySelectorAll('.popchip .pribars rect.lit').length,
   checked: one.getAttribute('aria-checked')}));
 const landed = document.activeElement.dataset.kind;
 itemIn('priority-' + other).click();
@@ -1943,15 +1948,15 @@ def test_the_priority_submenu_is_the_one_ladder_and_picking_a_rung_writes_it(
         f"priority is not the item under the status: {got['top']}"
     )
     inside = {one["kind"]: one for one in got["inside"]}
-    assert [one["kind"] for one in got["inside"]] == ["back"] + [
+    assert [one["kind"] for one in got["inside"]] == [
         f"priority-{rung}" for rung in PRIORITIES
     ], got["inside"]
     for rung in PRIORITIES:
         one = inside[f"priority-{rung}"]
         assert one["word"] == HUMAN[rung], f"{rung} is drawn as {one['word']!r}"
-        assert one["glyph"] == PRIORITY_GLYPH[rung], (
-            f"{rung} carries {one['glyph']!r} and its mark on this plan is "
-            f"{PRIORITY_GLYPH[rung]!r}"
+        # The meter, counted: every bar drawn and the rung's own number lit.
+        assert (one["bars"], one["lit"]) == (len(PRIORITIES), PRIORITY_LEVEL[rung]), (
+            f"{rung} draws {one['lit']} of {one['bars']} bars lit"
         )
         assert one["role"] == "menuitemradio", (
             f"{rung} is a plain menuitem, where `aria-checked` is ignored"
@@ -2033,7 +2038,7 @@ def test_the_owner_submenu_writes_a_person_and_nobody_clears_it(index: Index, tm
     got = _at_the_table(index, tmp_path / "people.html", _THE_PEOPLE, patience=4000)
 
     assert not got.get("error"), got
-    assert got["kinds"] == ["back", *[f"owner-{login}" for login in got["people"]], "owner-nobody"]
+    assert got["kinds"] == [*[f"owner-{login}" for login in got["people"]], "owner-nobody"]
     inside = {one["kind"]: one for one in got["inside"]}
     assert inside["owner-nobody"]["word"] == "— nobody —", (
         f"the value that is not a person is drawn as {inside['owner-nobody']['word']!r}"
@@ -2283,7 +2288,7 @@ def test_the_arrows_walk_into_a_submenu_and_escape_pops_before_it_closes(
     assert not got.get("error"), got
     assert got["picked"] >= 1, "nothing was selected, so this test cannot see the defect"
     assert "status" in got["opened"], got["opened"]
-    wanted = ["back", *[f"status-{status}" for status in got["ladder"]]]
+    wanted = [f"status-{status}" for status in got["ladder"]]
     assert got["drilled"]["kinds"] == wanted, (
         f"ArrowRight on the status item drew {got['drilled']['kinds']}"
     )
@@ -2338,9 +2343,9 @@ const rule = {open: popIsOpen(), kinds: popKinds(), said: said(), base: baseNow(
               disabled: first ? first.getAttribute('aria-disabled') : '',
               focused: document.activeElement.dataset.kind, beats: beatsNow(),
               rows: DATA.rows[row.id].status};
-// Still usable: every item the level had is under the refusal, and `‹ Back` is
-// one of them and still gets out of the list.
-itemIn('back').click();
+// Still usable: every item the list had is under the refusal, and Escape still
+// gets out of the list and back onto the item it opened from.
+pressKey('Escape');
 const after = {kinds: popKinds(), open: popIsOpen()};
 ANSWER = () => ({status: 409, body: {conflict: REPORT}});
 itemIn('status').click();
@@ -2371,7 +2376,7 @@ def test_a_refusal_leaves_the_menu_up_saying_what_the_server_said(index: Index, 
     be looking at, and a box that closed under an answer that had not arrived
     makes a refused write look exactly like one that landed. So the refusal is
     drawn as an item, the keyboard is put on it, and the level under it is
-    untouched — every item it had is still there and `‹ Back` still gets out.
+    untouched — every item it had is still there and Escape still gets out.
 
     And nothing moved: `#base` is where it was, the row is unchanged, and the
     event pair still balances. `openproj:wrote` fires on a refusal too — it has
@@ -2413,7 +2418,7 @@ def test_a_refusal_leaves_the_menu_up_saying_what_the_server_said(index: Index, 
         "held-back `openproj:wrote` stops the moved-banner for ever"
     )
     assert got["after"]["open"] is True and got["after"]["kinds"] == got["top"], (
-        f"`‹ Back` under a refusal drew {got['after']}, and the level it pops to is "
+        f"Escape under a refusal drew {got['after']}, and the level it pops to is "
         f"{got['top']}"
     )
     assert got["conflict"]["said"] == got["REPORT"], (
@@ -3013,7 +3018,7 @@ const headingIn = () => {
 // it is how `document.activeElement.dataset.field` answers which box the
 // keyboard is in — and a bare attribute selector would find the control inside
 // the part as well as the part.
-const PART = '[data-field="%"]:not(input):not(select)';
+const PART = '[data-field="%"]:not(input):not(select):not(.rungpick)';
 const fieldIn = name => POP.querySelector(PART.replace('%', name));
 // The cell the value lives in: a list row's `<dd>`, and the part itself for the
 // title and the chips, which have no inner box.
@@ -3027,7 +3032,7 @@ const cellIn = name => {
 // again — so `boxIn` answering `null` is the normal state and not a failure.
 const boxIn = name => {
   const cell = cellIn(name);
-  return cell ? cell.querySelector('input, select') : null;
+  return cell ? cell.querySelector('input, select, .rungpick') : null;
 };
 // What the card SAYS this field is, as text. The value when nothing is open,
 // and the control's own value when something is.
@@ -3046,7 +3051,8 @@ const valueIn = name => {
 // asked is that the thing on screen is a thing you can press.
 const openField = name => { fieldIn(name).click(); return boxIn(name); };
 const fieldsInForm = () =>
-  [...POP.querySelectorAll('[data-field]:not(input):not(select)')].map(one => one.dataset.field);
+  [...POP.querySelectorAll('[data-field]:not(input):not(select):not(.rungpick)')]
+    .map(one => one.dataset.field);
 // Which of them can be opened at all, and which say why not.
 const opensInForm = () =>
   [...POP.querySelectorAll('.popopens')].map(one => one.dataset.field);
@@ -3084,7 +3090,7 @@ const cancelIn = () => POP.querySelector('[data-kind="form-cancel"]');
 // they are pressed, so this is normally empty — what is in it is what the box
 // opened on, or what somebody has clicked.
 const opensNow = () =>
-  [...POP.querySelectorAll('[data-field] input, [data-field] select')]
+  [...POP.querySelectorAll('[data-field] input, [data-field] select, [data-field] .rungpick')]
     .map(one => one.dataset.field);
 // **Whether a form is on screen, which is not the same question as whether one
 // is in the box.** `popClose` deliberately leaves the children where they are —
@@ -3197,8 +3203,11 @@ for (const kind of drawn) {
   // One level down, or still at the top: a refused item answers and the box
   // stays exactly where it was, which is a different thing from drilling into an
   // empty list and is the difference this reads.
+  // On a desktop the list opens beside the item (a cascade) and the box itself
+  // stays where it was, so "opened" is the submenu hanging off THIS item.
   at.depth = POP_STACK.length;
-  at.label = POP.getAttribute('aria-label');
+  at.opened = POP_SUB_FROM === item;
+  at.label = (at.opened ? POP_SUB : POP).getAttribute('aria-label');
   at.inside = popControls().map(one => ({kind: one.dataset.kind, word: wordIn(one)}));
   seen[kind] = at;
   popClose();
@@ -3256,16 +3265,16 @@ def test_new_child_offers_exactly_the_kinds_that_rung_may_hold(index: Index, tmp
         )
         assert at["mark"] == "›", f"a {kind}'s New child draws {at['mark']!r} behind the word"
         assert at["disabled"] is None, f"a {kind} may hold {got['child'][kind]} and was refused"
-        assert at["depth"] == 2, f"pressing New child on a {kind} did not drill: {at}"
+        assert at["opened"], f"pressing New child on a {kind} did not open its list: {at}"
+        assert at["depth"] == 1, f"the box moved under a {kind}'s New child: {at}"
         assert at["label"] == "New child", at["label"]
         assert [one["kind"] for one in at["inside"]] == [
-            "back",
-            *[f"new-child-{child}" for child in got["child"][kind]],
+            f"new-child-{child}" for child in got["child"][kind]
         ], at["inside"]
-        assert [one["word"] for one in at["inside"][1:]] == [
+        assert [one["word"] for one in at["inside"]] == [
             HUMAN[child] for child in got["child"][kind]
         ], (
-            f"a {kind}'s children are drawn {[one['word'] for one in at['inside'][1:]]} — the "
+            f"a {kind}'s children are drawn {[one['word'] for one in at['inside']]} — the "
             "words are `HUMAN`'s, or this menu has a vocabulary of its own"
         )
     for kind in empty:
@@ -3275,8 +3284,8 @@ def test_new_child_offers_exactly_the_kinds_that_rung_may_hold(index: Index, tmp
         assert at["said"] == at["why"], (
             f"pressing a {kind}'s refused New child announced {at['said']!r}"
         )
-        assert at["depth"] == 1, (
-            f"a refused New child drilled into an empty list on a {kind}: {at}"
+        assert at["depth"] == 1 and not at["opened"], (
+            f"a refused New child opened an empty list on a {kind}: {at}"
         )
     for kind, item in got["unplanned"].items():
         assert got["child"][kind] == [], (
@@ -4183,7 +4192,9 @@ const seen = {
 // status too — the card draws the same fact twice and so does this.
 const before = form.querySelector('.card-chips .hill-ball').dataset.word;
 const pick = openField('status');
-const other = [...pick.options].map(one => one.value).find(one => one && one !== row.status);
+// The picker's rows are what it offers: the shell's list, narrowed to this kind.
+const other = rungRows(pick).map(one => one.dataset.value)
+  .find(one => one && one !== row.status);
 if (other) {
   typeInto('status', other);
   seen.moved = {
@@ -6414,3 +6425,173 @@ def test_the_cards_blockers_are_their_titles_on_the_graph(demo_root: Path, tmp_p
         "words": [titles[1], titles[0]],
         "typed": "",
     }, f"a whole id written into the box is not a chip: {got['picked']}"
+
+
+# --------------------------------------------------------------------------- #
+# The cascade: a submenu beside its item, and the menu does not move
+# --------------------------------------------------------------------------- #
+
+
+# The menu opened at a point, its box read, and the Status list opened the way the
+# pointer opens it, by resting on the item. Every box rounded to a tenth.
+_CASCADE = """
+const box = el => { const r = el.getBoundingClientRect();
+  return [r.left, r.top, r.right, r.bottom].map(v => Math.round(v * 10) / 10); };
+const top = item => POP.querySelector(`:scope > .popitem[data-kind="${item}"]`);
+const target = rowWhere(one => one.kind === 'task' && one.status);
+const openAt = x => rightOn(menuRows().find(tr => tr.dataset.id === target.id), x, 300);
+openAt(400);
+const before = box(POP);
+top('status').dispatchEvent(new PointerEvent('pointerover', {bubbles: true}));
+await rest(300);
+const sub = document.getElementById('popsub');
+const rested = {parent: box(POP), sub: sub && box(sub), item: box(top('status')),
+  first: sub && box(sub.querySelector(':scope > .popitem')),
+  role: sub && sub.getAttribute('role'), haspopup: top('status').getAttribute('aria-haspopup'),
+  expanded: top('status').getAttribute('aria-expanded'),
+  focusInSub: !!sub && sub.contains(document.activeElement)};
+// Up and Down stay in the level the keyboard is in.
+top('status').focus();
+pressKey('ArrowRight');
+const inSub = [];
+for (let i = 0; i < 8; i++) {
+  inSub.push(document.activeElement.dataset.kind);
+  pressKey('ArrowDown');
+}
+pressKey('Escape');
+const out = {focused: document.activeElement.dataset.kind, open: popIsOpen(),
+             sub: !!document.getElementById('popsub'),
+             expanded: top('status').getAttribute('aria-expanded')};
+popClose();
+// And near the right edge, where the list has no room on the right.
+openAt(innerWidth - 30);
+top('priority').click();
+const flipped = {parent: box(POP), sub: box(document.getElementById('popsub'))};
+// The status item, coloured as the picker's row for the same status is.
+popClose();
+openAt(400);
+top('status').click();
+// The picker's list is closed, so its row gives the colours and a chip standing
+// in the table's status column gives the vocabulary's width.
+const column = document.querySelector('td[data-col="status"] > .chip');
+const colours = [...document.querySelectorAll('#popsub .popchip .chip')].map(chip => {
+  const value = chip.closest('.popitem').dataset.kind.replace('status-', '');
+  const twin = document.querySelector(`#stpop [data-value="${value}"] .chip`);
+  const look = el => { const s = getComputedStyle(el);
+    return [s.color, s.backgroundColor, s.borderTopColor]; };
+  return {value, menu: look(chip), picker: look(twin),
+          width: Math.round(chip.getBoundingClientRect().width * 10) / 10,
+          column: Math.round(column.getBoundingClientRect().width * 10) / 10};
+});
+return {before, rested, inSub, out, flipped, colours,
+        ladder: POP_SCHEMA.statuses[target.kind]};
+"""
+
+
+def test_a_submenu_opens_beside_its_item_and_the_menu_does_not_move(
+    index: Index, tmp_path: Path
+):
+    """jcanton, 2026-11-24: the drilled list was placed again against the pointer, so
+    a menu at y≈490 beside a node came back at y≈1070 over other nodes. A submenu
+    opens beside its item now, aligned with it, and the menu it opened from does
+    not move by a pixel. Resting on the item opens it; the list is a `role="menu"`
+    and its item says it has one and whether it is open; Up and Down never leave
+    the list; Escape closes only the list and hands the keyboard back; near the
+    right edge it opens on the left; and the status items are the picker's chips,
+    in the ladder's colours, at the picker's width.
+    """
+    got = _at_the_table(index, tmp_path / "cascade.html", _CASCADE)
+
+    rested = got["rested"]
+    assert rested["parent"] == got["before"], f"the menu moved: {got['before']} to {rested}"
+    assert rested["sub"], "resting on Status opened nothing"
+    assert rested["role"] == "menu" and rested["haspopup"] == "menu", rested
+    assert rested["expanded"] == "true", rested
+    assert not rested["focusInSub"], (
+        "a pointer resting on an item took the keyboard into its list"
+    )
+    assert abs(rested["sub"][0] - rested["parent"][2]) <= 3, f"not beside the menu: {rested}"
+    assert abs(rested["first"][1] - rested["item"][1]) <= 0.5, (
+        f"the list's first item is not level with the item it opened from: {rested}"
+    )
+    ladder = [f"status-{status}" for status in got["ladder"]]
+    assert set(got["inSub"]) <= set(ladder), f"Down walked out of the list: {got['inSub']}"
+    assert got["out"] == {"focused": "status", "open": True, "sub": False, "expanded": "false"}, (
+        got["out"]
+    )
+    flipped = got["flipped"]
+    assert flipped["sub"][2] <= flipped["parent"][0] + 3, (
+        f"no room on the right, and it did not flip: {flipped}"
+    )
+    assert got["colours"], "the status list drew no chips"
+    for one in got["colours"]:
+        assert one["menu"] == one["picker"], (
+            f"the menu's {one['value']} is not the picker's: {one['menu']} against {one['picker']}"
+        )
+        assert abs(one["width"] - one["column"]) <= 0.2, (
+            f"the menu's {one['value']} chip is {one['width']} wide, "
+            f"and the column's is {one['column']}"
+        )
+    assert len({tuple(one["menu"]) for one in got["colours"]}) == len(got["colours"]), (
+        "two statuses wear one colour"
+    )
+
+
+# A phone: no room to cascade into, so the list drills down in the box, which
+# stays where it was.
+_ON_A_PHONE = """
+const box = el => { const r = el.getBoundingClientRect(); return [r.left, r.top]; };
+const target = rowWhere(one => one.kind === 'task' && one.status);
+rightOn(menuRows().find(tr => tr.dataset.id === target.id), 120, 200);
+const before = box(POP);
+POP.querySelector(':scope > .popitem[data-kind="status"]').click();
+return {before, after: box(POP), kinds: popKinds(), sub: !!document.getElementById('popsub'),
+        width: innerWidth};
+"""
+
+
+def test_a_phone_drills_down_in_place(index: Index, tmp_path: Path):
+    from browser import measured_on_a_phone
+
+    found = measured_on_a_phone(
+        chrome(),
+        {"table": a_writers_table(index)},
+        tmp_path / "phone",
+        _OPENING + _READERS + _served(index) + _WRITING + _ON_A_PHONE,
+    )
+    got = found["table"]
+    assert got["width"] == 390, f"this is not a phone: {got}"
+    assert not got["sub"], "a phone got a cascade it has no room for"
+    assert got["kinds"][0] == "back", f"no drill-down on a phone: {got['kinds']}"
+    assert got["after"] == got["before"], f"the drill moved the menu: {got}"
+
+
+# A graph node's menu, with Priority opened beside it.
+_THE_GRAPH_CASCADES = """
+const node = cy.nodes().filter(one => !one.isParent() && one.data('kind') === 'task')[0];
+if (!node) return {error: 'the graph drew no task'};
+node.emit({type: 'cxttap', position: node.position(),
+           originalEvent: {clientX: 420, clientY: 300, shiftKey: false, preventDefault() {}}});
+const before = POP.getBoundingClientRect();
+POP.querySelector(':scope > .popitem[data-kind="priority"]').click();
+const after = POP.getBoundingClientRect();
+const sub = document.getElementById('popsub');
+return {before: [before.left, before.top], after: [after.left, after.top], sub: !!sub,
+        chips: sub ? sub.querySelectorAll('.popchip .pribars').length : 0};
+"""
+
+
+def test_the_graph_cascades_too(index: Index, tmp_path: Path):
+    """The same menu on the graph's nodes, where the screenshots that asked for this
+    were taken."""
+    got = measured_in(
+        chrome(),
+        render_graph(index, ROUTES, base_commit=HEAD, may_write=True),
+        tmp_path / "graph.html",
+        1280,
+        _THE_GRAPH_CASCADES,
+        patience=4000,
+    )
+    assert not got.get("error"), got
+    assert got["sub"] and got["chips"] == len(PRIORITIES), got
+    assert got["after"] == got["before"], f"the graph's menu moved: {got}"

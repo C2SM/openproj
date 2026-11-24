@@ -6,13 +6,20 @@ from markupsafe import Markup
 
 from ..index import Index
 from ..model import KINDS as KIND_LADDER
-from ..vendor import _library
+from ..vendor import _library, _meter_font_uri
 from .controls import _FILTER_JS, _facets_html, _summary_html
 from .env import _compiled
 from .pop import _POP_STYLE, _pop_js
 from .rows import _row
 from .shell import STATIC, Links, _page, _titles
-from .tokens import PRIORITIES, PRIORITY_GLYPH, PRIORITY_LEVEL, STATUS_GLYPH, STATUSES
+from .tokens import (
+    PRIORITIES,
+    PRIORITY_BARS,
+    PRIORITY_LEVEL,
+    PRIORITY_METER_CHAR,
+    STATUS_GLYPH,
+    STATUSES,
+)
 
 
 def _elements(index: Index) -> list[dict]:
@@ -313,25 +320,42 @@ const LINE = () => byStatus('-line');
 // timeline draws at a bar's left edge and the legend below shows in its swatch.
 // Not a token: a shape, so it survives a screenshot, a projector and deuteranopia.
 const GLYPH = {{ glyphs|tojson }};
-// A card's name, and the two marks in front of it: the priority block, then the
-// status glyph, then the title — the same order and the same characters the
-// table's two chips carry, on one line.
+// A box's name, and the two marks in front of it: the priority meter, then the
+// status glyph, then the title, the same order the table's two chips carry.
 //
-// The priority mark was an image in the corner of the card, on the grounds that
-// cytoscape draws a label with the font it is given and no fallback chain, so a
-// block element came out as a .notdef box. That is not what happens: asked on a
-// canvas with this page's own stack, `\u2585` measures 10px against 6.56px for a
-// private-use codepoint, which is the browser falling back per glyph exactly as
-// it does in HTML. jcanton, 2026-08-21: "the priority tofu should be just a
-// glyph in line with the status glyph, currently it's separate and vertically
-// aligned".
+// The meter is ONE character, a private-use codepoint per rung that only the
+// `openproj meter` face draws (`tools/meter_font.py`): solid bars for the lit
+// ones and stubs for the rest, since a label is one colour and cannot dim half a
+// glyph. Canvas text falls back per glyph through the stack as HTML does, which
+// is why the face goes first in `LABEL_FONT` and its `unicode-range` keeps it to
+// those five codepoints. The five block characters it replaces were in no face
+// this page carries and made a box's name spill over its box.
 //
-// What it costs: a label is one colour, so the rung's colour is not on the card.
-// The border's thickness still carries it — that is the channel the legend keys —
-// and the colour is on the same mark everywhere it can be, which is the table,
-// the detail page and the key itself.
+// What it costs: a label is one colour, so the rung's colour is not on the box.
+// The border's thickness still carries it, which is the channel the legend keys.
 const PRIGLYPH = {{ priglyphs|tojson }};
+// The stack every label is drawn and measured in: the meter face first, for its
+// five codepoints and nothing else, then the page's own.
+const LABEL_FONT = `"openproj meter", ${token('--font-sans')}`;
+// Asked for by name, because a canvas never asks: `document.fonts.ready` can
+// settle before anything has requested this face, and a box's name measured
+// before it arrives is measured in a fallback and drawn at the wrong width. The
+// first layout waits on this (`relayout` below), and so does the repaint.
+// Whether a box's name may carry its meter yet. Cytoscape draws a label once and
+// keeps the drawing, and restyling with the same font string does not redraw it:
+// a meter written before its face arrived stayed the platform's unknown-glyph box
+// for good. So the meter joins the name only once the face is here, and the new
+// text is what makes cytoscape draw the label again.
+let METER_READY = !document.fonts;
+const LABEL_FONT_LOADED = document.fonts
+  // A size because the shorthand needs one; which faces load depends only on the
+  // family, the weight and the text.
+  ? Promise.all(['12px "openproj meter"', `600 12px ${token('--font-sans')}`]
+      .map(font => document.fonts.load(font, Object.values(PRIGLYPH).join('') + 'Ag')))
+      .catch(() => null)
+  : Promise.resolve();
 const LEVELS = {{ levels|tojson }};
+const BARS = {{ bars|tojson }};
 
 // A card's name, and its two marks — as a picture rather than as two characters
 // in front of the title, because a cytoscape label is ONE ink and jcanton wants
@@ -356,7 +380,7 @@ const LEVELS = {{ levels|tojson }};
 // will give: the shape is there, the colour is not.
 const labelOf = node => node.isChildless()
   ? (node.data('label') || '')
-  : [PRIGLYPH[node.data('priority')] || '', GLYPH[node.data('status')] || '',
+  : [METER_READY ? PRIGLYPH[node.data('priority')] || '' : '', GLYPH[node.data('status')] || '',
      node.data('label') || ''].filter(Boolean).join(' ');
 
 // TELLING ONE EDGE FROM ANOTHER. Where several dependencies run through the same
@@ -496,12 +520,12 @@ function edgeWidth(edge) {
 // two fills, so that is where they go, and it comes out looking like the thing
 // that could not be written.
 //
-// The block and the glyph are the same characters `PRIORITY_GLYPH` and
-// `STATUS_GLYPH` write into a chip, a menu and a legend key: one notation for one
-// fact, drawn five ways and read as one.
+// The meter is `PRIORITY_BARS`, the geometry `priority_bars` draws into a chip
+// and a legend key, lit in the rung's colour over a `--line` track: one notation
+// for one fact. The glyph is the character `STATUS_GLYPH` writes everywhere.
 function marksImage(node) {
   const priority = node.data('priority'), status = node.data('status');
-  const block = PRIGLYPH[priority] || '';
+  const level = LEVELS[priority] || 0;
   const glyph = GLYPH[status] || '';
   const hue = token('--pri-' + String(priority).replace(/_/g, '-')) || token('--fg');
   // The BORDER's colour and not the chip ink the table uses: the ground behind
@@ -510,17 +534,16 @@ function marksImage(node) {
   const ink = LINE()[status] || token('--fg');
   const stack = token('--font-sans').replace(/"/g, "'");
   const safe = one => one.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  // Both sit on one baseline. The block character draws from the baseline
-  // downwards in most faces, so the two are placed at the same y and the block's
-  // own metrics put it where a chip puts it.
-  const marks = [
-    block ? `<text x="0" y="11" font-family="${stack}" font-size="12" `
-            + `fill="${hue}">${safe(block)}</text>` : '',
-    glyph ? `<text x="13" y="11" font-family="${stack}" font-size="11" `
-            + `font-weight="700" fill="${ink}">${safe(glyph)}</text>` : '',
-  ].join('');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="14" `
-    + `viewBox="0 0 24 14">${marks}</svg>`;
+  // The track is the border's ink, faint, and not the page's `--line`: the ground
+  // here is the status fill, which `--line` can be the same lightness as.
+  // Bottom-aligned on the glyph's baseline, 11px tall like the glyph's caps.
+  const bars = level ? BARS.map(([x, y, width, height], i) =>
+    `<rect x="${x}" y="${y + 1}" width="${width}" height="${height}" `
+    + (i < level ? `fill="${hue}"` : `fill="${ink}" fill-opacity=".28"`) + '/>').join('') : '';
+  const marks = bars + (glyph ? `<text x="${level ? 17 : 0}" y="11" font-family="${stack}" `
+    + `font-size="11" font-weight="700" fill="${ink}">${safe(glyph)}</text>` : '');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="14" `
+    + `viewBox="0 0 28 14" shape-rendering="crispEdges">${marks}</svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
 
@@ -532,7 +555,7 @@ const ruler = document.createElement('canvas').getContext('2d');
 const GROUP_SIZE = 12;
 const GROUP_MAX = 300;    // the width the label is told to ellipsise at
 function groupWidth(node) {
-  ruler.font = `600 ${GROUP_SIZE}px ${token('--font-sans')}`;
+  ruler.font = `600 ${GROUP_SIZE}px ${LABEL_FONT}`;
   // The string the box is actually labelled with, glyph included. Measuring the
   // bare title put every group name a glyph's width off the box it belongs to.
   return Math.min(GROUP_MAX, ruler.measureText(labelOf(node)).width);
@@ -899,7 +922,7 @@ const cy = cytoscape({
         // One typeface for the whole app, this canvas included — and the ruler
         // above measures group labels in it, so a second stack here would put
         // every group label a few pixels off the box it belongs to.
-        'font-family': token('--font-sans'),
+        'font-family': LABEL_FONT,
         // text-wrap alone does nothing: without a max width the label just
         // overflows the box it is supposed to sit inside.
         // The two marks, drawn at the card's left edge and level with the middle
@@ -907,13 +930,13 @@ const cy = cytoscape({
         // scales the image to the node and a wide card gets a stretched one.
         'background-image': node => node.isChildless() ? marksImage(node) : 'none',
         'background-image-opacity': 1,
-        'background-width': 24, 'background-height': 14,
+        'background-width': 28, 'background-height': 14,
         'background-position-x': 8, 'background-position-y': '50%',
         'background-fit': 'none', 'background-clip': 'node',
         'background-image-containment': 'inside',
         // Narrower than the card and pushed right by the marks' own width, so the
         // two share the line without sharing any pixels.
-        'text-wrap': 'wrap', 'text-max-width': 106, 'text-margin-x': 15,
+        'text-wrap': 'wrap', 'text-max-width': 102, 'text-margin-x': 17,
         'background-color': e => COLOUR()[e.data('status')],
         // A rank, not arithmetic on the value: priority became a word, and
         // `4 - 'high'` is NaN, which cytoscape draws as no border at all.
@@ -1313,8 +1336,15 @@ function applyFilter() {
 // The first drawing. The constructor used to carry `layout:` and did this on the
 // way up; ELK is asked directly now, so it is asked here — and asked here rather
 // than left to `applyFilter`, which lays out only when the visible set has
-// CHANGED, and on the first pass it has not.
-relayout();
+// CHANGED, and on the first pass it has not. After the label faces have loaded,
+// so every box's name is measured at the width it is drawn at, and repainted
+// then for the labels cytoscape has already measured.
+LABEL_FONT_LOADED.then(() => {
+  METER_READY = true;
+  cy.style().selector(':parent').style({'label': labelOf}).update();
+  paint();
+  relayout();
+});
 
 addEventListener('openproj:filter', applyFilter);
 // Clear drops the focus as well as the query string. Both narrow this canvas,
@@ -1987,10 +2017,25 @@ def _graph_css() -> str:
     `_timeline_css`, and for the same reason: the number has to be derived, and a
     constant cannot derive.
     """
-    return _compiled(_GRAPH_STYLE).render(statuses=STATUSES, priorities=PRIORITIES)
+    return _compiled(_GRAPH_STYLE).render(
+        statuses=STATUSES, priorities=PRIORITIES, meterfont=_meter_font_uri()
+    )
 
 
 _GRAPH_STYLE = """
+/* The priority meter as five glyphs, for a box's name on the canvas, which cannot
+   hold the SVG every other page draws. `tools/meter_font.py` draws it and it is
+   this repository's own, BSD-3-Clause; the bytes are static/openproj-meter.ttf,
+   checksummed in static/SHA256SUMS. Inlined for the reason Inter is, and
+   `unicode-range` holds it to its own five codepoints, so it is first in the
+   labels' stack and never draws a letter. Here and not in the shell, because the
+   graph is the one page with a canvas to draw it on. */
+@font-face {
+  font-family: "openproj meter";
+  font-display: block;
+  src: url("{{ meterfont }}") format("truetype");
+  unicode-range: U+E001-E005;
+}
 /* The two key rows, over the drawing instead of above it. The canvas is the
    tallest thing on this page and they were costing it two lines before it began.
    Top right, because the layout runs left to right and top down, so that corner
@@ -2261,10 +2306,13 @@ def render_graph(
         statuses=STATUSES,
         priorities=PRIORITIES,
         glyphs=STATUS_GLYPH,
-        # The priority character, for the mark in front of a card's title. The
-        # same map the table's menus write, so a card and a cell say the rung with
-        # the same glyph.
-        priglyphs=PRIORITY_GLYPH,
+        # The priority meter as one character per rung, for a box's name, which
+        # is canvas text and nothing else. Drawn by `openproj-meter.ttf`.
+        priglyphs=PRIORITY_METER_CHAR,
+        # And as geometry, for a card's marks image, which draws the bars itself:
+        # an image has no stylesheet, so the classes `priority_bars` writes would
+        # colour nothing in it.
+        bars=PRIORITY_BARS,
         levels=PRIORITY_LEVEL,
         carded={rung.name: rung.carded for rung in KIND_LADDER},
         total=len(index.plan),
@@ -2279,11 +2327,12 @@ def render_graph(
     # shell's, which ships on all twelve pages for a thing three of them draw.
     # Exactly what `table.py` already does with `_SUGGEST_STYLE`.
     return _page(
-        "openproj — graph",
+        "Graph",
         body,
         _graph_css() + _POP_STYLE,
         links,
         "graph",
         index.unreadable,
         index.unusable,
+        face=index.face,
     )
