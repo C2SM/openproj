@@ -16,6 +16,7 @@ from .tokens import (
     _read_date,
     _status_class,
     priority_bars,
+    priority_picker,
 )
 
 # The three characters that can end a `<script>` block, spelled as JSON escapes.
@@ -176,6 +177,8 @@ _ENV.globals["mark"] = lambda kind, value: (
 # browser is handed, so the markup the browser writes and the markup Jinja writes
 # are the same markup.
 _ENV.globals["pri"] = priority_bars
+# A priority, picked: the button whose list the page draws (`priority_picker`).
+_ENV.globals["pripick"] = priority_picker
 
 
 _ENV.globals["on"] = _read_date

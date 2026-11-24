@@ -16,7 +16,6 @@ from .tokens import (
     HISTORY_MARKS,
     KINDS,
     PEOPLE_FIELDS,
-    PRIORITIES,
     TEMPLATE_ART,
     TEMPLATES,
     _human,
@@ -4233,24 +4232,14 @@ for (const input of document.querySelectorAll('[data-suggest]')) attachSuggest(i
 # control on the detail page or the create page had a name.
 _CONTROL = """
 {% if f.type == "priority" %}
-<select name="{{ f.name }}" id="{{ f.id }}" data-type="text" class="field prisel"
-        data-rung="{{ f.value or '' }}"
-        {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}
-        {% if f.disabled %}disabled{% endif %}
-        {% if f.gates %}data-required-at="{{ f.gates|join(' ') }}"{% endif %}>
-  {#- The meter in front of the word, the same one the table draws in a cell —
-      jcanton, 2026-08-20: "can we have the status and priority icons and colours
-      also in the dropdowns for editing a record". A customizable select
-      (`select.prisel` in the shell), so the option holds the drawing itself, and
-      the closed control shows it too through `<selectedcontent>`. A browser
-      without one draws each option as its text, the word; its closed control
-      gets the meter from `data-rung` (`_priority_select_css`). -#}
-  <button><selectedcontent></selectedcontent></button>
-  {% for s in priorities %}
-  <option value="{{ s }}" {% if s == f.value %}selected{% endif %}>{{
-    pri(s) }}<span>{{ s|human }}</span></option>
-  {% endfor %}
-</select>
+{#- The meter in front of the word, the same one the table draws in a cell —
+    jcanton, 2026-08-20: "can we have the status and priority icons and colours
+    also in the dropdowns for editing a record". The app's own picker
+    (`priority_picker`), whose list the page draws, so the meter is in it in
+    every browser; a native select's list is drawn where it cannot go. -#}
+{{ pripick(f.value, name=f.name, id=f.id, classes="field", disabled=f.disabled,
+           extra={"aria-describedby": describedby,
+                  "data-required-at": (f.gates or [])|join(' ')}) }}
 {% elif f.type == "bool" %}
 <input type="checkbox" name="{{ f.name }}" id="{{ f.id }}" data-type="bool" class="field"
        {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}
@@ -4415,7 +4404,7 @@ def _control_html(
     # `aria-describedby` is a property of a control, and a template where
     # three of four branches silently drop it is the copy that goes stale the
     # day a fourth hint is written.
-    return _fragment(_CONTROL, f=field, priorities=PRIORITIES, describedby=describedby)
+    return _fragment(_CONTROL, f=field, describedby=describedby)
 
 
 def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> dict:

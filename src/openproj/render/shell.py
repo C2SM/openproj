@@ -24,12 +24,14 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
-    PRIORITY_BARS,
+    PRIORITIES,
     PRIORITY_LEVEL,
+    PRIORITY_LIST_ID,
     STATUS_GLYPH,
     STATUSES,
     card_facts,
     priority_bars,
+    priority_picker,
 )
 
 
@@ -1827,59 +1829,51 @@ select.pick.st-{{ s }} { background: var(--st-{{ s }}-soft); color: var(--st-{{ 
 .pribars[data-rung="medium"]    { color: var(--pri-medium); }
 .pribars[data-rung="high"]      { color: var(--pri-high); }
 .pribars[data-rung="very_high"] { color: var(--pri-very-high); }
-/* A SELECT WHOSE OPTIONS ARE PRIORITIES. Chrome's customizable select, so each
-   `<option>` holds the meter and the word rather than a string of characters
-   standing in for it: the block characters those options carried were in no
-   face the page has, and five of them made the open list twice as wide as the
-   closed control. jcanton, 2026-11-24: "same meter everywhere".
+/* A PRIORITY, PICKED. A button showing the meter and the word, and the page's
+   own list of rungs hanging off the body (`priority_picker` in `tokens.py`, and
+   the controller in the shell's script). It replaced a `<select>`, whose open
+   list a browser draws where the meter cannot go: Firefox in its parent process
+   without the page's fonts, Safari as a native menu. jcanton, 2026-11-24: the
+   same meter in every browser.
 
-   A browser without `base-select` draws an option as its text and nothing else,
-   so its options are the word: Firefox 160 keeps the SVG in the DOM and draws
-   none of it, and an older parser drops the tags outright. Its closed control
-   gets the meter from `_priority_select_css` instead. Its open list gets
-   nothing, because that list is drawn where page fonts and drawings do not
-   reach (see there).
-
-   Here in the shell and not on a page, because these selects are on three pages
-   (the table's cell editor, the record page and the cycle page) and the rules
-   match `select.prisel` and nothing else. */
-select.prisel { appearance: base-select; }
-select.prisel::picker(select) {
-  appearance: base-select;
-  border: 1px solid var(--line-strong); border-radius: 4px; padding: .2rem 0;
-  background: var(--surface); color: var(--fg);
-  box-shadow: 0 6px 18px rgb(0 0 0 / .18);
-  /* The list reads the same wherever it opens from. Opened from a chip (the
-     edit card's priority) it inherited the chip's capitals and monospace. */
-  font: 13px var(--font-sans); text-transform: none; letter-spacing: normal;
-}
-select.prisel option { display: flex; align-items: center; gap: .4rem; }
-/* Inline, because the record page makes its fields `display: block` and a block
-   here put the chevron on a line of its own. Not fought over with a heavier
-   `display`: anything heavy enough to beat `.record.editing .field` also beats
-   the `[hidden]` and `.folded` rules beside it and shows a field that is meant
-   to be away. */
-select.prisel selectedcontent { display: inline-flex; align-items: center; gap: .4rem;
-                                vertical-align: middle; }
-select.prisel option { padding: .2rem .6rem; white-space: nowrap; }
-/* The list's own checkmark is a second mark beside a meter that already says
-   which rung it is; the chosen row is the ground the hovered one gets. */
-select.prisel option::checkmark { display: none; }
-select.prisel option:checked { background: var(--surface-2); font-weight: 600; }
-select.prisel option:hover { background: var(--surface-2); }
-select.prisel option:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-/* The chevron a native select draws, and not base-select's own solid triangle:
-   on the cycle page this select stands beside a native status select, and two
-   carets side by side read as two kinds of control. */
-select.prisel::picker-icon {
-  content: ""; width: .32em; height: .32em; margin: 0 .15em .2em .5em;
+   The face stacks every rung's meter and word in one grid cell, the current one
+   seen and the rest `hidden`-by-visibility, so the button is as wide as its
+   widest value, as a select was, and does not jump when the value changes. */
+.pripick { display: inline-flex; align-items: center; gap: .4rem; text-align: left;
+           white-space: nowrap; }
+.pripick-face { display: inline-grid; vertical-align: middle; }
+.pripick-now, .pripick-ghost { grid-area: 1 / 1; display: inline-flex; align-items: center;
+                               gap: .4rem; }
+.pripick-ghost { visibility: hidden; }
+/* The chevron a native select draws. At the right edge whether the button is laid
+   out as flex or made a block by a page (the record page's fields are), and
+   floated in the second case rather than fought over: a `display` heavy enough
+   to beat `.record.editing .field` would also beat the `[hidden]` and `.folded`
+   rules beside it. */
+.pripick-chev {
+  width: .32em; height: .32em; margin: 0 .2em .2em auto; float: right; margin-top: .45em;
   border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
 }
-/* At the right edge, where a native select keeps it: pushed there in a select
-   laid out as flex (the table, the cycle page), floated there in one the record
-   page has made a block, and centred on the line in both. */
-select.prisel::picker-icon { margin-left: auto; float: right; margin-top: .45em; }
-{{ priselect }}
+/* The record page's field box, which its sheet gives `input`, `select` and
+   `textarea` by element and so not this button. */
+.pripick.field { width: 100%; box-sizing: border-box; font: inherit; padding: .25rem .4rem; }
+/* The list. Fixed and hanging off the body, so the table's scroll box and the
+   edit card cannot clip it, and placed by the controller under its button and
+   inside the viewport, which is how the right-click menu (`#pop`) is placed. */
+.pripop {
+  position: fixed; z-index: 1200; margin: 0; padding: .2rem 0; list-style: none;
+  width: max-content; max-width: calc(100vw - 16px); overflow-y: auto;
+  border: 1px solid var(--line-strong); border-radius: 4px;
+  background: var(--surface); color: var(--fg); box-shadow: 0 6px 18px rgb(0 0 0 / .18);
+  font: 13px var(--font-sans);
+}
+.pripop [role="option"] { display: flex; align-items: center; gap: .4rem;
+                          padding: .25rem .7rem; cursor: pointer; white-space: nowrap; }
+/* Where the keyboard is, and which rung is held: two facts and two marks, the
+   ground for the first and the weight for the second, as the icon picker on the
+   People page marks them. */
+.pripop [role="option"].on { background: var(--surface-2); }
+.pripop [role="option"][aria-selected="true"] { font-weight: 600; }
 /* The colour is on the mark and not on the chip: a chip with a coloured ground
    in the column next to Status would be two ladders competing at one weight, and
    the ground is what Status uses. */
@@ -2557,6 +2551,18 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     instead: the toolbar drew its buttons into a script tag, and the editor's own
     tests caught it as an SVG laid out at 0x0. -#}
 <script id="chipmarks" type="application/json">{{ cardmarks|tojson }}</script>
+{#- The one list every priority picker on the page opens (`priority_picker`), and
+    the picker itself in a template for the editors a script builds: the table's
+    cell and the edit card clone it rather than writing a second copy of the
+    markup. Hanging off the body and fixed, so no scroll box or card clips it.
+    `aria-label` because it is a list of one field's values wherever it opens. -#}
+<ul id="{{ prilist }}" class="pripop" role="listbox" aria-label="Priority" hidden>
+  {%- for rung in priorities %}
+  <li id="{{ prilist }}-{{ rung }}" role="option" data-value="{{ rung }}"
+      aria-selected="false">{{ pri(rung) }}<span>{{ rung|human }}</span></li>
+  {%- endfor %}
+</ul>
+<template id="pripick-template">{{ pripick_template }}</template>
 {#- The hill's geometry, beside them and for the same reason again. The detail
     page's hill is drawn in Jinja and the card's is drawn in JavaScript, and this
     is the one set of numbers both read: a second implementation of the curve is
@@ -3235,13 +3241,194 @@ function priBars(priority) {
   const bars = CARD_MARKS.bars || {};
   return Object.prototype.hasOwnProperty.call(bars, priority) ? bars[priority] : '';
 }
-// The rung a priority select holds, kept on the select itself, which is what draws
-// the closed control's meter in a browser without `base-select`. One listener for
-// every priority select on every page, the ones built later included.
-document.addEventListener('change', event => {
-  const box = event.target;
-  if (box && box.matches && box.matches('select.prisel')) box.dataset.rung = box.value;
-}, true);
+
+// **A PRIORITY, PICKED** (`priority_picker` in `tokens.py`). One controller for
+// every picker on every page, delegated from the document, so the editors the
+// table and the edit card build later need nothing wired of their own.
+//
+// Focus stays on the button while the list is open, and the row the keyboard is
+// on is named by `aria-activedescendant` on it: the select-only combobox. That is
+// the whole of why the table's blur-to-commit keeps working, since nothing blurs
+// while somebody picks, and why a press on a row is `preventDefault`ed on the way
+// down. The keys are taken in the capture phase while the list is open, so no
+// page's own Enter, Escape or arrows see a key the list answered.
+//
+// Built on the People page's icon picker (a button and a `role="listbox"`), with
+// the list hung off the body instead of beside the button, as the right-click
+// menu is, so neither the table's scroll box nor the edit card clips it.
+const PRI_LIST = document.getElementById('{{ prilist }}');
+const PRI_TEMPLATE = document.getElementById('pripick-template');
+let PRI_FOR = null;   // the button the list is open for
+let PRI_AT = 0;       // the row the keyboard is on
+const priRows = () => (PRI_LIST ? [...PRI_LIST.querySelectorAll('[role="option"]')] : []);
+
+// What the button shows: the row's own meter and word, cloned from the list the
+// server drew, so the face is the same markup as the row it was picked from. A
+// value that is no rung (whatever a hand-edited file holds) shows as itself.
+function priFace(button) {
+  const now = button.querySelector('.pripick-now');
+  if (!now) return;
+  const row = priRows().find(one => one.dataset.value === button.value);
+  const word = document.createElement('span');
+  word.className = 'pripick-word';
+  word.textContent = row ? row.querySelector('span').textContent
+    : button.value || button.dataset.nothing || '\u2014';
+  const meter = row && row.querySelector('svg');
+  now.replaceChildren(...(meter ? [meter.cloneNode(true)] : []), word);
+}
+
+// A picker for an editor a script builds, cloned from the shell's template.
+function priPicker(value, label) {
+  // `content` is where a browser keeps a template's children; the node harness
+  // keeps them as ordinary children, and the picker is the same either way.
+  const button = (PRI_TEMPLATE.content || PRI_TEMPLATE).firstElementChild.cloneNode(true);
+  button.value = value || '';
+  if (label) button.setAttribute('aria-label', label);
+  priFace(button);
+  return button;
+}
+
+function priMark(index) {
+  const rows = priRows();
+  PRI_AT = (index + rows.length) % rows.length;
+  rows.forEach((row, i) => row.classList.toggle('on', i === PRI_AT));
+  PRI_FOR.setAttribute('aria-activedescendant', rows[PRI_AT].id);
+  rows[PRI_AT].scrollIntoView({block: 'nearest'});
+}
+
+// Under the button, or over it when there is more room above, and inside the
+// viewport on both axes with 8px to spare, which is what a phone needs.
+function priPlace() {
+  if (!PRI_FOR) return;
+  const at = PRI_FOR.getBoundingClientRect();
+  const room = 8;
+  PRI_LIST.style.maxHeight = '';
+  const tall = PRI_LIST.offsetHeight, wide = PRI_LIST.offsetWidth;
+  const below = innerHeight - at.bottom - room, above = at.top - room;
+  const down = below >= tall || below >= above;
+  PRI_LIST.style.maxHeight = `${Math.max(80, down ? below : above) - 2}px`;
+  const height = Math.min(tall, PRI_LIST.offsetHeight);
+  PRI_LIST.style.top = `${down ? at.bottom + 2 : at.top - 2 - height}px`;
+  PRI_LIST.style.left = `${Math.max(room, Math.min(at.left, innerWidth - wide - room))}px`;
+}
+
+function priOpen(button) {
+  if (!PRI_LIST || button.disabled) return;
+  if (PRI_FOR && PRI_FOR !== button) priClose();
+  PRI_FOR = button;
+  const rows = priRows();
+  for (const row of rows)
+    row.setAttribute('aria-selected', String(row.dataset.value === button.value));
+  PRI_LIST.setAttribute('aria-label', button.getAttribute('aria-label') || 'Priority');
+  PRI_LIST.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  priPlace();
+  priMark(Math.max(0, rows.findIndex(row => row.dataset.value === button.value)));
+}
+
+function priClose() {
+  if (!PRI_FOR) return;
+  PRI_FOR.setAttribute('aria-expanded', 'false');
+  PRI_FOR.removeAttribute('aria-activedescendant');
+  PRI_LIST.hidden = true;
+  PRI_FOR = null;
+}
+
+// Written the way a select writes: the value, then `input` and `change` from the
+// control, bubbling, so the record page's dirty state, the cycle page's staging
+// and the edit card's chip all answer exactly as they did to the select.
+function priPick(row) {
+  const button = PRI_FOR;
+  priClose();
+  if (!button || !row || button.value === row.dataset.value) return;
+  button.value = row.dataset.value;
+  button.dispatchEvent(new Event('input', {bubbles: true}));
+  button.dispatchEvent(new Event('change', {bubbles: true}));
+}
+
+// The next row whose word starts with the letter, from the one after the
+// keyboard's, as a select's type-ahead goes.
+function priTypeAhead(letter) {
+  const rows = priRows();
+  for (let step = 1; step <= rows.length; step++) {
+    const i = (PRI_AT + step) % rows.length;
+    if (rows[i].textContent.trim().toLowerCase().startsWith(letter)) return priMark(i);
+  }
+}
+
+if (PRI_LIST) {
+  // Any write to `value` redraws the face, whoever made it: a pick, the record
+  // page's Reset, a refresh that redraws a row. Watched rather than routed
+  // through one setter, because pages assign `.value` to every control alike.
+  // Guarded, because a constructor that is missing throws, and a throw here would
+  // stop everything after it in the shell's script on every page. The node
+  // harness has none; a picker there still works and only skips the redraw.
+  if (typeof MutationObserver === 'function')
+    new MutationObserver(changes => {
+      for (const change of changes)
+        if (change.target.matches && change.target.matches('.pripick')) priFace(change.target);
+    }).observe(document, {subtree: true, attributes: true, attributeFilter: ['value']});
+
+  document.addEventListener('click', event => {
+    const button = event.target.closest && event.target.closest('.pripick');
+    if (!button || !button.isConnected) return;
+    // A click the keyboard made (`detail` 0) on a button that no longer has the
+    // focus is the tail of a key a page already answered: Enter in the table's
+    // cell commits and blurs, and the button's own activation follows it.
+    // Opening the list then would hang it off a button about to be redrawn.
+    if (!event.detail && document.activeElement !== button) return;
+    if (PRI_FOR === button) priClose(); else priOpen(button);
+  });
+  PRI_LIST.addEventListener('mousedown', event => event.preventDefault());
+  PRI_LIST.addEventListener('click', event => {
+    const row = event.target.closest('[role="option"]');
+    if (row) priPick(row);
+  });
+  document.addEventListener('pointerdown', event => {
+    if (PRI_FOR && !PRI_LIST.contains(event.target) && !PRI_FOR.contains(event.target)) priClose();
+  }, true);
+  document.addEventListener('focusout', event => {
+    if (PRI_FOR && event.target === PRI_FOR) priClose();
+  }, true);
+  addEventListener('resize', priPlace);
+  document.addEventListener('scroll', event => {
+    if (PRI_FOR && !PRI_LIST.contains(event.target)) priPlace();
+  }, true);
+
+  document.addEventListener('keydown', event => {
+    const button = event.target.closest && event.target.closest('.pripick');
+    if (!button) return;
+    const key = event.key;
+    const letter = key.length === 1 && /\S/.test(key) && !event.ctrlKey && !event.metaKey
+      && !event.altKey;
+    if (PRI_FOR !== button) {
+      // Closed: the arrows and a letter open it, as on a select. Enter and Space
+      // are left to the button, whose click opens it, and to the page, whose
+      // Enter on a closed control commits it in the table and takes the field in
+      // the edit card, as it did on the select.
+      if (key === 'ArrowDown' || key === 'ArrowUp' || letter) {
+        event.preventDefault();
+        event.stopPropagation();
+        priOpen(button);
+        if (letter) priTypeAhead(key.toLowerCase());
+      }
+      return;
+    }
+    // Open: Tab closes without picking and goes where it was going.
+    if (key === 'Tab') { priClose(); return; }
+    const rows = priRows();
+    if (key === 'ArrowDown') priMark(PRI_AT + 1);
+    else if (key === 'ArrowUp') priMark(PRI_AT - 1);
+    else if (key === 'Home') priMark(0);
+    else if (key === 'End') priMark(rows.length - 1);
+    else if (key === 'Enter' || key === ' ') priPick(rows[PRI_AT]);
+    else if (key === 'Escape') priClose();
+    else if (letter) priTypeAhead(key.toLowerCase());
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+}
 
 // Bodies already fetched, by id. A pointer crossing a column of rows asks for the
 // same document several times a second otherwise — and the answer cannot change
@@ -5462,61 +5649,6 @@ _OFF_NAV = frozenset({"detail", "help"})
 _PAGE_KEYS = _NAV_KEYS | _OFF_NAV
 
 
-def _priority_select_css() -> str:
-    """The meter in a closed priority select, for a browser without `base-select`.
-
-    Such a browser draws each option as its text alone, the SVG inside dropped
-    from view, so the closed control said only the word. A character would not
-    do: the closed control shows the chosen option's text, and that text is
-    also what the open list draws, which Firefox draws in its parent process
-    where no page font exists (bug 1576820, open since 2019) and Safari and
-    Chrome without `base-select` draw as a native menu. A meter glyph there is
-    the platform's unknown-glyph box, which is where this started.
-
-    So the bars are the select's own background: one `linear-gradient` per bar
-    from `PRIORITY_BARS`, sized and placed as the SVG draws them, coloured by
-    the theme's `--pri-*` tokens and `--pri-track`. `data-rung` on the select
-    says which rung, kept by the shell's `change` listener. Gated by
-    `@supports not`, so a browser with `base-select` draws the SVG and never
-    this.
-
-    `!important`, on these five properties and nothing else, because every page
-    dresses its own selects with the `background` shorthand, and a shorthand
-    resets the image: `#bets select.pick` on the cycle page is (1,1,1) and drew
-    no meter at all. What this beats is exactly what it has to, a page's own
-    background and left padding, on a select that holds a known rung, in a
-    browser that cannot draw the SVG.
-    """
-    tallest = max(height for *_, height in PRIORITY_BARS)
-    inset = 8
-    bars = range(1, len(PRIORITY_BARS) + 1)
-    known = ", ".join(f'[data-rung="{rung}"]' for rung in PRIORITY_LEVEL)
-    rules = [
-        f"select.prisel:is({known}) {{\n"
-        "  background-repeat: no-repeat !important;\n"
-        "  background-image: "
-        + ", ".join(f"linear-gradient(var(--pb{i}), var(--pb{i}))" for i in bars)
-        + " !important;\n  background-size: "
-        + ", ".join(f"{width}px {height}px" for _, _, width, height in PRIORITY_BARS)
-        + " !important;\n  background-position: "
-        # Bottoms level, as in the SVG: a bar `height` tall is pushed down by
-        # half of what it is short of the tallest from a centred box.
-        + ", ".join(
-            f"left {inset + x}px top calc(50% + {(tallest - height) / 2:g}px)"
-            for x, _, _, height in PRIORITY_BARS
-        )
-        + f" !important;\n  padding-left: {inset + 14 + 7}px !important;\n}}"
-    ]
-    for rung, level in PRIORITY_LEVEL.items():
-        lit = f"var(--pri-{rung.replace('_', '-')})"
-        rules.append(
-            f'select.prisel[data-rung="{rung}"] {{ '
-            + " ".join(f"--pb{i}: {lit if i <= level else 'var(--pri-track)'};" for i in bars)
-            + " }"
-        )
-    return "@supports not (appearance: base-select) {\n" + "\n".join(rules) + "\n}"
-
-
 def _page(
     title: str,
     content: str,
@@ -5725,7 +5857,9 @@ def _page(
         # not about the page, and `pyproject.toml` and `__init__.py` have already
         # disagreed with each other and with the newest tag once.
         version=__version__,
-        priselect=Markup(_priority_select_css()),
+        priorities=PRIORITIES,
+        prilist=PRIORITY_LIST_ID,
+        pripick_template=priority_picker(),
     )
 
 

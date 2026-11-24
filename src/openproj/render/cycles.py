@@ -368,12 +368,8 @@ _CYCLE = """
       {% for value in statuses %}<option value="{{ value }}"
         {{- ' selected' if value == row.status else '' }}>{{ mark('status', value) }}{{
         value|human }}</option>{% endfor %}</select></td>
-    <td><select class="pick prisel" data-field="priority" data-rung="{{ row.priority or '' }}"
-        aria-label="{{ row.title }} priority">
-      <button><selectedcontent></selectedcontent></button>
-      {% for value in priorities %}<option value="{{ value }}"
-        {{- ' selected' if value == row.priority else '' }}>{{ pri(value) }}<span>{{
-        value|human }}</span></option>{% endfor %}</select></td>
+    <td>{{ pripick(row.priority, classes="pick", label=row.title ~ " priority",
+                   extra={"data-field": "priority"}) }}</td>
     <td><input class="live" data-field="{{ row.size_field }}" data-type="number"
                aria-label="{{ row.title }} appetite in weeks"
                autocomplete="off" value="{{ row.size }}"
@@ -875,7 +871,7 @@ function wirePick(pick) {
 function wireBets(root) {
   for (const box of root.querySelectorAll('input.bet')) wireTick(box);
   for (const input of root.querySelectorAll('input.live')) wireLive(input);
-  for (const pick of root.querySelectorAll('select.pick')) wirePick(pick);
+  for (const pick of root.querySelectorAll('select.pick, .pripick.pick')) wirePick(pick);
 }
 
 // The rows as served: wired, and read at the commit this page was drawn at.
@@ -1264,6 +1260,16 @@ function betCell(row, at) {
   // Returning the raw index would work by luck until a ladder grew a tenth rung.
   const pick = cell.querySelector('select');
   if (pick) return String(pick.selectedIndex).padStart(3, '0');
+  // A priority is the app's own picker, a button with no `selectedIndex`; its rung
+  // is where its value sits in the page's one list (`#pripop`), which is drawn in
+  // `PRIORITIES` order. Read as text it would sort by every rung's word at once,
+  // since the button holds them all to keep its width. A word no rung lists goes
+  // last.
+  const picker = cell.querySelector('.pripick');
+  if (picker) {
+    const rung = priRows().findIndex(row => row.dataset.value === picker.value);
+    return String(rung < 0 ? 999 : rung).padStart(3, '0');
+  }
   const box = cell.querySelector('input:not([type=checkbox])');
   return (box ? box.value : betText(cell)).trim();
 }
@@ -1601,7 +1607,7 @@ input.rate { width: 4rem; }
    `max-width: 100%` because a status word plus its glyph is wider than the
    column header, and the two frozen columns are not this table's problem —
    without it the picker sets the column width and `title` pays for it. */
-#bets select.pick {
+#bets select.pick, #bets .pripick.pick {
   font: inherit; font-size: 13px; max-width: 100%;
   color: inherit; background: var(--bg);
   border: 1px solid var(--surface-2); border-radius: 2px; padding: .1rem .15rem;
@@ -1609,8 +1615,8 @@ input.rate { width: 4rem; }
 /* The rung's colour comes from the shell, where `select.pick.st-X` is generated
    beside `.chip.st-X` from the one loop over `STATUSES` — see the note there.
    Nothing about the ladder is written in this file. */
-#bets select.pick:hover { border-color: var(--line); }
-#bets select.pick:focus { border-color: var(--accent); }
+#bets select.pick:hover, #bets .pripick.pick:hover { border-color: var(--line); }
+#bets select.pick:focus, #bets .pripick.pick:focus { border-color: var(--accent); }
 /* The border is the hover affordance, not the focus one. Suppressing the outline
    here left the only keyboard-reachable cell on the page with nothing to say it
    had focus; the shell's :focus-visible ring draws it now. */

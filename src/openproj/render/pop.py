@@ -1086,8 +1086,12 @@ function popFocus(at) {
 // second from the `contextmenu` that follows, in that order, and there is no
 // window in which this listener can shut a box that was opened by the same
 // press.
+// The priority list (`#pripop`) counts as inside: it hangs off the body so the card
+// cannot clip it, and a press on one of its rows is a press on the card's field.
+const popOwns = target => POP.contains(target)
+  || !!(target && target.closest && target.closest('.pripop'));
 document.addEventListener('pointerdown', event => {
-  if (POP.hidden || POP.contains(event.target)) return;
+  if (POP.hidden || popOwns(event.target)) return;
   popClose();
 }, true);
 // Capture, because `scroll` does not bubble from the element that scrolled: the
@@ -1101,7 +1105,7 @@ document.addEventListener('pointerdown', event => {
 // itself the moment somebody arrows down it. Cut 2's three items cannot overflow,
 // which is exactly why the guard has to be written now rather than found later.
 document.addEventListener('scroll', event => {
-  if (!POP.hidden && POP.contains(event.target)) return;
+  if (!POP.hidden && popOwns(event.target)) return;
   popClose();
 }, true);
 addEventListener('resize', popClose);
@@ -2188,9 +2192,8 @@ function popOpenField(name) {
   const control = popControlOf(name, type);
   control.id = 'pop-f-' + (++POP_FIELD_N);
   control.dataset.field = name;
-  // Added and not assigned: a priority select arrives as `prisel`, which is what
-  // makes it a customizable select with the meter in it, and assigning the class
-  // took that away.
+  // Added and not assigned: a priority arrives as `pripick`, which is what the
+  // shell's picker answers to, and assigning the class took that away.
   control.classList.add('popbox');
   // No `<label>` to point at: the card names a field with a `<dt>` that is not
   // this control's label, and the title line and the chips name nothing at all.
@@ -2234,10 +2237,6 @@ function popOpenField(name) {
   // what the button being there says, and Enter in a box you have just typed
   // into is not a press of it.
   control.onkeydown = event => {
-    // A key pressed in an open list is the list's: Enter picks the option there
-    // and Escape closes the list. Taken here as well, Enter closed the field on
-    // the value from before the pick.
-    try { if (control.matches(':open')) return; } catch { /* no :open, no list */ }
     if (event.key === 'Enter') {
       // **It must not reach the form**, which is the whole of this branch: the
       // control is inside a real `<form>` with a `type="submit"` button, so an
@@ -2569,8 +2568,19 @@ function popControlOf(name, type) {
 }
 
 function popSelectOf(name, value) {
-  const box = document.createElement('select');
   const raw = popRawOf(value);
+  // A priority is the app's own picker (`priority_picker`, cloned through the
+  // shell's `priPicker`), whose list draws the meter in every browser and keeps
+  // the focus on the button. Whatever the file holds is what it shows, a word no
+  // rung lists included, and nothing is written until somebody picks.
+  if (name === 'priority') {
+    const picker = priPicker(raw);
+    // The card's own word for an empty field, drawn as the face until a pick.
+    picker.dataset.nothing = POP_NOTHING;
+    priFace(picker);
+    return picker;
+  }
+  const box = document.createElement('select');
   let options;
   if (name === 'status')
     options = ((POP_SCHEMA.statuses || {})[POP_FORM.kind] || []).map(status => ({
@@ -2580,8 +2590,6 @@ function popSelectOf(name, value) {
       // subset — that is the argument the six marks are characters at all.
       text: (((POP_SCHEMA.glyphs || {})[status] || '') + ' ' + popHuman(status)).trim(),
     }));
-  else if (name === 'priority')
-    options = (POP_SCHEMA.priorities || []).map(one => ({value: one, text: popHuman(one)}));
   else options = popParentOptions();
   // **Whatever the file holds, first and selected, even when it is not on the
   // ladder.** `status` and `priority` are plain `str` in the model on purpose —
@@ -2606,29 +2614,10 @@ function popSelectOf(name, value) {
   // model; a `defaults` key beside `opens` is where the answer belongs.
   const locked = POP_FORM.mode === 'new' && name === 'parent' && POP_FORM.parent;
   if ((name === 'parent' && !locked) || !raw) options.unshift({value: '', text: POP_NOTHING});
-  // A priority is the meter and the word, as on the record page and in the
-  // table: a customizable select (`select.prisel` in the shell), whose closed
-  // control shows the chosen option through `<selectedcontent>`. `data-rung` is
-  // what draws the closed control's meter where `base-select` is not supported.
-  const meter = name === 'priority' && typeof priBars === 'function';
-  if (meter) {
-    box.className = 'prisel';
-    box.dataset.rung = raw;
-    const button = document.createElement('button');
-    button.append(document.createElement('selectedcontent'));
-    box.append(button);
-  }
   for (const one of options) {
     const option = document.createElement('option');
     option.value = one.value;
-    // `priBars` is the server's own drawing picked by key, and a word that is not
-    // a rung picks nothing, so nothing a person typed reaches `innerHTML` here.
-    if (meter && priBars(one.value)) {
-      option.innerHTML = priBars(one.value);
-      const word = document.createElement('span');
-      word.textContent = one.text;
-      option.append(word);
-    } else option.textContent = one.text;
+    option.textContent = one.text;
     if (one.value === raw) option.selected = true;
     box.append(option);
   }

@@ -3598,7 +3598,7 @@ def test_a_date_cell_opens_a_picker_and_every_other_cell_still_opens_a_text_box(
         "    const td = tbody.querySelector("
         '      `tr[data-id="${where.id}"] td[data-col="${where.col}"]`);'
         "    openEditor(td);"
-        '    const open = td.querySelector("input, select");'
+        '    const open = td.querySelector("input, select, .pripick");'
         "    boxes.push({field: td.dataset.field, col: where.col, tag: open.tagName,"
         "                type: open.getAttribute('type'),"
         "                dataType: open.getAttribute('data-type'),"

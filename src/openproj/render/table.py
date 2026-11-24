@@ -670,12 +670,9 @@ function clamped(pieces, one, many) {
 // `GLYPHS` is what the graph and the timeline already draw; a row's priority is
 // the shell's `priBars`.
 const GLYPHS = DATA.glyphs || {};
-// What goes in front of a word inside an `<option>`. A status option is text and
-// takes its glyph; a priority option is in a customizable select and takes the
-// meter itself, the same markup the cell shows, ahead of the word in a `<span>`.
-// A browser without `base-select` draws an option as its text, which is the word.
+// What an `<option>` says: a status takes its glyph in front of the word. A
+// priority has no options here; it is the app's own picker (`priPicker`).
 function optionFor(field, value) {
-  if (field === 'priority') return `${priBars(value)}<span>${esc(human(value))}</span>`;
   const glyph = field === 'status' && GLYPHS[value] ? GLYPHS[value] + ' ' : '';
   return esc(glyph) + esc(human(value));
 }
@@ -1643,7 +1640,7 @@ tbody.addEventListener('contextmenu', event => {
   // The open editor is asked of the DOM, the way `createDraft` and the bulk
   // selection's Escape already ask it, and a right press inside a text box has
   // to reach the browser's menu anyway: that is where Paste is.
-  if (tbody.querySelector('td.edit input, td.edit select')) return;
+  if (tbody.querySelector('td.edit input, td.edit select, td.edit .pripick')) return;
   // The move is asked of the class and not of `MOVING`, which is reachable from
   // out here on every render mode now and would answer the same thing.
   // `startMoving` sets both and `stopMoving` clears both, and the class is on the TABLE
@@ -2384,7 +2381,7 @@ function openEditor(cell) {
   // answers a double-click: a cell that ignores Enter is indistinguishable from
   // a cell that is broken.
   if (!cell.classList.contains('edit')) { refuse(cell); return; }
-  if (cell.querySelector('input, select')) return;
+  if (cell.querySelector('input, select, .pripick')) return;
   rove(cell);
   const field = cell.dataset.field;
   // The record this cell is part of, or the one that does not exist yet: a cell
@@ -2432,14 +2429,12 @@ function openEditor(cell) {
   cell.innerHTML = treeHtml(cell.dataset.rungs) + (closed
     // The same mark the cell was showing a moment ago, so opening an editor does
     // not swap a marked value for an unmarked list of words. `optionFor` draws
-    // each option, and a priority list is a customizable select (`select.prisel`).
-    ? `<select data-type="text" aria-label="${named}"` +
-      (field === 'priority'
-        ? ` class="prisel" data-rung="${esc(was)}">` +
-          '<button><selectedcontent></selectedcontent></button>' : '>') +
+    // each option. A priority is not a select at all: it is the app's own picker,
+    // put in below, because a select's list cannot hold the meter in every browser.
+    ? (field === 'priority' ? '' : `<select data-type="text" aria-label="${named}">` +
       closed.map(o =>
         `<option value="${esc(o)}" ${o === was ? 'selected' : ''}>${optionFor(field, o)}</option>`
-      ).join('') + '</select>'
+      ).join('') + '</select>')
     // `type` and `data-type` are two different questions and both are asked:
     // `type` is what the browser draws, `data-type` is what `coerce` and the
     // suggestion widget read — the widget completes the last comma-separated
@@ -2448,7 +2443,11 @@ function openEditor(cell) {
     : `<input value="${esc(was)}" type="${type}"` +
       ` data-type="${esc(EDITABLE[field])}" aria-label="${named}"` +
       `${suggest ? ` data-suggest="${esc(suggest)}"` : ''} autocomplete="off">`);
-  const input = cell.querySelector('select, input');
+  // The priority picker is a node and not a string, cloned from the shell's
+  // template so its markup is `priority_picker`'s and nobody else's.
+  if (closed && field === 'priority')
+    cell.append(priPicker(was, FIELD_LABELS[field] || field));
+  const input = cell.querySelector('select, input, .pripick');
   // The table gets the autocomplete the detail page has. Suggestions that only
   // appear in one of the two places are suggestions nobody relies on.
   if (suggest) attachSuggest(input);
@@ -2470,43 +2469,9 @@ function openEditor(cell) {
   clearOfFrozen(cell);
 
   let abandoned = false;
-  // A customizable select (`select.prisel`) is a box whose list is part of the
-  // page: opening it moves focus onto one of its own `<option>`s. That is not
-  // leaving the cell. Read as a blur it redrew the cell and took the editor away
-  // under the pointer that had just opened it, so focus moving INTO the control
-  // is ignored, and focus leaving from inside its list is the blur instead.
-  const inside = target => !!target && typeof input.contains === 'function'
-    && input.contains(target);
-  const pickerOpen = () => { try { return input.matches(':open'); } catch { return false; } };
-  input.addEventListener('focusout', event => {
-    if (event.target !== input && event.relatedTarget !== input && !inside(event.relatedTarget))
-      leave();
-  });
-  // Opened from the keyboard, the select is blurred inside the keydown that opens
-  // it, before the list is open and before an option has the focus, with no
-  // `relatedTarget` at all, so nothing in the blur can tell opening from leaving.
-  // The key that opens the list is seen first and the blur it causes is let go,
-  // until the focus lands inside the list. Not a tick later: the list opens in a
-  // task of its own after the keydown, and a flag cleared by `setTimeout(0)` was
-  // already gone when the blur arrived. The timeout is only for a list that
-  // never opened. And not by deferring every blur instead: the draft row's
-  // Create blurs the open cell and needs it staged before its next line runs.
-  let opening = false;
-  if (input.classList.contains('prisel')) {
-    input.addEventListener('keydown', event => {
-      if (pickerOpen()) return;
-      if (event.key === ' ' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        opening = true;
-        setTimeout(() => { opening = false; }, 1000);
-      }
-    });
-    input.addEventListener('focusin', event => {
-      if (event.target !== input) opening = false;
-    });
-  }
-  input.onblur = event => {
-    if (!opening && !inside(event && event.relatedTarget)) leave();
-  };
+  // A priority is the app's own picker (`priority_picker`), whose list keeps the
+  // focus on the button while somebody picks, so a blur here is always leaving.
+  input.onblur = () => leave();
   function leave() {
     // **A half-written date must not clear the date that is there.** A native
     // picker reports `value === ''` for anything it cannot read as a whole date
@@ -2554,10 +2519,6 @@ function openEditor(cell) {
     else stage(field, input.value);
   }
   input.onkeydown = e => {
-    // Keys pressed in an open list are the list's: Enter picks the option and
-    // Escape closes the list. Acted on here as well, Enter committed the value
-    // from before the pick and Escape threw the whole edit away.
-    if (pickerOpen()) return;
     // A key the suggestion list consumed is not this editor's to act on too:
     // Escape with the list open shipped as "close the list AND discard the
     // whole cell edit". The Escape still must not bubble — the grid's own
@@ -3542,7 +3503,7 @@ if (EDITABLE) {
     // `stage` for a draft cell, `saveCell` for a stored one — so Create writes
     // the row that is on the screen rather than the row as it was one cell ago.
     if (pressed === 'draft-create') {
-      const open = tbody.querySelector('td.edit input, td.edit select');
+      const open = tbody.querySelector('td.edit input, td.edit select, td.edit .pripick');
       if (open) open.blur();
     }
     if (pressed === 'add-row') openDraft();
@@ -3778,7 +3739,7 @@ tbody.addEventListener('click', event => {
 // and it cancels a move. A selection is the fourth thing it can be holding.
 addEventListener('keydown', event => {
   if (event.key !== 'Escape' || !PICKED.size) return;
-  if (tbody.querySelector('td.edit input, td.edit select')) return;
+  if (tbody.querySelector('td.edit input, td.edit select, td.edit .pripick')) return;
   unpick();
 });
 

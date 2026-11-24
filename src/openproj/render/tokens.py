@@ -1099,3 +1099,76 @@ def card_facts() -> dict[str, list[dict[str, str]]]:
         }
         for kind in KINDS
     }
+
+
+# The id of the one listbox a page holds for every priority picker on it. The
+# shell draws it once, hanging off the body, and `aria-controls` on each button
+# names it.
+PRIORITY_LIST_ID = "pripop"
+
+
+def priority_picker(
+    value: object = "",
+    *,
+    name: str = "priority",
+    label: str = "",
+    id: str = "",
+    classes: str = "",
+    extra: dict[str, object] | None = None,
+    disabled: bool = False,
+) -> Markup:
+    """A priority, picked: a button showing the meter and the word, opening the
+    page's own listbox of rungs (`PRIORITY_LIST_ID`, drawn by the shell).
+
+    It replaces a `<select>`, whose open list a browser draws where the meter
+    cannot go: Firefox draws it in its parent process with no page fonts, and
+    Safari as a native menu. This list is the page's, so it draws `priority_bars`
+    in every browser.
+
+    A button and not a div because it already is what the select was to every
+    page that reads one: it has a `name` and a `value`, it is labelable, it can
+    be `disabled`, and it takes focus. `data-type="text"` is what the record
+    page and the table read a control's value by. `role="combobox"` with focus
+    left on it while the list is open (the select-only combobox pattern), so the
+    table's blur-to-commit sees no blur while somebody is picking.
+
+    The only place this markup is made. Pages render it here, and the browser
+    clones the copy the shell renders into a `<template>` for the editors it
+    builds itself. `extra` is any other attribute a page's control carried
+    (`aria-describedby`, `data-required-at`, `data-field`), escaped here and left
+    out when empty, so a page passes values rather than markup.
+    """
+    rest = Markup("").join(
+        Markup(' {}="{}"').format(key, one) for key, one in (extra or {}).items() if one
+    )
+    # A dash where there is no priority. A select showed its first option there,
+    # `Very high`, which was never stored and was not true.
+    word = _human(value) if value else "\u2014"
+    # Every rung's meter and word, stacked in one grid cell and invisible, so the
+    # button is as wide as its widest value, as a select is, and does not change
+    # width when the value does.
+    ghosts = Markup("").join(
+        Markup('<span class="pripick-ghost" aria-hidden="true">{}<span>{}</span></span>').format(
+            priority_bars(rung), _human(rung)
+        )
+        for rung in PRIORITIES
+    )
+    return Markup(
+        '<button type="button" class="pripick{}" name="{}" value="{}" data-type="text"'
+        ' role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="{}"'
+        "{}{}{}>"
+        '<span class="pripick-face"><span class="pripick-now">{}<span class="pripick-word">{}'
+        "</span></span>{}</span>"
+        '<span class="pripick-chev" aria-hidden="true"></span></button>'
+    ).format(
+        f" {classes}" if classes else "",
+        name,
+        value or "",
+        PRIORITY_LIST_ID,
+        Markup(' id="{}"').format(id) if id else "",
+        Markup(' aria-label="{}"').format(label) if label else "",
+        rest + (Markup(" disabled") if disabled else ""),
+        priority_bars(value),
+        word,
+        ghosts,
+    )
