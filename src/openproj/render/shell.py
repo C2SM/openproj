@@ -765,6 +765,17 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
    587px wide and every page under it scrolled horizontally. */
 nav { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin-bottom: 1rem;
       font-size: 13px; align-items: center; }
+/* The nav and the footer are two bars of one surface, edge to edge, so the page
+   reads as a frame with the plan inside it and the mark reads as part of the
+   app rather than as one more word in the row (jcanton, 2026-11-24, choosing
+   between three drawings of it: "A but thinner"). Full width by giving back the
+   body's own padding as negative margin and taking it again inside, so the first
+   glyph of each bar still sits on the content's left edge. No top margin and no
+   stripe: the background is what separates it, and height is what this row is
+   short of. */
+body > nav { margin: -1rem -1.25rem 1rem; padding: .3rem 1.25rem;
+             background: var(--surface-2); border-bottom: 1px solid var(--line); }
+nav a.planmark, nav a.planmark:visited { font-size: 14px; }
 /* The plan's mark and name, in the ink of the page rather than a link's: the
    accent means "here" in this row, and this is the plan, not a view of it.
    `nav a.planmark` to outrank `nav a, nav a:visited` below, (0,1,2) and (0,2,2)
@@ -992,8 +1003,8 @@ pre.mermaid[data-processed] svg { height: auto; }
    from the content" — it was "be measurable". */
 #build {
   display: flex; flex-wrap: nowrap; align-items: center; gap: .3rem .5rem;
-  margin: 0; padding: .55rem 0 0;
-  border-top: 1px solid var(--line);
+  margin: 0 -1.25rem; padding: .3rem 1.25rem;
+  background: var(--surface-2); border-top: 1px solid var(--line);
   font-size: 11px; color: var(--muted); font-family: var(--font-mono);
 }
 /* **One line, at every width.** It wrapped, and on a phone, with the corner
@@ -1090,9 +1101,10 @@ pre.mermaid[data-processed] svg { height: auto; }
    of text and below it one empty line or some space, can you swap so the text is
    at the very bottom?" Swapped: the gap that was under the line is now above it,
    between the content and the footer's rule, where it separates two things
-   instead of trailing off one. The 2px left is the descender room the glyphs
-   need; at 0 a `p` or a `j` in the plan's sha sits on the window's edge. */
-body:has([data-fills]) { padding-bottom: 2px; }
+   instead of trailing off one. It was 2px, the descender room the glyphs need,
+   until the footer became a bar with padding of its own: now that 2px is a strip
+   of page under the bar, and the bar's padding is the descender room. */
+body:has([data-fills]) { padding-bottom: 0; }
 /* The measurement is of the room the box gets, so the box has to be that size
    including its own frame. On content-box a 1px border makes it 2px taller than
    the room it was handed, which is exactly enough to put the page into the
