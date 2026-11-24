@@ -6862,10 +6862,16 @@ _KEEPS_THE_LINE = r"""
 _LANDED_WHERE_IT_LEFT = r"""
   // The restore waits for the editor to have measured its own rows, which takes
   // more than the one frame it was first written as: a map read a frame after
-  // `showView` is every line at zero. So this waits long enough for the page's
-  // own loop to find a laid-out box, and the number below is that and nothing
-  // finer.
-  await new Promise(r => setTimeout(r, 700));
+  // `showView` is every line at zero. So this waits for the page's own loop to
+  // have scrolled, and not for a fixed time. It was a fixed 700ms, and on a busy
+  // CI machine the loop sometimes had not found a laid-out box by then: the test
+  // read line 1 and failed on runs whose code had not changed. Polled up to a
+  // deadline, so a restore that never happens still fails here, and fails as line 1.
+  const until = performance.now() + 3000;
+  while (performance.now() < until
+         && !(SURFACE.editor && SURFACE.editor.renderer.getFirstVisibleRow() > 0)) {
+    await new Promise(r => setTimeout(r, 50));
+  }
   const editor = SURFACE.editor;
   return {
     firstRow: editor.renderer.getFirstVisibleRow(),

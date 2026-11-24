@@ -268,7 +268,16 @@ def _devtools(browser: str, url: str, profile: Path, flags: tuple[str, ...] = ()
         assert wrote, "Chrome never wrote a port into DevToolsActivePort"
         port = int(wrote)
 
-        target = httpx.put(f"http://127.0.0.1:{port}/json/new?{quote(url, safe='')}").json()
+        # A bound of its own, and not httpx's default five seconds. Chrome answers
+        # `/json/new` once the tab exists, and a browser started a moment ago on a
+        # four-core runner already busy with other tests took longer than that
+        # three times on 2026-11-24, each a `ReadTimeout` from the harness in a test
+        # about something else. Thirty seconds, beside the twenty this function
+        # already allows Chrome to write its port: a ceiling that only a browser
+        # that has actually hung reaches.
+        target = httpx.put(
+            f"http://127.0.0.1:{port}/json/new?{quote(url, safe='')}", timeout=30
+        ).json()
         page_path = target["webSocketDebuggerUrl"].split(f"127.0.0.1:{port}", 1)[1]
 
         said: list[str] = []
