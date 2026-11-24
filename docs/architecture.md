@@ -17,6 +17,13 @@ is this documentation.
 Issues and notes are records whose rung says `planned=False`: they are on
 Records and on their own pages, and never in the plan views.
 
+A plan names itself with `name` in `config/defaults.yaml`, and picks the colour of
+its mark with `colour`: a quoted `'#e08a1e'` or `'rgb(224, 138, 30)'`, quoted
+because a bare `#` starts a YAML comment. Every tab reads `Table · <name>`, a
+record's own tab its title, and the nav opens with the mark and the name as a link
+home. Without them the tab says `openproj` and the mark is teal. A value that
+cannot be used is said in the banner and costs that setting alone.
+
 A plan says which views its nav shows. There are eight — `table`, `graph`,
 `timeline`, `cycles`, `deck`, `people`, `issues` and `notes`, the deck being one
 cycle's review with no place in the nav — and `views` in `config/defaults.yaml`
