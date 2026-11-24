@@ -556,13 +556,14 @@ def test_a_card_wears_both_its_marks_in_front_of_its_name(index: Index, tmp_path
     assert got["boxed"], "no box was measured"
     for box in got["boxed"]:
         pri, stat = marks_of(box["kind"])
-        words = box["label"].split(" ")
+        # Whitespace is stripped above, and the meter is one character, so the
+        # marks are the label's first one or two characters.
         if pri:
-            assert words[0] in PRIORITY_METER_CHAR.values(), (
+            assert box["label"][0] in PRIORITY_METER_CHAR.values(), (
                 f"a {box['kind']} box does not lead with its priority meter: {box['label']!r}"
             )
         if stat:
-            assert words[pri] in STATUS_GLYPH.values(), (
+            assert box["label"][pri] in STATUS_GLYPH.values(), (
                 f"a {box['kind']} box does not carry its status glyph: {box['label']!r}"
             )
         if not pri and not stat:

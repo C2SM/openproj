@@ -3018,7 +3018,7 @@ const headingIn = () => {
 // it is how `document.activeElement.dataset.field` answers which box the
 // keyboard is in — and a bare attribute selector would find the control inside
 // the part as well as the part.
-const PART = '[data-field="%"]:not(input):not(select)';
+const PART = '[data-field="%"]:not(input):not(select):not(.rungpick)';
 const fieldIn = name => POP.querySelector(PART.replace('%', name));
 // The cell the value lives in: a list row's `<dd>`, and the part itself for the
 // title and the chips, which have no inner box.
@@ -3032,7 +3032,7 @@ const cellIn = name => {
 // again — so `boxIn` answering `null` is the normal state and not a failure.
 const boxIn = name => {
   const cell = cellIn(name);
-  return cell ? cell.querySelector('input, select') : null;
+  return cell ? cell.querySelector('input, select, .rungpick') : null;
 };
 // What the card SAYS this field is, as text. The value when nothing is open,
 // and the control's own value when something is.
@@ -3051,7 +3051,8 @@ const valueIn = name => {
 // asked is that the thing on screen is a thing you can press.
 const openField = name => { fieldIn(name).click(); return boxIn(name); };
 const fieldsInForm = () =>
-  [...POP.querySelectorAll('[data-field]:not(input):not(select)')].map(one => one.dataset.field);
+  [...POP.querySelectorAll('[data-field]:not(input):not(select):not(.rungpick)')]
+    .map(one => one.dataset.field);
 // Which of them can be opened at all, and which say why not.
 const opensInForm = () =>
   [...POP.querySelectorAll('.popopens')].map(one => one.dataset.field);
@@ -3089,7 +3090,7 @@ const cancelIn = () => POP.querySelector('[data-kind="form-cancel"]');
 // they are pressed, so this is normally empty — what is in it is what the box
 // opened on, or what somebody has clicked.
 const opensNow = () =>
-  [...POP.querySelectorAll('[data-field] input, [data-field] select')]
+  [...POP.querySelectorAll('[data-field] input, [data-field] select, [data-field] .rungpick')]
     .map(one => one.dataset.field);
 // **Whether a form is on screen, which is not the same question as whether one
 // is in the box.** `popClose` deliberately leaves the children where they are —
@@ -3202,8 +3203,11 @@ for (const kind of drawn) {
   // One level down, or still at the top: a refused item answers and the box
   // stays exactly where it was, which is a different thing from drilling into an
   // empty list and is the difference this reads.
+  // On a desktop the list opens beside the item (a cascade) and the box itself
+  // stays where it was, so "opened" is the submenu hanging off THIS item.
   at.depth = POP_STACK.length;
-  at.label = POP.getAttribute('aria-label');
+  at.opened = POP_SUB_FROM === item;
+  at.label = (at.opened ? POP_SUB : POP).getAttribute('aria-label');
   at.inside = popControls().map(one => ({kind: one.dataset.kind, word: wordIn(one)}));
   seen[kind] = at;
   popClose();
@@ -3261,16 +3265,16 @@ def test_new_child_offers_exactly_the_kinds_that_rung_may_hold(index: Index, tmp
         )
         assert at["mark"] == "›", f"a {kind}'s New child draws {at['mark']!r} behind the word"
         assert at["disabled"] is None, f"a {kind} may hold {got['child'][kind]} and was refused"
-        assert at["depth"] == 2, f"pressing New child on a {kind} did not drill: {at}"
+        assert at["opened"], f"pressing New child on a {kind} did not open its list: {at}"
+        assert at["depth"] == 1, f"the box moved under a {kind}'s New child: {at}"
         assert at["label"] == "New child", at["label"]
         assert [one["kind"] for one in at["inside"]] == [
-            "back",
-            *[f"new-child-{child}" for child in got["child"][kind]],
+            f"new-child-{child}" for child in got["child"][kind]
         ], at["inside"]
-        assert [one["word"] for one in at["inside"][1:]] == [
+        assert [one["word"] for one in at["inside"]] == [
             HUMAN[child] for child in got["child"][kind]
         ], (
-            f"a {kind}'s children are drawn {[one['word'] for one in at['inside'][1:]]} — the "
+            f"a {kind}'s children are drawn {[one['word'] for one in at['inside']]} — the "
             "words are `HUMAN`'s, or this menu has a vocabulary of its own"
         )
     for kind in empty:
@@ -3280,8 +3284,8 @@ def test_new_child_offers_exactly_the_kinds_that_rung_may_hold(index: Index, tmp
         assert at["said"] == at["why"], (
             f"pressing a {kind}'s refused New child announced {at['said']!r}"
         )
-        assert at["depth"] == 1, (
-            f"a refused New child drilled into an empty list on a {kind}: {at}"
+        assert at["depth"] == 1 and not at["opened"], (
+            f"a refused New child opened an empty list on a {kind}: {at}"
         )
     for kind, item in got["unplanned"].items():
         assert got["child"][kind] == [], (
@@ -4188,7 +4192,9 @@ const seen = {
 // status too — the card draws the same fact twice and so does this.
 const before = form.querySelector('.card-chips .hill-ball').dataset.word;
 const pick = openField('status');
-const other = [...pick.options].map(one => one.value).find(one => one && one !== row.status);
+// The picker's rows are what it offers: the shell's list, narrowed to this kind.
+const other = rungRows(pick).map(one => one.dataset.value)
+  .find(one => one && one !== row.status);
 if (other) {
   typeInto('status', other);
   seen.moved = {

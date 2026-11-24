@@ -96,7 +96,8 @@ for (const theme of ['light', 'dark']) {
   document.documentElement.dataset.theme = theme;
   out[theme] = {
     ground: bytes(getComputedStyle(document.body).backgroundColor),
-    rungs: [...document.querySelectorAll('.chip.pri')].map(chip => ({
+    // `[data-rung]` is this test's own chips: the shell's priority list is chips too.
+    rungs: [...document.querySelectorAll('.chip.pri[data-rung]')].map(chip => ({
       rung: chip.dataset.rung,
       lit: bytes(getComputedStyle(chip.querySelector('rect.lit')).fill),
       track: chip.querySelector('rect.track')

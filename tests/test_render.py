@@ -2731,9 +2731,20 @@ def test_the_vendoring_note_covers_every_file_it_is_about():
 
     for name in listed:
         assert name in doc, f"{name} is checksummed and undocumented"
-    assert "*.js > SHA256SUMS" not in doc, "that command deletes the woff2's checksum"
-    assert "*.js *.woff2 > SHA256SUMS" not in doc, "that command deletes the mjs's checksum"
-    assert "*.js *.mjs *.woff2 > SHA256SUMS" in doc
+    # The globs are read out of the command and held against the sums, rather
+    # than the command being spelt out here: it was spelt out, and it went stale
+    # the day the meter font became the first `.ttf` in the directory.
+    from fnmatch import fnmatch
+
+    (command,) = [
+        line for line in doc.splitlines()
+        if line.startswith("shasum -a 256 ") and "> SHA256SUMS" in line
+    ]
+    globs = command.removeprefix("shasum -a 256 ").split(">")[0].split()
+    for name in listed:
+        assert any(fnmatch(name, glob) for glob in globs), (
+            f"refreshing the sums with {command!r} deletes {name}'s checksum"
+        )
     assert "SIL Open Font License" in doc and "inter-LICENSE.txt" in doc
     assert "MIT" in doc and "yjs-LICENSE.txt" in doc
 
@@ -7252,7 +7263,9 @@ def test_every_icon_is_a_row_in_the_picker_with_its_name_beside_it(seed_root: Pa
 
         def handle_starttag(self, tag, attrs):
             got = dict(attrs)
-            if got.get("role") == "option":
+            # Only the icon picker's rows: the shell's rung lists are listboxes
+            # too, on every page, and carry no `data-icon`.
+            if got.get("role") == "option" and "data-icon" in got:
                 self.rows.append(
                     {"id": got.get("id"), "icon": got.get("data-icon"), "svg": 0, "name": ""}
                 )
@@ -9725,7 +9738,7 @@ def test_the_betting_tables_closed_sets_are_chosen_and_never_typed(server_pages:
         for rung in ladder:
             assert f'data-value="{rung}"' in listed.group(0), f"{field} cannot choose {rung}"
             assert mark(rung) in listed.group(0), f"{field}'s {rung} lost its mark"
-        assert "<input" not in listed.group(0), f"{field} can still be typed into"
+        assert "input" not in tags(listed.group(0)), f"{field} can still be typed into"
 
 
 def test_a_carried_row_may_be_repriced_but_not_re_bet(server_pages: dict[str, str]):
