@@ -1968,6 +1968,18 @@ def create_app(
         credentials=credentials,
         addresses=tailscale.addresses() if tailscale else None,
     )
+    # Where every page links: the routes, plus the plan's own repository when the
+    # remote is on GitHub, for the footer's `plan` and sha. Parsed by the same
+    # allowlist the pusher opens pull requests through, so the footer never links
+    # a host that function would refuse, and never carries the remote verbatim.
+    # Imported here because `github` is imported only by a deployment that has a
+    # remote.
+    routes = render.ROUTES
+    if remote:
+        from .github import plan_repository
+
+        if repository := plan_repository(remote):
+            routes = routes.model_copy(update={"plan": f"https://github.com/{repository}"})
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -2257,7 +2269,7 @@ def create_app(
         )
         if tailscale is not None:
             index = index.model_copy(update={"writers": sorted(tailscale.users.values())})
-        return commit, index, render.links_for(index.views, render.ROUTES)
+        return commit, index, render.links_for(index.views, routes)
 
     # The last history walk, and the head it walked TO. Keyed on the commit
     # ALONE — deliberately narrower than the index cache's (commit, today)

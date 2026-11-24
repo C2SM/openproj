@@ -453,6 +453,61 @@ def test_hovering_report_issue_underlines_the_link_and_not_the_dot_before_it(
     assert hidden == under, "hiding the separator changed the page: it is underlined with the link"
 
 
+# What the footer's plan half reads as once the health poll has answered: its own
+# words, and the links in it as (text, href). The shim keeps an element's own text
+# apart from its children, so `said` is the text between the links.
+_PLANHEAD = """(async () => {
+  for (let i = 0; i < 10; i++) await null;
+  const at = document.getElementById('planhead');
+  return {said: at.textContent, links: [...at.children].map(a => [a.textContent, a.href])};
+})()"""
+_HEAD = "5f45f16de5b84c0dffb82ed7e0fcc6b5a12fef1b"
+_QUIET = {"ok": True, "head": _HEAD, "version": "", "oldest_unpushed_age": None, "parked": 0}
+
+
+@pytest.mark.parametrize(
+    ("plan", "unpushed", "said", "links"),
+    [
+        # A plan on GitHub, fully pushed: both words are links.
+        (
+            "https://github.com/kilnlab/plan",
+            0,
+            " ",
+            [
+                ["plan", "https://github.com/kilnlab/plan"],
+                [_HEAD[:7], f"https://github.com/kilnlab/plan/commit/{_HEAD}"],
+            ],
+        ),
+        # A save not yet pushed: the head is on this server's disk and not on
+        # GitHub, so a link to it would open a 404.
+        (
+            "https://github.com/kilnlab/plan",
+            1,
+            f" {_HEAD[:7]}",
+            [["plan", "https://github.com/kilnlab/plan"]],
+        ),
+        # A plan with no page anywhere, like a bare repository on a NAS.
+        ("", 0, f"plan {_HEAD[:7]}", []),
+    ],
+)
+def test_the_plan_and_its_commit_link_to_github_only_where_github_has_them(
+    index: Index, plan: str, unpushed: int, said: str, links: list
+):
+    """jcanton, 2026-11-24: "there is a plan and commit but no hyperlink to them"."""
+    from test_injection import run_js
+
+    from openproj.render import render_table
+
+    answer = run_js(
+        render_table(index, ROUTES.model_copy(update={"plan": plan})),
+        _PLANHEAD,
+        page=True,
+        health=[{**_QUIET, "unpushed": unpushed}],
+    )
+    assert not answer["errors"], answer["errors"]
+    assert answer["value"] == {"said": said, "links": links}
+
+
 def test_the_banner_is_on_this_page_like_every_other(seed_root: Path):
     """`render_help` takes an `Index` for this and for nothing else.
 

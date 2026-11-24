@@ -82,6 +82,11 @@ class Links(BaseModel):
     # the whole plan with nowhere to put the number. Where it is empty the cycle
     # page draws no link to it, rather than a link to a file nobody wrote.
     deck: str = ""
+    # The plan repository's page on github.com, which the footer's `plan` and the
+    # plan's sha link into. Set by the server only when its remote is a GitHub
+    # repository: a plan served from a bare repository on a NAS has no page to
+    # link to, and the static export does not know where its files came from.
+    plan: str = ""
     # Whether a server is behind the page — the event stream, the health poll, per-cycle pages,
     # diagrams fetched on demand. A fact about the mode, said once. Three places used to infer
     # it from whether `table` or `cycle` began with a slash, so blanking a view's link would
@@ -4354,7 +4359,8 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
 <footer id="build">
   <a id="version" href="https://github.com/C2SM/openproj/releases/tag/v{{ version }}">openproj
     {{ version }}</a>
-  {%- if live %}<span id="planhead" title="the plan's own commit"></span>{% endif %}
+  {%- if live %}<span id="planhead" title="the plan's own commit"
+    {%- if links.plan %} data-plan="{{ links.plan }}"{% endif %}></span>{% endif %}
   {#- jcanton, 2026-08-27, asking for it here and not in the nav: it is the thing
       you reach for at the moment the page in front of you is wrong, which is the
       moment you are already reading this row for the version to quote. `issues/new`
@@ -5041,14 +5047,34 @@ const PILE_POLL_MS = 60000;
 
 // The plan's own commit, in the footer, off the poll that is already happening.
 // A second request for seven characters would be a second request.
+//
+// `plan` links to the repository and the sha to the commit when the server
+// pushes to GitHub (`data-plan`). The sha is linked only once nothing is waiting
+// to be pushed: until then the head is on this server's disk and not on GitHub,
+// and the link would open a 404.
 function showHead(health) {
   const at = document.getElementById('planhead');
   if (!at || !health.head) return;
-  const said = 'plan ' + String(health.head).slice(0, 7);
-  // Refolded only when the text changes: this runs on every poll, and a refold
-  // that moves nothing still re-measures the room.
-  if (at.textContent === said) return;
-  at.textContent = said;
+  const head = String(health.head);
+  const repository = at.dataset.plan || '';
+  const pushed = !health.unpushed;
+  const said = [head, repository, pushed].join(' ');
+  // Redrawn and refolded only when something changes: this runs on every poll,
+  // and a refold that moves nothing still re-measures the room.
+  if (at.dataset.said === said) return;
+  at.dataset.said = said;
+  const link = (text, href) => {
+    const a = document.createElement('a');
+    a.href = href;
+    a.textContent = text;
+    return a;
+  };
+  const sha = head.slice(0, 7);
+  at.replaceChildren(
+    repository ? link('plan', repository) : 'plan',
+    ' ',
+    repository && pushed ? link(sha, repository + '/commit/' + encodeURIComponent(head)) : sha,
+  );
   refoldBuild();
 }
 
