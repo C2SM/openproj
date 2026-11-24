@@ -2970,7 +2970,7 @@ def render_cycle(
         calendar=_calendar_js(index),
     )
     return _page(
-        f"openproj — cycle {number}",
+        f"Cycle {number}",
         body,
         # Last, because the calendar's cell rules win their ties on source order
         # — see the ladder comment in `calendar.py`.
@@ -2988,6 +2988,7 @@ def render_cycle(
         # above it scrolled away and took the nav and the footer with them.
         # Sticky against the shell's box keeps the header row and keeps them.
         fills=True,
+        face=index.face,
     )
 
 
@@ -3121,7 +3122,7 @@ def render_cycles(index: Index, links: Links = STATIC, base_commit: str | None =
         calendar=_calendar_js(index) if editable else Markup(""),
     )
     return _page(
-        "openproj — cycles",
+        "Cycles",
         body,
         # Last, for the tie-on-order reason in `calendar.py`'s ladder comment.
         _DETAIL_STYLE + _CYCLE_STYLE + (_CALENDAR_STYLE if editable else ""),
@@ -3132,6 +3133,7 @@ def render_cycles(index: Index, links: Links = STATIC, base_commit: str | None =
         # A card per cycle, and a plan two years old has enough of them to run off
         # the bottom of the window.
         fills=True,
+        face=index.face,
     )
 
 
@@ -3315,6 +3317,7 @@ def render_people(index: Index, links: Links = STATIC, editable: bool = False, m
         filters=_FILTER_JS,
     )
     return _page(
-        "openproj — people", body, _PEOPLE_STYLE, links, "people",
+        "People", body, _PEOPLE_STYLE, links, "people",
         index.unreadable, index.unusable,
+        face=index.face,
     )

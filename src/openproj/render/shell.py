@@ -9,14 +9,14 @@ from markupsafe import Markup
 from pydantic import BaseModel
 
 from .. import __version__
-from ..index import Index
+from ..index import Face, Index
 from ..model import RUNG, SWITCHES_FILE, VIEW_NEEDS, VIEWS, Unreadable, Unusable
 from ..themes import FAMILIES
 from ..vendor import _font_uri
 from .controls import _PLAN_FACETS
 from .env import _compiled
 from .hill import hill_geometry
-from .icons import _icon_uri
+from .icons import _icon_uri, mark_svg
 from .keys import keys_for
 from .styles import STATUS_SLOTS, _code_css, _scheme_css
 from .tokens import (
@@ -765,6 +765,13 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
    587px wide and every page under it scrolled horizontally. */
 nav { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin-bottom: 1rem;
       font-size: 13px; align-items: center; }
+/* The plan's mark and name, in the ink of the page and not of a link: it is a
+   label, and the accent means "here" in this row. The name folds away on a phone
+   (see the 40rem block) and the mark stays, which is the half that tells two
+   plans apart at a glance. */
+.planmark { display: inline-flex; align-items: center; gap: .4rem;
+            font-weight: 600; color: var(--fg); }
+.planmark-icon { width: 16px; height: 16px; flex: none; }
 /* Every link, not only the nav. The browser's default blue and its visited
    purple are both close to unreadable on a dark ground, and a link is the most
    clicked thing on every one of these pages. */
@@ -2358,6 +2365,8 @@ tr.nothing .hint { margin: 0 0 .75rem; }
   /* The nav loses the element that was forcing it wide, so what is left is
      links. Nothing else changes: they were already wrapping. */
   #build .corner { font-size: 13px; }
+  /* The mark alone: the nav already wraps here, and the name is in the tab. */
+  .planname { display: none; }
   /* The key's handle and the window controls', drawn as the filter bar's is. One
      phone, one way of folding something away, so the second and third cost no
      learning. */
@@ -2427,7 +2436,13 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     and from nothing else, so what a screen reader announces and what a reader
     sees cannot come apart. Whitespace between the links is a whitespace-only text
     node in a flex container, which is not a flex item and draws nothing. -#}
-<nav>{% for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
+{#- The plan's mark and name, first in the nav. jcanton, 2026-11-24: the tab is
+    the only place the plan was named, and a full-screen window shows no tab.
+    Not a link: Records is the next item and already goes home, and a second
+    way there would be a second stop for every keyboard and screen reader on
+    every page. -#}
+<nav><span class="planmark">{{ mark }}<span class="planname">{{ plan }}</span></span>
+{%- for item in nav %}<a href="{{ item.href }}" data-keys="go-{{ item.key }}"
   {%- if item.current %} aria-current="page"{% endif %}>{{ item.label }}</a>
 {% endfor %}<span class="corner">
 {#- Who you are, and the only way in from the page. Reads are public here by
@@ -5389,6 +5404,10 @@ _OFF_NAV = frozenset({"detail", "help"})
 _PAGE_KEYS = _NAV_KEYS | _OFF_NAV
 
 
+# A plan that names nothing: `Table · openproj` and the teal mark.
+_UNNAMED = Face()
+
+
 def _page(
     title: str,
     content: str,
@@ -5400,6 +5419,7 @@ def _page(
     origin: str | None = None,
     fills: bool = False,
     cardtitles: dict[str, str] | None = None,
+    face: Face = _UNNAMED,
 ) -> str:
     """Autoescaping protects record titles inside the inner templates; the already
     rendered body and stylesheet are marked safe here so the shell does not escape
@@ -5443,19 +5463,27 @@ def _page(
     count, which was twelve here until the switched-off page made it wrong;
     `test_every_page_says_so_when_a_config_file_holds_a_number_that_is_not_one`
     is the tripwire that the next one cannot forget it.
+
+    `title` is the page's own part, the most specific thing first, and `face` is
+    the plan's: the tab reads `Table · icon4py`. Page first because a tab strip
+    truncates from the right, so ten squeezed tabs of one plan still say which is
+    which (jcanton, 2026-11-24). A plan with no name is `Table · openproj`.
     """
     if current and current not in _PAGE_KEYS:
         raise ValueError(f"{current!r} is not a page: {sorted(_PAGE_KEYS)}")
     labels = dict(_NAV)
     settings = len({(one.path, one.field) for one in unusable})
+    plan = face.name or "openproj"
     return _compiled(_SHELL).render(
-        title=title,
+        title=f"{title} · {plan}",
+        plan=plan,
+        mark=mark_svg(face.colour),
         content=Markup(content),
         style=Markup(style),
         csp=Markup(CSP),
         keys=keys_for(links),
         font=_font_uri(),
-        icon=_icon_uri(),
+        icon=_icon_uri(face.colour),
         links=links,
         # The word map, on every page rather than in the three payloads that
         # happened to carry it. The hover card is drawn by the table, the graph
@@ -5631,7 +5659,7 @@ def render_not_found(index: Index, links: Links = STATIC, said: str = "", path: 
         '<p><a href="{}">Go to Records</a></p>\n</section>'
     )
     return _page(
-        "openproj — not found",
+        "Not found",
         body.format(sentence, links.records),
         _OFF_STYLE,
         links,
@@ -5639,6 +5667,7 @@ def render_not_found(index: Index, links: Links = STATIC, said: str = "", path: 
         index.unreadable,
         index.unusable,
         fills=True,
+        face=index.face,
     )
 
 
@@ -5703,7 +5732,7 @@ def render_switched_off(
         out = Markup('<a href="{}">Go to Records</a>').format(links.records)
     body = Markup('<section class="switched-off">\n<h1>{}</h1>\n<p>{}</p>\n<p>{}</p>\n</section>')
     return _page(
-        f"openproj — {heading.lower()}, turned off",
+        f"{heading}, turned off",
         body.format(heading, said, out),
         _OFF_STYLE,
         links,
@@ -5711,4 +5740,5 @@ def render_switched_off(
         index.unreadable,
         index.unusable,
         fills=True,
+        face=index.face,
     )

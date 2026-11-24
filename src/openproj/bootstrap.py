@@ -17,6 +17,7 @@ made the tool one team's. `gcloud_deploy.sh` reads the file this writes, and
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -160,6 +161,12 @@ def plan_files(name: str, options: Options) -> dict[str, str]:
     roster = f"[{options.login}]" if options.login else "[]"
     files = {
         "config/defaults.yaml": f"""\
+# What this plan is called: the browser tab reads "Table · <name>" and the nav
+# starts with it. colour tints the plan's mark in the tab and the nav, as
+# '#rrggbb' in quotes (a bare # starts a comment) or 'rgb(r, g, b)'; left out,
+# the mark is teal.
+name: {json.dumps(name)}
+# colour: '#27899e'
 # schema_version is the version NEW records are created at. Every validation
 # rule records the version that introduced it, and a record is only blocked by
 # rules whose version is <= its own created_schema_version — so an older plan

@@ -471,7 +471,7 @@ def render_help(index: Index, links: Links = STATIC) -> str:
         )
     body = _compiled(_HELP).render(docs=drawn, scope=_scope(index, links))
     return _page(
-        "openproj — help",
+        "Help",
         body,
         _SUGGEST_STYLE + _DETAIL_STYLE + _HELP_STYLE,
         links,
@@ -483,4 +483,5 @@ def render_help(index: Index, links: Links = STATIC) -> str:
         # now holds against this box rather than against the window, which is the
         # same behaviour with the nav and the footer left in place around it.
         fills=True,
+        face=index.face,
     )
