@@ -180,9 +180,11 @@ nominal_availability: 1.0
 # Of each cycle's window, how much is cool-down rather than build. An overrun is
 # measured against the end of build.
 cooldown_weeks: 2.0
-# The repositories this plan's work happens in, as owner/repo. The PRs field and
-# the body complete `icon4py 1403` to `C2SM/icon4py#1403` for these, and offer
-# their open pull requests and issues. A repository not listed is typed in full.
+# The repositories this plan's work happens in, each as its page on GitHub or a
+# Forgejo, like https://github.com/C2SM/icon4py. The PRs field and the body
+# complete `icon4py 1403` to `C2SM/icon4py#1403` for these, link it to the right
+# forge, and offer their open pull requests and issues. A repository not listed is
+# typed in full and linked to GitHub. One on another forge is named in the footer.
 repositories: []
 # Which views this plan's nav shows, in order after Records. A view left out is not linked from
 # anywhere and still answers at its address. Records, every record page and Help (in the footer)

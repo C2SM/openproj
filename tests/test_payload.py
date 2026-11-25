@@ -829,13 +829,13 @@ def test_a_setting_that_is_not_a_list_costs_that_setting_and_not_the_file(switch
     in `views` would have taken `schema_version`, `cooldown_weeks` and
     `repositories` down with it, and named the whole file as not in the plan."""
     config, unreadable, index = _switched(
-        f"schema_version: 5\n{switch}\ncooldown_weeks: 3.0\nrepositories: [a/b]\n"
+        f"schema_version: 5\n{switch}\ncooldown_weeks: 3.0\nrepositories: ['https://github.com/a/b']\n"
     )
 
     assert unreadable == []
     assert config.schema_version == 5
     assert config.cooldown_weeks == 3.0
-    assert config.repositories == ["a/b"]
+    assert config.repositories == ["https://github.com/a/b"]
     assert [(one.path, one.field) for one in index.unusable] == [
         ("config/defaults.yaml", switch.split(":")[0])
     ]

@@ -729,15 +729,31 @@ class Person(BaseModel):
         return value if value is None else str(value)
 
 
-# What a repository may be called. The allowlist `Config.repositories` is judged
-# by — see the validator there for why this is not a denylist.
+# What a repository may be called: the page it has on its forge, `https://host/owner/repo`.
+# The allowlist `Config.repositories` is judged by. See the validator there for why this
+# is not a denylist.
 #
-# **Each segment must START with a letter or a digit**, which is the half that is
-# not decoration: `[\w.-]+` alone matches `..`, so `../..` is a legal name by that
-# rule and `https://api.github.com/repos/../../x/pulls` is a request to an
-# endpoint nobody wrote down. GitHub's own names start with an alphanumeric or an
-# underscore, so nothing real is refused by tightening it.
-_REPOSITORY = re.compile(r"[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*")
+# **Each path segment must START with a letter or a digit**, which is the half that is
+# not decoration: `[\w.-]+` alone matches `..`, so `../..` would be a legal name and
+# `https://api.github.com/repos/../../x/pulls` a request to an endpoint nobody wrote
+# down. The host is lowercase letters, digits, dots and dashes with an optional port, so
+# no userinfo, no query and no fragment can ride along into a request this server makes.
+_REPOSITORY = re.compile(
+    r"https?://(?P<host>[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?)"
+    r"/(?P<name>[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*)"
+)
+
+
+def repository_name(url: str) -> str:
+    """`owner/repo`, the half of a repository's URL that `owner/repo#12` names."""
+    found = _REPOSITORY.fullmatch(url)
+    return found["name"] if found else ""
+
+
+def repository_origin(url: str) -> str:
+    """`https://host`, which is what a forge is recognised by and asked at."""
+    found = _REPOSITORY.fullmatch(url)
+    return url[: found.start("name") - 1] if found else ""
 
 
 class Config(BaseModel):
@@ -775,9 +791,11 @@ class Config(BaseModel):
     # the right default: a tracker that refuses a name because nobody has written
     # a roster yet is a tracker nobody finishes setting up.
     known_people: list[str] = []
-    # The repositories this plan's work happens in, as `owner/repo`, from
-    # config/defaults.yaml. The pull-request completion offers these and nothing
-    # else, and empty means it offers nothing and asks nothing of the network.
+    # The repositories this plan's work happens in, as the URL of each one's page,
+    # from config/defaults.yaml. The URL and not `owner/repo`, because the host is
+    # what says which forge to link to and ask: GitHub, a Forgejo, or one openproj
+    # cannot read. The pull-request completion offers these and nothing else, and
+    # empty means it offers nothing and asks nothing of the network.
     # Named here rather than in this tool's source because they are a fact about
     # the PLAN — jcanton, 2026-08-25, asking whether kiln4py's and griddle's open
     # pull requests could be offered — and openproj is not one team's tool alone.
@@ -831,28 +849,42 @@ class Config(BaseModel):
 
     @field_validator("repositories")
     @classmethod
-    def _repositories_are_owner_and_repo(cls, given: list[str]) -> list[str]:
-        """`owner/repo`, and nothing else.
+    def _repositories_are_pages(cls, given: list[str]) -> list[str]:
+        """`https://host/owner/repo`, and nothing else.
 
-        **An allowlist, and it has to be**: this value ends up in a URL path on
-        api.github.com. A `..` or a `?` or a second slash in it is a request to
-        an endpoint nobody wrote down, and `AGENTS.md` records what a denylist of
-        URL spellings is worth. The two segments are exactly what GitHub allows
-        in a name — letters, digits, dot, dash, underscore — so anything else is
-        a typo or an attempt, and both are refused the same way.
+        **An allowlist, and it has to be**: this value ends up in a request this
+        server makes. A `..` or a `?` or a third segment in it is a request to an
+        endpoint nobody wrote down, and `AGENTS.md` records what a denylist of URL
+        spellings is worth.
+
+        `owner/repo` alone was the spelling until 2026-11-25 and is refused rather
+        than read as GitHub, because the plans that wrote it are two and are
+        updated with the release (jcanton's call).
+
+        Two repositories with one `owner/repo` on different hosts are refused too,
+        because `owner/repo#12` could not say which of them it means.
 
         Refused rather than filtered, which is the bargain every other config
         value already has: the file is dropped and NAMED in the banner, where a
         silent skip would leave somebody looking at a completion that offers
         nothing and no reason anywhere on the page.
         """
-        for name in given:
-            if not _REPOSITORY.fullmatch(name):
+        seen: dict[str, str] = {}
+        for url in given:
+            if not _REPOSITORY.fullmatch(url):
                 raise ValueError(
-                    f"repositories: {name!r} is not an owner/repo — two segments of "
-                    "letters, digits, dots, dashes and underscores, like "
-                    "'kilnlab/kiln4py'"
+                    f"repositories: {url!r} is not a repository's page. Write the URL "
+                    "it has on its forge, like 'https://github.com/kilnlab/kiln4py', "
+                    "with nothing after the repository's name"
                 )
+            name = repository_name(url).lower()
+            if name in seen:
+                raise ValueError(
+                    f"repositories: {seen[name]!r} and {url!r} are both "
+                    f"{repository_name(url)}, so {repository_name(url)}#12 could not "
+                    "say which one it means"
+                )
+            seen[name] = url
         return given
 
     def nominal(self) -> float:

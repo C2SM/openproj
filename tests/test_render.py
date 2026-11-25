@@ -2458,7 +2458,14 @@ def test_a_pr_reference_completes_from_the_plans_repositories_alone(seed_index: 
 
     bare = _suggestions(seed_index)
     named = _suggestions(
-        seed_index.model_copy(update={"repositories": ["kilnlab/kiln4py", "griddle/griddle"]})
+        seed_index.model_copy(
+            update={
+                "repositories": [
+                    "https://github.com/kilnlab/kiln4py",
+                    "https://github.com/griddle/griddle",
+                ]
+            }
+        )
     )
 
     assert (bare["prs"], bare["repos"]) == ([], [])

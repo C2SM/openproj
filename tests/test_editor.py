@@ -9795,7 +9795,9 @@ def naming_client(tmp_path: Path):
     path = tmp_path / "named.git"
     pygit2.init_repository(str(path), bare=True, initial_head="main")
     seeded = dict(SEED)
-    seeded["config/defaults.yaml"] += "repositories: [kilnlab/kiln4py, griddle/griddle]\n"
+    seeded["config/defaults.yaml"] += (
+        "repositories: [https://github.com/kilnlab/kiln4py, https://github.com/griddle/griddle]\n"
+    )
     commit_directly(path, seeded, "seed the corpus")
     with TestClient(create_app(path, auth="dev", secret=SECRET)) as client:
         client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))

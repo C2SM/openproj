@@ -24,6 +24,7 @@ def render_static(
     repo: Path | None = None,
     edited: dict[str, int] | None = None,
     now: int = 0,
+    repositories: tuple[tuple[str, str], ...] = (),
 ) -> tuple[str, ...]:
     """The pages, and the images they name. Returns what it wrote, in order.
 
@@ -64,7 +65,8 @@ def render_static(
         source = (repo / named) if repo else None
         if source and source.is_dir():
             shutil.copytree(source, out_dir / named, dirs_exist_ok=True)
-    links = links_for(index.views, STATIC)
+    # `repositories` is what the caller asked each forge, see `Links.repositories`
+    links = links_for(index.views, STATIC).model_copy(update={"repositories": repositories})
     landing = partial(render_records, index, edited=edited, now=now)
     written: list[str] = []
     # The file, the view it is — None for the three that are no view and that no

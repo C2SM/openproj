@@ -7,7 +7,7 @@ import json
 from markupsafe import Markup
 
 from ..index import Index
-from ..model import MAX_BODY_BYTES, Record
+from ..model import MAX_BODY_BYTES, Record, repository_name
 from .env import PHONE, _fragment
 from .hill import _hill_html
 from .tokens import (
@@ -3500,9 +3500,17 @@ function foldInPullRequests(live) {
 const GITHUB_REF = new RegExp(
   '^https?://(?:www\\.)?github\\.com/([\\w.-]+)/([\\w.-]+)/(?:pull|issues)/([0-9]+)'
   + '(?:[/?#]\\S*)?$', 'i');
+// After a listed repository's page: Forgejo's `/pulls/` as well as GitHub's `/pull/`
+const PAGE_REF = /^\/(?:pulls?|issues)\/([0-9]+)(?:[/?#]\S*)?$/i;
 
 function asReference(text) {
-  const link = GITHUB_REF.exec(String(text).trim());
+  const said = String(text).trim();
+  for (const [name, page] of Object.entries(SUGGEST.pages || {})) {
+    if (!said.toLowerCase().startsWith(page.toLowerCase() + '/')) continue;
+    const link = PAGE_REF.exec(said.slice(page.length));
+    if (link) return `${name}#${link[1]}`;
+  }
+  const link = GITHUB_REF.exec(said);
   return link ? `${link[1]}/${link[2]}#${link[3]}` : null;
 }
 
@@ -4456,9 +4464,12 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
     # `prs` is the bare `owner/repo#` of each, for the table's menu, which
     # completes through a native datalist and a prefix and has nothing to run a
     # search with. The field and the body read `repos` and the live list.
+    names = {repository_name(url): url for url in index.repositories}
     return {
-        "prs": [{"value": f"{r}#", "label": "pull request or issue"} for r in index.repositories],
-        "repos": list(index.repositories),
+        "prs": [{"value": f"{r}#", "label": "pull request or issue"} for r in names],
+        "repos": list(names),
+        # Each one's page, so a link pasted from any of them reads as `owner/repo#N`
+        "pages": names,
         "people": [{"value": p, "label": ""} for p in sorted(people)],
         # Named `records`, filled from the PLAN, deliberately: these complete
         # `parent` and `depends_on`, and offering an issue or a note there

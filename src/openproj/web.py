@@ -121,6 +121,8 @@ from .model import (
     record_paths_in,
     rekind_plan,
     rekind_references,
+    repository_name,
+    repository_origin,
     shaping_document,
     split_front_matter,
     start_date_has_passed,
@@ -199,6 +201,25 @@ STATE_LOOKUPS = 8
 STATE_RESERVE = 20
 STATE_OPEN_TTL = 15 * 60
 STATE_CLOSED_TTL = 6 * 60 * 60
+# A host that did not say it was GitHub or Forgejo is asked again after this. One
+# that did is never asked again: a forge does not turn into another forge.
+FORGE_RETRY_SECONDS = 5 * 60
+# The forges whose pull requests openproj can link and read
+READABLE = ("github", "forgejo")
+
+
+def _readable(repositories: Sequence[tuple[str, str]]) -> dict[str, tuple[str, str]]:
+    """The repositories whose references can be looked up, by lowercase `owner/repo`."""
+    return {
+        repository_name(url).lower(): (url, forge)
+        for url, forge in repositories
+        if forge in READABLE
+    }
+
+
+def _origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}".lower() if parts.scheme and parts.netloc else ""
 
 
 def _refusal(error: Exception) -> HTTPException:
@@ -2251,10 +2272,50 @@ def create_app(
         drawn = today or date.today()
         memo = held
         if memo is not None and memo[0] == commit and memo[1] == drawn:
-            return commit, memo[2], memo[3]
-        commit, index, links = _build_index_at(commit, drawn)
+            index, links = memo[2], memo[3]
+        else:
+            commit, index, links = _build_index_at(commit, drawn)
+        # Outside the index's cache, which is keyed on the commit: a host that
+        # could not be reached is asked again on its own clock, not the plan's
+        repositories = forges_now(index.repositories)
+        if repositories != links.repositories:
+            links = links.model_copy(update={"repositories": repositories})
         held = (commit, drawn, index, links)
         return commit, index, links
+
+    # Which forge each host is: `origin -> (good until, forge)`
+    forges: dict[str, tuple[float, str]] = {}
+    forges_lock = threading.Lock()
+    # The hosts the push token may be shown to, which are the ones the DEPLOYMENT
+    # names: where it pushes and where it says its plan's page is. Never a host
+    # out of `repositories:`, which anybody who can commit to the plan can edit, so
+    # a plan file cannot send this server's token to a host of its choosing.
+    token_origins = {origin for origin in (_origin(plan_page), _origin(remote or "")) if origin}
+
+    def token_for(origin: str) -> str:
+        from .forge import ForgeToken
+
+        if isinstance(credentials, ForgeToken) and origin.lower() in token_origins:
+            return credentials.token
+        return ""
+
+    def forges_now(urls: Sequence[str]) -> tuple[tuple[str, str], ...]:
+        """Each repository with the forge its host answered, asked at most once per
+        host and held; the lock serialises the asking, as `pulls_lock` does."""
+        from .forge import forge_of
+
+        found = []
+        with forges_lock:
+            for url in urls:
+                origin = repository_origin(url)
+                now = time.monotonic()
+                until, forge = forges.get(origin, (-math.inf, ""))
+                if now >= until:
+                    forge = forge_of(origin, token_for(origin), github_transport)
+                    held_for = math.inf if forge in READABLE else FORGE_RETRY_SECONDS
+                    forges[origin] = (now + held_for, forge)
+                found.append((url, forge))
+        return tuple(found)
 
     # A 404 is for a person or for a program, and the address says which. These
     # are the program's: JSON routes, files, the sign-in round trip.
@@ -3058,6 +3119,8 @@ def create_app(
         change.
         """
         payload = await _sent(request)
+        # The plan's links, for where its pull requests go
+        _, _, links = await asyncio.to_thread(plan_now)
         # `str()` rather than a refusal: this route renders, it does not write, and
         # a preview is worth showing for whatever was typed. But the markdown
         # parser takes text and a number reached it as a TypeError — a 500 on the
@@ -3065,7 +3128,7 @@ def create_app(
         return JSONResponse(
             {
                 "html": render.preview_html(
-                    str(payload.get("body") or ""), title=str(payload.get("title") or "")
+                    str(payload.get("body") or ""), links, title=str(payload.get("title") or "")
                 )
             }
         )
@@ -3140,10 +3203,11 @@ def create_app(
         document is a card that cannot say which it is. An empty document is a
         200 with an empty string, and the card says so in words.
         """
-        record = index_now()[1].records.get(record_id)
+        _, index, links = plan_now()
+        record = index.records.get(record_id)
         if record is None:
             raise HTTPException(status_code=404, detail="no such record")
-        return JSONResponse({"html": str(render._body_html(record, render.ROUTES))})
+        return JSONResponse({"html": str(render._body_html(record, links))})
 
     # What GitHub last said about each repository the plan names:
     # `owner/repo -> (when it was asked, entries, whether the last attempt failed)`.
@@ -3160,7 +3224,7 @@ def create_app(
     pulls_lock = threading.Lock()
 
     def _live_pull_requests(
-        repositories: list[str], ttl: float | None = None
+        repositories: Sequence[tuple[str, str]], ttl: float | None = None
     ) -> tuple[list[dict], bool]:
         """Every open pull request and issue in these repositories, and whether it
         is stale.
@@ -3191,7 +3255,8 @@ def create_app(
         """
         import json as _json
 
-        from .github import PULLS_TTL_SECONDS, open_references
+        from . import forge as forgejo
+        from . import github
 
         # `github_transport` is `create_app`'s one test seam for this: an httpx
         # transport a test answers from without a socket, the same shape and the
@@ -3200,15 +3265,23 @@ def create_app(
 
         app_for = credentials if hasattr(credentials, "api_headers") else None
         now = time.monotonic()
-        fresh_for = PULLS_TTL_SECONDS if ttl is None else ttl
+        fresh_for = github.PULLS_TTL_SECONDS if ttl is None else ttl
         offered: list[dict] = []
         stale = False
         with pulls_lock:
-            for repository in repositories:
-                asked, entries, failed = pulls.get(repository, (-math.inf, [], False))
+            for url, forge in repositories:
+                if forge not in READABLE:
+                    continue
+                repository, origin = repository_name(url), repository_origin(url)
+                asked, entries, failed = pulls.get(url, (-math.inf, [], False))
                 if now >= asked + fresh_for:
                     try:
-                        entries = open_references(repository, app_for, github_transport)
+                        if forge == "github":
+                            entries = github.open_references(repository, app_for, github_transport)
+                        else:
+                            entries = forgejo.open_references(
+                                origin, repository, token_for(origin), github_transport
+                            )
                         failed = False
                     except (httpx.HTTPError, _json.JSONDecodeError, KeyError, ValueError):
                         # WARNING and not an exception: the operator wants to know
@@ -3217,7 +3290,7 @@ def create_app(
                         # has been renamed.
                         _LOG.warning("could not read open pull requests for %s", repository)
                         failed = True
-                    pulls[repository] = (now, entries, failed)
+                    pulls[url] = (now, entries, failed)
                 stale = stale or failed
                 # Which of the two leads the label, because `#1403` reads the same
                 # for either and the reader choosing between them is asking which.
@@ -3262,8 +3335,7 @@ def create_app(
         """
         if not may_write(request):
             raise HTTPException(403, "sign in to read the open pull requests")
-        _, index = index_now()
-        offered, stale = _live_pull_requests(index.repositories)
+        offered, stale = _live_pull_requests(plan_now()[2].repositories)
         return JSONResponse({"prs": offered, "stale": stale})
 
     # Where each cited pull request or issue stands: `owner/repo#N -> (good until,
@@ -3273,7 +3345,9 @@ def create_app(
     states: dict[str, tuple[float, dict[str, object]]] = {}
     states_lock = threading.Lock()
 
-    def _reference_states(index: Index) -> tuple[dict[str, dict[str, object]], bool]:
+    def _reference_states(
+        index: Index, repositories: Sequence[tuple[str, str]]
+    ) -> tuple[dict[str, dict[str, object]], bool]:
         """What GitHub says about every reference the plan cites, within a budget.
 
         **Sixty an hour is the budget this is written against**, which is what a
@@ -3296,20 +3370,20 @@ def create_app(
         Only the repositories the plan names. A reference to anywhere else is
         not looked up at all, for the reason `/api/prs` takes no input.
         """
-        from .github import reference_state
+        from . import forge as forgejo
+        from . import github
 
         app_for = credentials if hasattr(credentials, "api_headers") else None
+        lookable = _readable(repositories)
         wanted = sorted(
             {
                 ref
                 for record in index.plan.values()
                 for ref in record.prs
-                if _REF.fullmatch(ref) and ref.split("#")[0] in index.repositories
+                if _REF.fullmatch(ref) and ref.split("#")[0].lower() in lookable
             }
         )
-        open_now = {
-            one["value"] for one in _live_pull_requests(index.repositories, STATE_OPEN_TTL)[0]
-        }
+        open_now = {one["value"] for one in _live_pull_requests(repositories, STATE_OPEN_TTL)[0]}
         now = time.monotonic()
         known: dict[str, dict[str, object]] = {}
         pending = False
@@ -3328,11 +3402,18 @@ def create_app(
                     pending = True
                     continue
                 repository, number = ref.split("#")
+                url, forge = lookable[repository.lower()]
                 spent += 1
                 try:
-                    said, left = reference_state(
-                        repository, int(number), app_for, github_transport
-                    )
+                    if forge == "github":
+                        said, left = github.reference_state(
+                            repository, int(number), app_for, github_transport
+                        )
+                    else:
+                        origin = repository_origin(url)
+                        said, left = forgejo.reference_state(
+                            origin, repository, int(number), token_for(origin), github_transport
+                        )
                 except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError):
                     _LOG.warning("could not read the state of %s", ref)
                     pending = True
@@ -3370,8 +3451,9 @@ def create_app(
         """
         if not may_write(request):
             raise HTTPException(403, "sign in to read where the pull requests stand")
-        _, index = index_now()
-        known, pending = _reference_states(index)
+        _, index, links = plan_now()
+        known, pending = _reference_states(index, links.repositories)
+        lookable = _readable(links.repositories)
         verdicts: dict[str, dict[str, object]] = {}
         for record_id, record in index.plan.items():
             if record.status not in STATUS_ORDER or record.status in ("done", "shelved"):
@@ -3379,7 +3461,7 @@ def create_app(
             refs = [
                 ref
                 for ref in record.prs
-                if _REF.fullmatch(ref) and ref.split("#")[0] in index.repositories
+                if _REF.fullmatch(ref) and ref.split("#")[0].lower() in lookable
             ]
             said = [known.get(ref) for ref in refs]
             if not refs or any(one is None or one["state"] == "open" for one in said):

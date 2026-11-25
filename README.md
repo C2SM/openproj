@@ -145,7 +145,10 @@ token instead of the GitHub App: `OPENPROJ_REMOTE_USER` is the account that owns
 of the pair, and refuses it beside the App's variables, because then nobody chose which one
 pushes. `OPENPROJ_PLAN_URL` is the plan repository's page as a browser opens it, which the
 footer's `plan` and commit link into. On GitHub it is read off the remote; anywhere else it has to
-be said, since the address the server pushes to is often not one anybody can open.
+be said, since the address the server pushes to is often not one anybody can open. It also says
+which host may be shown the token: the server reads the pull requests of repositories on that host
+with it, and asks every other host in `repositories:` anonymously, because that list is a file
+anybody who can commit to the plan can edit.
 
 Putting it on Cloud Run reads the deployment from the plan rather than from here. `init` writes
 `deploy/openproj.env` into the plan when asked, or when given `--deploy KEY=VALUE`, and
