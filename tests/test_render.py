@@ -5683,7 +5683,7 @@ const more = document.getElementById('buildmore');
 const shelf = more.querySelector('.buildshelf');
 const shown = [...build.children].filter(el => el.getClientRects().length)
   .map(el => el.getBoundingClientRect());
-const ids = ['version', 'buildhelp', 'report', 'theme'];
+const ids = ['version', 'buildhelp', 'buildkeys', 'report', 'theme'];
 const where = Object.fromEntries(ids.map(id => {
   const el = document.getElementById(id);
   // `nav` as well, because above the phone breakpoint the corner is in the nav.
@@ -5732,7 +5732,11 @@ def test_the_footer_is_one_line_and_folds_what_does_not_fit(
         assert not got["hidden"] and got["shelved"], f"{at}: nothing was folded away"
         assert "gone" not in got["where"].values(), f"{at}: an item left the footer: {got}"
         assert got["where"]["theme"] == "row", f"{at}: the theme toggle folded before the rest"
-        order = [name for name in ("version", "buildhelp", "report") if name in got["shelved"]]
+        order = [
+            name
+            for name in ("version", "buildhelp", "buildkeys", "report")
+            if name in got["shelved"]
+        ]
         assert got["shelved"] == order, f"{at}: the menu reads {got['shelved']}, out of order"
         assert got["shelfInside"] and got["shelfPainted"], f"{at}: the open menu is not seen"
     for page, got in wide.items():
@@ -10322,6 +10326,7 @@ def test_a_view_left_out_has_no_shortcut():
     assert "go-graph" not in ids and "go-table" not in ids
     assert ids["go-timeline"]["keys"] == ["g t"]
     assert ids["go-help"]["keys"] == ["g h"]
+    assert ids["go-back"]["keys"] == ["g b"]
 
 
 def test_the_static_export_has_no_new_key():
@@ -10365,6 +10370,25 @@ def test_every_data_keys_id_is_in_the_registry(seed_index: Index, tmp_path: Path
         assert "go-graph" not in said, name
     nav = [e for e in elements((tmp_path / "index.html").read_text()) if e.tag == "a"]
     assert {e.attrs.get("data-keys") for e in nav} >= {"go-records", "go-timeline", "go-help"}
+
+
+def test_every_item_on_the_footer_says_what_it_is_when_hovered(seed_index: Index):
+    # Two of four did, and the two that did not were the version and Report issue
+    from openproj.render import render_table
+
+    page = render_table(seed_index, ROUTES)
+    said = {
+        e.attrs.get("id"): e.attrs.get("title")
+        for e in elements(page)
+        if e.attrs.get("id") in {"version", "planhead", "report"}
+    }
+    assert said == {
+        "version": "the code behind the app",
+        "planhead": "the database for the plan",
+        "report": "Report issue",
+    }, said
+    help_link = [e for e in elements(page) if e.tag == "a" and e.attrs.get("href") == ROUTES.help]
+    assert help_link and help_link[0].attrs.get("title") == "Help", help_link
 
 
 def test_the_shortcuts_button_has_a_name(rendered: Path):
