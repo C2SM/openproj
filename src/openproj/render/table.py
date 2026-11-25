@@ -1089,10 +1089,14 @@ function prMarkOf(id) {
 // not fit. The whole reference is in the link's title, and the detail page prints
 // it in full, so nothing is lost — a plan that does span two repositories reads a
 // little thinner here and exactly the same everywhere else.
+//
+// Where it links is the shell's `prHref`, which knows each repository's forge.
+// Anything that is not a reference or a URL is drawn as the text it is.
 function prLink(ref) {
-  const [repo, number] = ref.split('#');
-  return `<a href="https://github.com/${esc(repo)}/pull/${esc(number)}"` +
-    ` title="${esc(ref)}">#${esc(number)}</a>`;
+  const href = prHref(ref);
+  if (!href) return esc(ref);
+  const number = /^https?:/i.test(ref) ? '' : String(ref).split('#')[1];
+  return `<a href="${esc(href)}" title="${esc(ref)}">${esc(number ? '#' + number : ref)}</a>`;
 }
 
 // What the id cell says about whether this row's last save has reached GitHub.

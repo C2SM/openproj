@@ -1676,7 +1676,7 @@ def slides_of(index: Index, record: Record, links: Links, assets: dict[str, str]
             ]
             if at == 0 and slide.progress
             else [],
-            "prs": [_pr_link(ref) for ref in record.prs] if at == 0 and slide.prs else [],
+            "prs": [_pr_link(ref, links) for ref in record.prs] if at == 0 and slide.prs else [],
             "body": body if at == 0 else Markup(""),
             "extra": _markdown(chunk, links, assets) if chunk else Markup(""),
             "note": note if at == 0 else "",

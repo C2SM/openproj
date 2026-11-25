@@ -63,6 +63,7 @@ from .model import (
     patch_text,
     rekind_plan,
     rekind_references,
+    repository_origin,
     unknown_fields,
     validate_all,
 )
@@ -862,6 +863,22 @@ def _commit_one(repo: Path, relative: str, message: str) -> str:
     return str(handle.create_commit("HEAD", who, who, message, tree, parents))
 
 
+def _forges(urls: list[str]) -> tuple[tuple[str, str], ...]:
+    """Each repository with the forge its host answered, each host asked once.
+
+    Anonymously: a terminal has no deployment's token, and a Forgejo that wants
+    one says so in a way `forge_of` still recognises.
+    """
+    from .forge import forge_of
+
+    asked: dict[str, str] = {}
+    for url in urls:
+        origin = repository_origin(url)
+        if origin not in asked:
+            asked[origin] = forge_of(origin)
+    return tuple((url, asked[repository_origin(url)]) for url in urls)
+
+
 def _check(repo: Path, today: date | None) -> int:
     """Every file that is not a record, then every problem, then the count.
 
@@ -905,9 +922,17 @@ def _check(repo: Path, today: date | None) -> int:
     )
     for problem in problems:
         print(f"{problem.severity}: {problem.record_id}: {problem.field}: {problem.message}")
+    # The footer's orange line, said here too: a reference that stopped being a
+    # link is a thing this command should name rather than count as fine
+    from .render import STATIC
+
+    looked = STATIC.model_copy(update={"repositories": _forges(index.repositories)})
+    unread = looked.unread_repositories()
+    for url, why in unread:
+        print(f"warning: repositories: {url}: {why}")
     blockers = [p for p in problems if p.severity == "blocker"]
     stopped = len(blockers) + len(unreadable) + len(index.unusable)
-    print(f"{stopped} blockers, {len(problems) - len(blockers)} warnings")
+    print(f"{stopped} blockers, {len(problems) - len(blockers) + len(unread)} warnings")
     return 1 if blockers or unreadable or index.unusable else 0
 
 
@@ -927,6 +952,7 @@ def _render(repo: Path, out_dir: Path, today: date | None) -> int:
         repo,
         edited=edited_by_id(stamps) if stamps is not None else None,
         now=int(time.time()),
+        repositories=_forges(index.repositories),
     )
     print(f"wrote {', '.join(written)} to {out_dir}")
     # Said here as well as drawn on the pages: a build log is where somebody

@@ -6640,7 +6640,8 @@ def test_the_open_pull_requests_come_from_the_plan_and_are_cached(tmp_path: Path
     """
     asked: list[str] = []
     repo = _plan_that_names_repositories(
-        tmp_path, "repositories: [kilnlab/kiln4py, griddle/griddle]\n"
+        tmp_path,
+        "repositories: [https://github.com/kilnlab/kiln4py, https://github.com/griddle/griddle]\n",
     )
     app = create_app(
         repo,
@@ -6700,7 +6701,7 @@ def test_a_github_that_will_not_answer_costs_the_completion_and_nothing_else(
         asked.append(request.url.path)
         return httpx.Response(503, text="unavailable")
 
-    repo = _plan_that_names_repositories(tmp_path, "repositories: [kilnlab/kiln4py]\n")
+    repo = _plan_that_names_repositories(tmp_path, "repositories: [https://github.com/kilnlab/kiln4py]\n")
     app = create_app(repo, auth="dev", secret=SECRET, github_transport=httpx.MockTransport(broken))
     with TestClient(app) as client:
         client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
@@ -6717,7 +6718,7 @@ def test_the_open_pull_requests_are_not_offered_to_a_signed_out_visitor(tmp_path
     that spends them for anybody who asks is a route that can be made to spend
     them all."""
     asked: list[str] = []
-    repo = _plan_that_names_repositories(tmp_path, "repositories: [kilnlab/kiln4py]\n")
+    repo = _plan_that_names_repositories(tmp_path, "repositories: [https://github.com/kilnlab/kiln4py]\n")
     app = create_app(
         repo,
         auth="github",
@@ -6732,12 +6733,16 @@ def test_the_open_pull_requests_are_not_offered_to_a_signed_out_visitor(tmp_path
     assert asked == [], "a signed-out visitor made this server call GitHub"
 
 
-def _plan_citing(tmp_path: Path, cited: dict[str, list[str]]) -> Path:
+def _plan_citing(
+    tmp_path: Path,
+    cited: dict[str, list[str]],
+    named: str = "repositories: [https://github.com/kilnlab/kiln4py]\n",
+) -> Path:
     """The corpus with these references in `prs:`, and `kilnlab/kiln4py` named."""
     path = tmp_path / "states.git"
     pygit2.init_repository(str(path), bare=True, initial_head="main")
     seeded = dict(SEED)
-    seeded["config/defaults.yaml"] += "repositories: [kilnlab/kiln4py]\n"
+    seeded["config/defaults.yaml"] += named
     for name, text in seeded.items():
         record = next((rid for rid in cited if name.endswith(f"/{rid}.md")), None)
         if record is None:
@@ -6901,10 +6906,10 @@ def test_a_plan_that_names_no_repository_asks_nothing(tmp_path: Path):
     assert asked == []
 
 
-def test_a_repository_that_is_not_an_owner_and_a_repo_is_refused_and_named(
+def test_a_repository_that_is_not_a_page_is_refused_and_named(
     tmp_path: Path,
 ):
-    """This value ends up in a URL path on api.github.com, so it is an allowlist
+    """This value ends up in a request this server makes, so it is an allowlist
     — `AGENTS.md` records what a denylist of URL spellings is worth.
 
     Refused rather than filtered, which is the bargain every other config value
@@ -6922,6 +6927,117 @@ def test_a_repository_that_is_not_an_owner_and_a_repo_is_refused_and_named(
         assert "config/defaults.yaml" in page.text, (
             "the file was dropped and the page does not say so"
         )
+
+
+_WATCHFACE = "https://git.example.org/jacopo/watchface"
+
+
+def _forgejo_answering(asked: list[httpx.Request], states: dict[int, dict] | None = None):
+    """A Forgejo at git.example.org, and a GitLab at gitlab.com, writing down what was asked."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        path = request.url.path
+        if request.url.host != "git.example.org":
+            return httpx.Response(404, text="<h1>404</h1>")
+        if path == "/api/v1/version":
+            return httpx.Response(200, json={"version": "15.0.12"})
+        if path == "/api/v1/repos/jacopo/watchface/issues":
+            return httpx.Response(
+                200, json=[{"number": 4, "title": "Second hand", "pull_request": {}}]
+            )
+        if path.startswith("/api/v1/repos/jacopo/watchface/issues/"):
+            number = int(path.rsplit("/", 1)[1])
+            return httpx.Response(200, json={"number": number, **(states or {})[number]})
+        return httpx.Response(404, json={"message": "not found"})
+
+    return httpx.MockTransport(answer)
+
+
+def test_a_forgejo_repository_is_linked_and_read_on_its_own_forge(tmp_path: Path):
+    """plan-d's code is on a Forgejo: `jacopo/watchface#3` links to that host's
+    `/pulls/3`, and the completion and the done/shelved offers ask its API,
+    never GitHub's."""
+    asked: list[httpx.Request] = []
+    repo = _plan_citing(
+        tmp_path,
+        {TASK: ["jacopo/watchface#3"], OTHER: ["jacopo/watchface#4"]},
+        named=f"repositories: [{_WATCHFACE}]\n",
+    )
+    merged = {"state": "closed", "pull_request": {"merged": True, "merged_at": "2026-11-19T10:00Z"}}
+    app = create_app(
+        repo,
+        auth="dev",
+        secret=SECRET,
+        github_transport=_forgejo_answering(asked, {3: merged}),
+    )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        page = client.get(f"/detail/{TASK}").text
+        offered = client.get("/api/prs").json()
+        states = client.get("/api/pr-states").json()
+
+    links = [e.attrs.get("href") for e in elements(page) if e.tag == "a"]
+    assert f"{_WATCHFACE}/pulls/3" in links
+    assert not any("github.com/jacopo" in (href or "") for href in links)
+    assert offered == {
+        "prs": [{"value": "jacopo/watchface#4", "label": "PR · Second hand"}],
+        "stale": False,
+    }
+    assert states["records"] == {TASK: {"verdict": "landed", "count": 1, "at": "2026-11-19"}}
+    assert {r.url.host for r in asked} == {"git.example.org"}
+    assert [r.url.path for r in asked].count("/api/v1/version") == 1, "the host was asked twice"
+
+
+def test_a_repository_on_a_forge_openproj_cannot_read_is_named_and_never_read(tmp_path: Path):
+    asked: list[httpx.Request] = []
+    gitlab = "https://gitlab.com/someone/thing"
+    repo = _plan_that_names_repositories(tmp_path, f"repositories: [{gitlab}]\n")
+    app = create_app(repo, auth="dev", secret=SECRET, github_transport=_forgejo_answering(asked))
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        page = client.get("/table").text
+        offered = client.get("/api/prs").json()
+
+    warning = [e for e in elements(page) if e.attrs.get("id") == "forgewarn"]
+    assert warning and gitlab in warning[0].attrs.get("title", ""), "the footer said nothing"
+    assert offered == {"prs": [], "stale": False}
+    assert [r.url.path for r in asked] == ["/api/v1/version"], "it read a forge it cannot read"
+
+
+def test_the_push_token_goes_only_to_a_host_the_deployment_names(tmp_path: Path):
+    """`repositories:` is a file anybody who can commit to the plan can edit, so a
+    host named there must not be handed this server's token. The deployment's own
+    `OPENPROJ_PLAN_URL` (or remote) is what says which host may have it."""
+    from openproj.forge import ForgeToken
+
+    asked: list[httpx.Request] = []
+    elsewhere = "https://git.example.net/someone/else"
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        if request.url.path == "/api/v1/version":
+            return httpx.Response(200, json={"version": "15.0.12"})
+        return httpx.Response(200, json=[])
+
+    repo = _plan_that_names_repositories(
+        tmp_path, f"repositories: [{_WATCHFACE}, {elsewhere}]\n"
+    )
+    app = create_app(
+        repo,
+        auth="dev",
+        secret=SECRET,
+        credentials=ForgeToken("jacopo", "f0rgej0"),
+        plan_url="https://git.example.org/jacopo/plan",
+        github_transport=httpx.MockTransport(answer),
+    )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        client.get("/api/prs")
+
+    told = {(r.url.host, r.headers.get("authorization")) for r in asked}
+    assert ("git.example.org", "token f0rgej0") in told
+    assert {auth for host, auth in told if host == "git.example.net"} == {None}, told
 
 
 def test_a_column_written_across_a_selection_is_one_commit(client: httpx.Client, repo_path: Path):

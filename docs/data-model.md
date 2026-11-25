@@ -166,10 +166,17 @@ halves of the app something to disagree about.
 **`Config`** — `config/*.yaml`: `schema_version`, `nominal_availability`, `cooldown_weeks`,
 `repositories`, `views`, `kinds`, `holidays`, the cycle windows, and `known_people`, the **roster**.
 Empty means the check is off; when it does name people, somebody who is not on it is a warning and
-never a blocker. `repositories` is the `owner/repo`s the PRs box and the body complete from —
-`icon4py 1403` becomes `C2SM/icon4py#1403`, a pasted GitHub link becomes the reference it names, and
-the server offers their open pull requests and issues by title; a repository not listed is typed in
-full. They are also what the GitHub mark is read from: a record whose listed PRs have all landed
+never a blocker. `repositories` is the repositories the PRs box and the body complete from, each
+written as its page, `https://github.com/C2SM/icon4py` or `https://git.example.org/team/app`. The
+host says which forge it is: github.com by its name, any other host by asking it whether it is a
+Forgejo (Codeberg and Gitea answer the same way). `icon4py 1403` becomes `C2SM/icon4py#1403`, linked
+to that repository's forge, a pasted link to one of its pull requests becomes the reference it
+names, and the server offers their open pull requests and issues by title. A reference to a
+repository not listed is typed in full and linked to GitHub. A listed repository on a forge
+openproj cannot read, GitLab say, or on a host the server could not reach, is drawn without a link
+and named in orange in every page's footer and by `openproj check`. The bare `owner/repo` this used
+to take is refused, with a message saying what to write instead. They are also what the PR mark is
+read from: a record whose listed PRs have all landed
 wears a green one beside its title in the table and a **Mark done** button under its Status, and one
 whose PRs were all closed unmerged a struck-through red one and **Mark shelved**. Nothing is written
 until somebody presses Save. `views` is the views this plan has, in nav order after Records, and it is held

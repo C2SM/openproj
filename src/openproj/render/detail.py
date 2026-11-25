@@ -3411,7 +3411,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             # id is not an answer anybody can press.
             display = _link_lines(getattr(record, name), index, links) or empty
         elif name == "prs":
-            display = Markup(", ").join(_pr_link(ref) for ref in record.prs) or empty
+            display = Markup(", ").join(_pr_link(ref, links) for ref in record.prs) or empty
         elif name == "review_waived":
             display = Markup("waived") if record.review_waived else empty
         elif name == "status":

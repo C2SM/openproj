@@ -10,7 +10,15 @@ from pydantic import BaseModel
 
 from .. import __version__
 from ..index import Face, Index
-from ..model import RUNG, SWITCHES_FILE, VIEW_NEEDS, VIEWS, Unreadable, Unusable
+from ..model import (
+    RUNG,
+    SWITCHES_FILE,
+    VIEW_NEEDS,
+    VIEWS,
+    Unreadable,
+    Unusable,
+    repository_name,
+)
 from ..themes import FAMILIES
 from ..vendor import _font_uri
 from .controls import _PLAN_FACETS
@@ -87,11 +95,16 @@ class Links(BaseModel):
     # the whole plan with nowhere to put the number. Where it is empty the cycle
     # page draws no link to it, rather than a link to a file nobody wrote.
     deck: str = ""
-    # The plan repository's page on github.com, which the footer's `plan` and the
-    # plan's sha link into. Set by the server only when its remote is a GitHub
-    # repository: a plan served from a bare repository on a NAS has no page to
-    # link to, and the static export does not know where its files came from.
+    # The plan repository's page, which the footer's `plan` and the plan's sha link
+    # into: `OPENPROJ_PLAN_URL`, or the github.com page the remote names. Empty for
+    # a plan served from a bare repository with no page, and in the static export,
+    # which does not know where its files came from.
     plan: str = ""
+    # Each repository the plan names, as `(url, forge)`, where the forge is what
+    # its host answered: `github`, `forgejo`, `unsupported` or `unreachable`.
+    # Asked by whoever can reach the network (the server, `openproj render`) and
+    # never by a renderer, so a page is drawn from what it is handed.
+    repositories: tuple[tuple[str, str], ...] = ()
     # Whether a server is behind the page — the event stream, the health poll, per-cycle pages,
     # diagrams fetched on demand. A fact about the mode, said once. Three places used to infer
     # it from whether `table` or `cycle` began with a slash, so blanking a view's link would
@@ -102,6 +115,28 @@ class Links(BaseModel):
     # what the nav draws and where the pages link cannot disagree about which views exist —
     # and the back link reads the same tuple to decide whether a stamped page still does.
     nav: tuple[str, ...] = tuple(key for key, _ in _NAV)
+
+    def pr_bases(self) -> dict[str, str]:
+        """What `owner/repo#N` is linked to, by lowercase `owner/repo`: the URL the
+        number goes on the end of, or "" for a repository with no link to draw.
+
+        The rule's one table. The pages' script reads this map rather than
+        knowing a forge's spelling, so the two languages share the data and keep
+        only the lookup each.
+        """
+        spelled = {"github": "/pull/", "forgejo": "/pulls/"}
+        return {
+            repository_name(url).lower(): url + spelled[forge] if forge in spelled else ""
+            for url, forge in self.repositories
+        }
+
+    def unread_repositories(self) -> list[tuple[str, str]]:
+        """Each repository whose pull requests openproj cannot link or read, and why."""
+        said = {
+            "unsupported": "not GitHub or Forgejo, which are the forges openproj reads",
+            "unreachable": "the server could not reach its host to ask which forge it is",
+        }
+        return [(url, said[forge]) for url, forge in self.repositories if forge in said]
 
 
 # What a page may do, said once. The server sends it as a header and every page
@@ -1068,6 +1103,7 @@ pre.mermaid[data-processed] svg { height: auto; }
                          display: inline-block; color: var(--muted); }
 #build > .corner::before { content: none; }
 #planhead:empty { display: none; }
+#forgewarn { color: var(--warn); }
 .schemepick { min-width: 0; }
 .schemepick select { max-width: 100%; }
 #who { display: flex; align-items: center; gap: .5rem; color: var(--muted); }
@@ -2622,6 +2658,9 @@ tr.nothing .hint { margin: 0 0 .75rem; }
     instead: the toolbar drew its buttons into a script tag, and the editor's own
     tests caught it as an SVG laid out at 0x0. -#}
 <script id="chipmarks" type="application/json">{{ cardmarks|tojson }}</script>
+{#- Where `owner/repo#N` is linked, per repository: `Links.pr_bases`, so the
+    table's script looks a reference up and never spells a forge's URL itself. -#}
+<script id="prbases" type="application/json">{{ links.pr_bases()|tojson }}</script>
 {#- One list per field every picker on the page opens (`rung_picker`), and the
     picker itself in a template per field, for the editors a script builds: the
     table's cell and the edit card clone it rather than writing a second copy of
@@ -3294,6 +3333,23 @@ const CARD_WORDS = (() => {
   catch (error) { return {}; }
 })();
 function cardWord(value) { return CARD_WORDS[value] || value; }
+
+// `pr_href` in `render/markdown.py`, over the same map: a URL as written, a
+// reference to a listed repository through its forge, an unlisted one to GitHub,
+// and "" for one with no link
+const PR_BASES = (() => {
+  try { return JSON.parse(document.getElementById('prbases').textContent); }
+  catch (error) { return {}; }
+})();
+function prHref(ref) {
+  const said = String(ref).trim();
+  if (/^https?:\\/\\/[^\\s<>"']+$/i.test(said)) return said;
+  const found = /^([\\w.-]+\\/[\\w.-]+)#([0-9]+)$/.exec(said);
+  if (!found) return '';
+  const base = PR_BASES[found[1].toLowerCase()];
+  if (base === undefined) return `https://github.com/${found[1]}/pull/${found[2]}`;
+  return base ? base + found[2] : '';
+}
 
 // `2026-07-14` as `14.07.2026`. The card's dates keep the century — it is the one
 // place a date is read rather than scanned, and there is room for four digits —
@@ -4802,6 +4858,20 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
     title="Keyboard shortcuts" aria-label="Keyboard shortcuts">Shortcuts</button></span>
   <a id="report" href="https://github.com/C2SM/openproj/issues/new"
     title="Report issue">Report issue</a>
+  {#- A repository in `repositories:` whose pull requests are drawn as plain text
+      and never looked up: a forge openproj does not read, or a host the server
+      could not ask. jcanton, 2026-11-25, asking for it here. On every page,
+      because a reference that silently stopped being a link is the empty that
+      looks like broken (F1), and in the footer because it is about the plan's
+      setup and not about the page in front of anybody. -#}
+  {%- set unread = links.unread_repositories() %}
+  {%- if unread %}
+  <span id="forgewarn" title="{% for url, why in unread %}{{ url }}: {{ why }}
+    {%- if not loop.last %}&#10;{% endif %}{% endfor %}"><span aria-hidden="true">⚠</span>
+    {{ unread|length }} {{ "repository" if unread|length == 1 else "repositories" }} not
+    read<span class="sr-only">: {% for url, why in unread %}{{ url }}, {{ why }}
+    {%- if not loop.last %}; {% endif %}{% endfor %}</span></span>
+  {%- endif %}
   {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
       "on mobile takes up too much space: I'd rather it be only one line with a
       meatball/hamburger/arrow menu where the items that do not fit get hidden".
@@ -4880,7 +4950,7 @@ function stowCorner(narrow) {
 //
 // A relocation and not a copy, for the reason `stowCorner` gives: one element,
 // one id, one listener. `BUILD_ITEMS` is where each one lives, in the order it
-// is drawn: the footer's own five, then the corner's three. An item goes back
+// is drawn: the footer's own six, then the corner's three. An item goes back
 // in front of the next of its neighbours that is still at home, or else to the
 // end of its home. In the footer the end is just before the corner, or before
 // the fold button when the corner is in the nav. Only items whose home is in the
@@ -4891,12 +4961,12 @@ function stowCorner(narrow) {
 // builds these pages without comment nodes, and every page it drove stopped
 // on `document.createComment` before its interesting half had run.
 const BUILD_ITEMS = ['#version', '#planhead', '#buildhelp', '#buildkeys', '#report',
-                     '#who', '.corner .schemepick', '#theme']
+                     '#forgewarn', '#who', '.corner .schemepick', '#theme']
   .map(selector => document.querySelector(selector))
   .filter(Boolean)
   .map(el => ({el, home: el.parentElement}));
 const BUILD_FOLDS = ['#planhead', '#version', '#report', '#buildkeys', '#buildhelp',
-                     '.corner .schemepick',
+                     '#forgewarn', '.corner .schemepick',
                      '#who', '#theme']
   .map(selector => document.querySelector(selector))
   .map(el => BUILD_ITEMS.find(one => one.el === el))

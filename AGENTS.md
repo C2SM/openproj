@@ -115,6 +115,11 @@ cache, over the repositories `config/defaults.yaml` names and no others.
 proxy that fetches any path on api.github.com that anybody can name, from an IP
 inside the project, with our token on it. The allowlist is a file somebody
 committed to the plan.
+Since `repositories:` became URLs, that file can name any host, and the server asks
+each non-GitHub host once whether it is a Forgejo (`forge_of`). So the token rides
+only to a host the DEPLOYMENT names, `OPENPROJ_PLAN_URL` or the remote
+(`token_for` in `create_app`), and never to one the plan names: the plan is
+writable by everybody who can commit to it, the environment is not.
 
 **A view that is off is off everywhere, `Links` is the seam, and nothing reads server mode off a
 link.** `views` and `kinds` are resolved once, in `read_config` (`resolve_switches`, `model.py`),

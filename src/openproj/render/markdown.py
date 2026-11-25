@@ -346,9 +346,34 @@ _MD = (
 
 
 _PR = re.compile(r"\b([\w.-]+/[\w.-]+)#(\d+)\b")
+# A reference written out in full rather than as `owner/repo#N`: linked as written,
+# the way prose links a URL with its scheme spelt out
+_PR_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
-def _pr_link(ref: str) -> Markup:
+def pr_href(ref: str, links: Links) -> str:
+    """Where one entry of `prs:` (or a reference in prose) links, or "" for nowhere.
+
+    `owner/repo#N` goes to the forge of the repository the plan lists under that
+    name. A name the plan does not list goes to GitHub, because the notation is
+    GitHub's and every reference written before repositories had hosts meant it.
+    A listed repository on a forge openproj cannot read gets no link, because
+    GitLab spells a merge request `!N` and any guess would be a wrong page.
+    """
+    ref = ref.strip()
+    if _PR_URL.fullmatch(ref):
+        return ref
+    found = _PR.fullmatch(ref)
+    if not found:
+        return ""
+    name, number = found.groups()
+    base = links.pr_bases().get(name.lower())
+    if base is None:
+        return f"https://github.com/{name}/pull/{number}"
+    return base + number if base else ""
+
+
+def _pr_link(ref: str, links: Links) -> Markup:
     """A dead PR reference teaches people the field is decorative.
 
     `Markup(...).format` and not an f-string. Called from `_after_markdown` the
@@ -358,8 +383,10 @@ def _pr_link(ref: str) -> Markup:
     and a link text. That is the whole of the difference between a decorative
     field and a script that runs for everybody who opens the page.
     """
-    repo, _, number = ref.partition("#")
-    return Markup('<a href="https://github.com/{}/pull/{}">{}</a>').format(repo, number, ref)
+    href = pr_href(ref, links)
+    if not href:
+        return Markup("{}").format(ref)
+    return Markup('<a href="{}">{}</a>').format(href, ref)
 
 
 # What an asset is, and what a `data:` URI has to call it. One enumeration, with
@@ -470,13 +497,13 @@ def _pr_refs(state: StateCore) -> None:
             elif child.type == "link_close":
                 depth -= 1
             if child.type == "text" and depth == 0 and _PR.search(child.content):
-                children.extend(_pr_tokens(child))
+                children.extend(_pr_tokens(child, state.env.get("links", STATIC)))
             else:
                 children.append(child)
         token.children = children
 
 
-def _pr_tokens(token: Token) -> list[Token]:
+def _pr_tokens(token: Token, links: Links) -> list[Token]:
     """One text token, split into the text around its PR references and the links.
 
     `html_inline` is how a rule adds markup of its own: the renderer writes its
@@ -488,7 +515,8 @@ def _pr_tokens(token: Token) -> list[Token]:
     for match in _PR.finditer(token.content):
         if match.start() > at:
             pieces.append(_inline_token("text", token.content[at : match.start()], token.level))
-        pieces.append(_inline_token("html_inline", str(_pr_link(match.group(0))), token.level))
+        link = _pr_link(match.group(0), links)
+        pieces.append(_inline_token("html_inline", str(link), token.level))
         at = match.end()
     if at < len(token.content):
         pieces.append(_inline_token("text", token.content[at:], token.level))
