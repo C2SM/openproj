@@ -4843,7 +4843,9 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       it was meant to. The span takes the dot and the link inside it takes the
       box, and as an inline box inside a flex item the link's padding widens the
       mark without making the row any taller on the one page that draws it. -#}
-  <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help"
+  {#- `title` as well as `data-keys`: `labelKeys` adds the key to it in the browser,
+      and a page whose script never ran still says what the link is. -#}
+  <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help" title="Help"
     {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
   {#- Its own item on the row and a word, where it was a `?` button hung off Help:
       Help and the sheet are two different things, and a button in the shared
