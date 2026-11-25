@@ -139,7 +139,9 @@ def open_references(
         {
             "number": int(one["number"]),
             "title": str(one.get("title") or ""),
-            "pull": bool(one.get("pull_request")),
+            # Present on a pull request and null on an issue, so asked for being
+            # there and not for being truthy
+            "pull": one.get("pull_request") is not None,
         }
         for one in response.json()
     ]
@@ -162,7 +164,8 @@ def reference_state(
     one = _ask(origin, f"/repos/{repository}/issues/{number}", None, token, transport).json()
     if one.get("state") != "closed":
         return {"state": "open", "at": None}, None
-    pull = one.get("pull_request") or {}
-    landed = bool(pull.get("merged")) if pull else True
-    when = str((pull.get("merged_at") if pull else None) or one.get("closed_at") or "")[:10]
+    pull = one.get("pull_request")
+    landed = bool(pull.get("merged")) if pull is not None else True
+    merged = pull.get("merged_at") if pull is not None else None
+    when = str(merged or one.get("closed_at") or "")[:10]
     return {"state": "landed" if landed else "dropped", "at": when or None}, None

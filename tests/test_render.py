@@ -5082,7 +5082,10 @@ def test_a_rendered_plan_offers_no_dead_control(rendered: Path, seed_index: Inde
     written = {path.name for path in rendered.iterdir()}
     for page in PAGES:
         for href in re.findall(r'href="([^"#?]+)[^"]*"', read(rendered, page)):
-            if href.startswith(("http://", "https://", "assets/", "data:")):
+            # `${…}` is a script filling the whole address in at runtime, which
+            # names no file: the table's `prHref`, whose answers are an absolute
+            # URL or nothing (held in `test_forges.py`)
+            if href.startswith(("http://", "https://", "assets/", "data:", "${")):
                 continue
             assert href in written, f"{page} links to {href}, which is not in the export"
 
