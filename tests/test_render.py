@@ -3689,6 +3689,30 @@ def test_a_link_to_a_record_points_at_that_record_s_page(seed_index: Index):
     assert ("the docs", "https://example.com/a") in exported
 
 
+def test_a_link_to_a_record_s_own_file_points_at_that_record_s_page():
+    """`[note-c7a294](../notes/note-c7a294.md)` is how a record links on a forge,
+    and plan-d's agents wrote it that way because its instructions say to. It
+    reached the page as written and resolved to `/notes/note-c7a294.md`, a 404."""
+    written = (
+        "[up](../notes/note-c7a294.md), [beside](note-c7a294.md), "
+        "[down](notes/note-c7a294.md), [here](./products/prod-b9c6fc.md), "
+        "[wrong place](../tasks/note-c7a294.md), [not a record](../notes/README.md), "
+        "[not markdown](../notes/note-c7a294.txt)"
+    )
+    served = {
+        (e.text, e.attrs.get("href")) for e in elements(preview_html(written)) if e.tag == "a"
+    }
+
+    assert ("up", "/detail/note-c7a294") in served, served
+    assert ("beside", "/detail/note-c7a294") in served, served
+    assert ("down", "/detail/note-c7a294") in served, served
+    assert ("here", "/detail/prod-b9c6fc") in served, served
+    # Not this record's directory, and not a record at all: left as written
+    assert ("wrong place", "../tasks/note-c7a294.md") in served, served
+    assert ("not a record", "../notes/README.md") in served, served
+    assert ("not markdown", "../notes/note-c7a294.txt") in served, served
+
+
 def test_a_rendered_block_carries_the_source_line_it_came_from(seed_index: Index):
     """The box and the document are two views of one text, and nothing in the
     browser can line them up unless the rendered half says where each piece was

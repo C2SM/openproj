@@ -25,7 +25,7 @@ from pygments.lexers import get_lexer_by_name
 from pygments.token import Name
 from pygments.util import ClassNotFound
 
-from ..model import ID_PATTERN, Record, without_comments
+from ..model import DIRECTORY, ID_PATTERN, KIND_OF_PREFIX, Record, without_comments
 from .shell import ROUTES, STATIC, Links
 from .styles import CODE_FORMATTER
 
@@ -631,6 +631,24 @@ def _fence(
     return RendererHTML.fence(self, tokens, idx, options, env)
 
 
+# A relative link to a record's own file, the way it reads in git:
+# `../notes/note-c7a294.md`, `notes/note-c7a294.md`, `note-c7a294.md`
+_RECORD_FILE = re.compile(
+    r"\A(?:\.\.?/)*(?:(?P<directory>[a-z]+)/)?(?P<id>[a-z]+-[0-9a-f]{6})\.md\Z"
+)
+
+
+def _record_target(href: str) -> str:
+    """The record id a link points at, or "" for a link to anything else."""
+    if ID_PATTERN.match(href):
+        return href
+    found = _RECORD_FILE.match(href)
+    if not found or not ID_PATTERN.match(found["id"]):
+        return ""
+    directory = DIRECTORY[KIND_OF_PREFIX[found["id"].rsplit("-", 1)[0]]]
+    return found["id"] if found["directory"] in (None, directory) else ""
+
+
 def _link(self: RendererHTML, tokens: Sequence[Token], idx: int, options: object, env: dict) -> str:
     """A link whose target is a record id points at that record's page.
 
@@ -651,6 +669,7 @@ def _link(self: RendererHTML, tokens: Sequence[Token], idx: int, options: object
     is added and never otherwise. Anything else is left exactly as it was
     written: `https://…`, a mailto, `#anchor`, `./notes.md`, and a record id with
     a fragment glued on are all somebody meaning something other than this.
+    (A path to a record's own file is the exception, see the end.)
 
     **Whether the record EXISTS is deliberately not asked.** This renderer is
     handed a body and a link prefix and never an index — the preview route has
@@ -660,11 +679,18 @@ def _link(self: RendererHTML, tokens: Sequence[Token], idx: int, options: object
     `_pr_link` does with a pull request nobody opened, and it is a broken link
     rather than a page that renders differently depending on which view you are
     in.
+
+    **And a relative link to the record's own file is the record too**:
+    `[note-c7a294](../notes/note-c7a294.md)` is what a record links as when it is
+    read on a forge, and what plan-d's own instructions told its agents to write.
+    Left as written it resolved under `/detail/` to a page that does not exist.
+    Only a path whose directory, if it names one, is that id's own: the file is
+    `<directory>/<id>.md` and nothing else is that record.
     """
     token = tokens[idx]
-    href = token.attrGet("href") or ""
-    if ID_PATTERN.match(href):
-        token.attrSet("href", env.get("links", STATIC).record + href)
+    record = _record_target(token.attrGet("href") or "")
+    if record:
+        token.attrSet("href", env.get("links", STATIC).record + record)
     return self.renderToken(tokens, idx, options, env)
 
 
