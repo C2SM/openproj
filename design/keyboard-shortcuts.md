@@ -113,6 +113,7 @@ exemptions, and the census fails on any third.
 | `g g` | Graph    | `g i` | Issues       |
 | `g l` | Timeline, `g t` if Table is not in the nav | `g n` | Notes |
 | `g h` | Help     | `/`   | Focus search |
+| `g b` | Previous page | | |
 | `n`   | New      | `?`   | This sheet   |
 
 **A letter goes to the first nav item that wants it.** Each item carries its preferred letters —
@@ -137,7 +138,9 @@ guard has already said no before a badge could be drawn.
 
 **A sequence exists only where its link does.** The nav sequences are live exactly for the items
 `Links.nav` draws, so a view the plan left out of `views` has no binding, no tooltip and no sheet
-line. `g h` is the one that is not a nav item — Help is in the footer — and it follows `links.help`.
+line. `g h` is not a nav item either — Help is in the footer — and it follows `links.help`. `g b`
+has no link at all: it is `history.back()`, draws no badge, and is announced and listed like the
+others. jcanton, 2026-11-25, asking for it.
 
 **`n` presses the page's own create control, and exists only where there is one.** On the records
 lists it is the `Create …` link, so on `/issues` and `/notes` it carries the kind. On the Table it
@@ -190,8 +193,10 @@ so.
 
 ### The sheet
 
-A modal `<dialog>` in the shell, opened by `?` and by a `?` button **in the footer beside Help**
-(jcanton's choice). The button is hidden on a coarse pointer — a phone has nobody typing keys — so
+A modal `<dialog>` in the shell, opened by `?` and by **Shortcuts in the footer**, its own item
+between Help and Report issue. It was a `?` button hung off Help (jcanton's first choice) until
+2026-11-25: Help and the sheet are two different things, and the bordered button was the one item
+on the row that did not read like the rest. It is hidden on a coarse pointer — a phone has nobody typing keys — so
 the phone footer and its `⋯` fold are untouched. Escape and the close button shut the sheet; focus
 returns to where it was.
 
@@ -243,7 +248,7 @@ stops disabling it.
 - **Assume the browser refuses.** The off switch goes through `remembered`, and a refused store
   costs the setting, never the page.
 - **The sheet is the first `<dialog>` in the app.** Named by its heading, `:focus-visible` on every
-  control, a real `aria-label` on the `?` button.
+  control, a real `aria-label` on the Shortcuts button.
 - **Tested in the medium.** The handlers are driven through `tests/js/drive.js`: a `g` typed into an
   input, an Ace box, a contenteditable, with a drawing open, while presenting, on a dirty page, with
   the switch off — none navigates. A census holds the registry against the rendered pages: every
