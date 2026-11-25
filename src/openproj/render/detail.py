@@ -1132,40 +1132,27 @@ if (VIEW_LINKED) {
   // This tab reloaded itself out of a session a moment ago. It goes back into
   // the view it was in, which is the whole of what `keepView` above wrote down.
   showView(RESUMING);
-  // And back to the line it was on. **After `showView`**, because the editor is
-  // laid out by it and `lineCoords` off a box with no size is a column of
-  // zeroes.
+  // And back to the line it was on, once the surface has laid itself out.
+  // **After `showView`**, because the editor is laid out by it, and not on the
+  // next frame: a map taken before Ace has measured its rows is every line at
+  // zero, and a scroll made then is clamped back to the top by its next render.
   //
-  // **And after the box has measured itself, which is not the next frame.** It
-  // was written as one `requestAnimationFrame` on the reasoning that Ace
-  // measures its rows on its first paint; measured, the map one frame later is
-  // still every line at zero — the page came back at line 1 of 400 with the
-  // whole column reading 0, and a fresh map taken 700ms later read a foot of
-  // 8433px. So the frame is waited FOR rather than counted: the map is rebuilt
-  // each time and the last line's top is the question — a laid-out document has
-  // one below zero and a box with no rows yet does not.
+  // It waited for that by counting frames, up to 60, and then scrolled anyway
+  // off a column of zeroes. On a busy machine 60 frames passed first and the page
+  // came back at line 1 (CI read exactly that on 2026-11-24 and 11-25, and the
+  // test then waiting longer could not help, because the page had already given
+  // up). `onLaidOut` is the surface saying so, on Ace's own `afterRender`.
   //
-  // Rebuilt each time and dropped again afterwards, because the cache is the
-  // second half of the defect: a column of zeroes read once is the column every
-  // later sync scrolls the preview by.
-  //
-  // Bounded, because a document of one empty line is laid out and still has a
-  // foot of zero, and an unbounded wait for it would be a frame loop running for
-  // as long as the page is open.
+  // The map is rebuilt for the landing and dropped again afterwards, because a
+  // column of zeroes cached before it is the column every later sync would
+  // scroll the preview by.
   if (RESUMING_AT) {
-    let frames = 0;
-    const land = () => {
+    SURFACE.onLaidOut(() => {
       sourcePoints = null;
-      const points = sourceMap();
-      if (points[points.length - 1].top <= 0 && frames++ < 60) {
-        sourcePoints = null;
-        requestAnimationFrame(land);
-        return;
-      }
-      SURFACE.scrollTo(pixelOfLine(points, RESUMING_AT));
+      SURFACE.scrollTo(pixelOfLine(sourceMap(), RESUMING_AT));
+      sourcePoints = null;
       syncFromSource();
-    };
-    requestAnimationFrame(land);
+    });
   }
 } else if (VIEW_ARTICLE.classList.contains('editing')) {
   // A session that existed before this script ran: a restored draft — the one

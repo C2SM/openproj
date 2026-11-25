@@ -6859,14 +6859,28 @@ _KEEPS_THE_LINE = r"""
 """
 
 
+# The same, with the editor laid out 2.5s late: hidden until then, then shown and
+# told to measure itself, as the page tells it whenever its box changes (an Ace
+# made in a hidden box measures nothing until somebody calls `resize`). Until then
+# every row is at zero however many frames pass, which is what a busy CI runner,
+# a slow laptop or a tab reloaded in the background looks like to the page.
+def _laid_out_late(page: str) -> str:
+    late = (
+        '<style id="late">.ace_editor { display: none !important; }</style>'
+        "<script>setTimeout(() => { document.getElementById('late').remove();"
+        " SURFACE.editor.resize(true); }, 2500);</script>"
+    )
+    return page.replace("</head>", late + "</head>", 1)
+
+
 _LANDED_WHERE_IT_LEFT = r"""
   // The restore waits for the editor to have measured its own rows, which takes
   // more than the one frame it was first written as: a map read a frame after
-  // `showView` is every line at zero. So this waits for the page's own loop to
-  // have scrolled, and not for a fixed time. It was a fixed 700ms, and on a busy
-  // CI machine the loop sometimes had not found a laid-out box by then: the test
-  // read line 1 and failed on runs whose code had not changed. Polled up to a
-  // deadline, so a restore that never happens still fails here, and fails as line 1.
+  // `showView` is every line at zero. So this waits for the page to have
+  // scrolled, and not for a fixed time. Polled up to a deadline, so a restore that
+  // never happens still fails here, and fails as line 1. (Waiting longer here
+  // never cured the line-1 flake: the page used to stop waiting for Ace after 60
+  // frames, which the next test is about.)
   const until = performance.now() + 3000;
   while (performance.now() < until
          && !(SURFACE.editor && SURFACE.editor.renderer.getFirstVisibleRow() > 0)) {
@@ -6964,6 +6978,39 @@ def test_a_reload_comes_back_to_the_line_it_left_from(client: TestClient, tmp_pa
     assert ordinary["editing"], "the control did not open a session, so it controls nothing"
     assert ordinary["firstRow"] == 0, (
         f"a session nobody saved from opened at line {ordinary['firstRow'] + 1}"
+    )
+
+
+def test_a_reload_whose_editor_lays_out_late_still_comes_back_to_its_line(
+    client: TestClient, tmp_path: Path
+):
+    """The page waited 60 frames for Ace to measure its rows and then scrolled
+    anyway, off a map of zeroes: line 1. On a busy CI runner that happened now and
+    then (2026-11-24 and 11-25), and the test above could only wait longer for a
+    page that had already given up.
+
+    In a real browser and on a real clock, because the headless run above keeps
+    virtual time and draws a frame only while there is something to paint, so 60
+    of them cannot be made to pass on purpose. An editor laid out 2.5s late is 60
+    frames late on any machine, and it has to land where it left all the same.
+    """
+    page = _with_a_long_body(client.get(f"/detail/{TASK}?editor=ace").text)
+    where = tmp_path / "late.html"
+    where.write_text(_laid_out_late(_as_if_a_save_had_just_reloaded(page, 120)))
+    with _devtools(chrome(), where.as_uri() + "?editor=ace", tmp_path / "p", DRAWING_WINDOW) as (
+        call,
+        _,
+    ):
+        time.sleep(4)
+        landed = _evaluated(
+            call,
+            "({first: SURFACE.editor.renderer.getFirstVisibleRow(),"
+            " laidOut: SURFACE.editor.renderer.lineHeight > 0})",
+        )
+    assert landed["laidOut"], "the editor never laid out, so this measured nothing"
+    assert abs(landed["first"] + 1 - 120) <= 1, (
+        f"an editor that laid out late came back at line {landed['first'] + 1}, "
+        "and the reload left it at line 120"
     )
 
 
