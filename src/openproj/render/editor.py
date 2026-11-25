@@ -1046,6 +1046,22 @@ function aceSurface(area, seeded) {
     scrolled: () => session.getScrollTop(),
     scrollTo(top) { session.setScrollTop(top); },
     onScroll(listener) { session.on('changeScrollTop', listener); },
+    // Once, when Ace has measured its font and its box. Until then every row is
+    // at zero, and a scroll is clamped back to the top by the next render, which
+    // sizes the document from those zeroes. On Ace's own `afterRender` and not a
+    // frame count: the reload's return to its line waited 60 frames and then
+    // scrolled anyway, so on a busy machine it landed on line 1.
+    onLaidOut(callback) {
+      const renderer = editor.renderer;
+      const ready = () => renderer.lineHeight > 0 && renderer.$size.scrollerHeight > 0;
+      if (ready()) { callback(); return; }
+      const check = () => {
+        if (!ready()) return;
+        renderer.off('afterRender', check);
+        callback();
+      };
+      renderer.on('afterRender', check);
+    },
 
     // **How far this surface scrolls past its last line**, which is
     // `scrollPastEnd: 1` said in pixels: the renderer's own

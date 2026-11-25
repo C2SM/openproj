@@ -1003,6 +1003,8 @@ function textareaSurface(area) {
     lineHeight: () => lineTops(area, 'x\nx')[1] || 0,
     scrollTo(top) { area.scrollTop = top; },
     onScroll(listener) { area.addEventListener('scroll', listener); },
+    // A box lays itself out when it is measured, so it is laid out now
+    onLaidOut(callback) { callback(); },
 
     // The page writing rather than a person. The previous value is restored
     // rather than `false` assumed, so nesting is safe; the `finally` is what
