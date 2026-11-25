@@ -814,9 +814,14 @@ nav a, #buildhelp a { position: relative; }
   font: 700 .72rem/1 var(--font-mono); padding: .18rem .32rem; border-radius: 4px;
   background: var(--accent); color: var(--on-accent); pointer-events: none; z-index: 50; }
 #build .gohint { top: auto; bottom: 1.3rem; }
-/* The shared button, made small enough to sit in the footer's line */
-#keysbutton { margin-left: .4rem; padding: 0 .35rem; font-size: inherit; line-height: 1.2; }
-@media (pointer: coarse) { #keysbutton { display: none; } }
+/* A button that reads as one more word on the footer's row, like the links beside
+   it. `#keysbutton` is (1,0,0) and outranks the shared `button` and `button:hover`
+   at (0,0,1) and (0,1,1), which would otherwise give it a border and a ground. */
+#keysbutton { background: none; border: 0; padding: 0; font: inherit; line-height: inherit;
+  color: inherit; cursor: pointer; }
+#keysbutton:hover { color: var(--accent); text-decoration: underline; }
+/* No keyboard, no shortcuts: the span and not the button, so its dot goes too */
+@media (pointer: coarse) { #buildkeys { display: none; } }
 #keysheet { max-width: min(36rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem);
   padding: 1rem 1.25rem; color: var(--fg); background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: 8px; }
@@ -2450,7 +2455,8 @@ tr.nothing .hint { margin: 0 0 .75rem; }
      what does not fit is folded into `#buildmore` rather than wrapped onto a
      second one. `margin-left: auto` is the corner's own rule and still right
      here. The corner comes after everything but the fold, so it pushes the
-     controls away from the version, the plan's sha, Help and Report issue. */
+     controls away from the version, the plan's sha, Help, Shortcuts and Report
+     issue. */
   #build { gap: .5rem .75rem; }
   /* The fold's `⋯` is a target and was 22x16, two pixels from the theme
      toggle's 28px circle: the one control on the row a thumb is sent to when the
@@ -2832,8 +2838,9 @@ function goArm() {
     badge.textContent = entry.keys[0].split(' ')[1];
     element.append(badge);
   }
-  announce('Go to: ' + targets
-    .map(([entry]) => `${entry.keys[0].split(' ')[1]} ${entry.words}`).join(', '));
+  const back = KEY_BY_ID.get('go-back');
+  announce('Go to: ' + [...targets.map(([entry]) => entry), ...(back ? [back] : [])]
+    .map(entry => `${entry.keys[0].split(' ')[1]} ${entry.words}`).join(', '));
   goArmed = setTimeout(goDisarm, 1500);
 }
 
@@ -2846,14 +2853,17 @@ addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if (goArmed) {
     goDisarm();
+    // `g b` is the one sequence with no link behind it, so no badge either
+    const back = KEY_BY_ID.get('go-back')?.keys[0] === `g ${key}`;
     const hit = goTargets().find(([entry]) => entry.keys[0] === `g ${key}`);
-    if (!hit) return;
+    if (!hit && !back) return;
     event.preventDefault();
     if (typeof window.unsaved === 'function' && window.unsaved()) {
       announce('Save or reset first');
       return;
     }
-    location.href = hit[1].href;
+    if (hit) location.href = hit[1].href;
+    else history.back();
     return;
   }
   // Before the switch, because the sheet is where the switch is
@@ -4751,9 +4761,13 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
     `#planhead:empty` takes the span out and `* + *::before` takes its dot with
     it. -#}
 <footer id="build">
-  <a id="version" href="https://github.com/C2SM/openproj/releases/tag/v{{ version }}">openproj
-    {{ version }}</a>
-  {%- if live %}<span id="planhead" title="the plan's own commit"
+  {#- Every item on the row says what it is when hovered, and in one register: the
+      code and the data, worded so that neither can be read for the other. Two of
+      four did, and the two that did not were the two a reader most needed told
+      apart. -#}
+  <a id="version" href="https://github.com/C2SM/openproj/releases/tag/v{{ version }}"
+    title="the code behind the app">openproj {{ version }}</a>
+  {%- if live %}<span id="planhead" title="the database for the plan"
     {%- if links.plan %} data-plan="{{ links.plan }}"{% endif %}></span>{% endif %}
   {#- jcanton, 2026-08-27, asking for it here and not in the nav: it is the thing
       you reach for at the moment the page in front of you is wrong, which is the
@@ -4761,7 +4775,7 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       on the TOOL's repository and never the plan's — a bug in the app is not a
       record in somebody's plan, and the two repositories stay two.
 
-      Help immediately before it, for the same reason: the documentation is what
+      Help just before it, for the same reason: the documentation is what
       you open when a page is not doing what you expected. It left the nav for
       this row (see `_OFF_NAV`), so this is also where the Help page marks itself.
 
@@ -4773,11 +4787,21 @@ function fitRoom() { roomSlack = 0; settleRoom(4, ++roomTurn); }
       it was meant to. The span takes the dot and the link inside it takes the
       box, and as an inline box inside a flex item the link's padding widens the
       mark without making the row any taller on the one page that draws it. -#}
-  <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help"
-    {%- if help_here %} aria-current="page"{% endif %}>Help</a>
-    <button type="button" id="keysbutton" data-keys="sheet"
-      aria-label="Keyboard shortcuts">?</button></span>
-  <a id="report" href="https://github.com/C2SM/openproj/issues/new">Report issue</a>
+  {#- `title` as well as `data-keys`: `labelKeys` adds the key to it in the browser,
+      and a page whose script never ran still says what the link is. -#}
+  <span id="buildhelp"><a href="{{ links.help }}" data-keys="go-help" title="Help"
+    {%- if help_here %} aria-current="page"{% endif %}>Help</a></span>
+  {#- Its own item on the row and a word, where it was a `?` button hung off Help:
+      Help and the sheet are two different things, and a button in the shared
+      button's chrome was the one item on the row that did not read like the rest.
+      In a `<span>` for the reason Help is — the row's dot is drawn inside the box
+      that owns it, and inside the button it would be part of what you click. The
+      name says "Keyboard" because "Shortcuts" alone is the row's shorthand and a
+      screen reader hears the name without the row around it. -#}
+  <span id="buildkeys"><button type="button" id="keysbutton" data-keys="sheet"
+    title="Keyboard shortcuts" aria-label="Keyboard shortcuts">Shortcuts</button></span>
+  <a id="report" href="https://github.com/C2SM/openproj/issues/new"
+    title="Report issue">Report issue</a>
   {#- What does not fit on the row, folded away. jcanton, 2026-09-25: the footer
       "on mobile takes up too much space: I'd rather it be only one line with a
       meatball/hamburger/arrow menu where the items that do not fit get hidden".
@@ -4849,14 +4873,14 @@ function stowCorner(narrow) {
 //
 // This is the order they go in, first to last, and it is the whole of the
 // design. The build facts go first because they are reference and not news:
-// nobody reads the version until something behaves oddly. Then the two links you
+// nobody reads the version until something behaves oddly. Then the three things you
 // reach for when a page is wrong, then the palette, then who you are. The theme
 // toggle goes last, because it is one small button and the one control here
 // somebody presses on a phone in the dark.
 //
 // A relocation and not a copy, for the reason `stowCorner` gives: one element,
 // one id, one listener. `BUILD_ITEMS` is where each one lives, in the order it
-// is drawn: the footer's own four, then the corner's three. An item goes back
+// is drawn: the footer's own five, then the corner's three. An item goes back
 // in front of the next of its neighbours that is still at home, or else to the
 // end of its home. In the footer the end is just before the corner, or before
 // the fold button when the corner is in the nav. Only items whose home is in the
@@ -4866,12 +4890,13 @@ function stowCorner(narrow) {
 // place markers, which was the first version of this. `tests/js/drive.js`
 // builds these pages without comment nodes, and every page it drove stopped
 // on `document.createComment` before its interesting half had run.
-const BUILD_ITEMS = ['#version', '#planhead', '#buildhelp', '#report',
+const BUILD_ITEMS = ['#version', '#planhead', '#buildhelp', '#buildkeys', '#report',
                      '#who', '.corner .schemepick', '#theme']
   .map(selector => document.querySelector(selector))
   .filter(Boolean)
   .map(el => ({el, home: el.parentElement}));
-const BUILD_FOLDS = ['#planhead', '#version', '#report', '#buildhelp', '.corner .schemepick',
+const BUILD_FOLDS = ['#planhead', '#version', '#report', '#buildkeys', '#buildhelp',
+                     '.corner .schemepick',
                      '#who', '#theme']
   .map(selector => document.querySelector(selector))
   .map(el => BUILD_ITEMS.find(one => one.el === el))

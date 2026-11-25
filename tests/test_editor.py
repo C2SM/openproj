@@ -12532,6 +12532,19 @@ def test_g_then_a_letter_goes_there_and_badges_name_the_letters(
         assert _evaluated(call, "location.pathname") == "/timeline"
 
 
+def test_g_then_b_goes_back_to_the_page_before(live_server: str, tmp_path: Path):  # noqa: F811
+    with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
+        time.sleep(2)
+        _evaluated(call, "location.href = '/timeline'")
+        time.sleep(2)
+        assert _evaluated(call, "location.pathname") == "/timeline"
+        _key(call, "g", "KeyG")
+        time.sleep(0.2)
+        _key(call, "b", "KeyB")
+        time.sleep(1.5)
+        assert _evaluated(call, "location.pathname") == "/table"
+
+
 def test_a_g_typed_where_text_goes_is_text(live_server: str, tmp_path: Path):  # noqa: F811
     with _devtools(chrome(), f"{live_server}/table", tmp_path / "p", _KEYS_WINDOW) as (call, _):
         time.sleep(2)

@@ -125,5 +125,7 @@ def keys_for(links: Links) -> list[dict]:
         for item, letter in go_letters(links.nav).items()
     ]
     go.append(Key("go-help", "Help", "go", ("g h",), anywhere=True))
+    # Not a nav item and so not a link the handler can follow: it is `history.back()`
+    go.append(Key("go-back", "Previous page", "go", ("g b",), anywhere=True))
     page = [key for key in KEYS if key.id != "new" or links.new]
     return [{**asdict(key), "keys": list(key.keys)} for key in (*go, *page)]

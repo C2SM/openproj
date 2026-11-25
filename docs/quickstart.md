@@ -207,8 +207,9 @@ draft rather than throwing it away.
 
 ## Keyboard shortcuts
 
-Press `?` on any page, or the `?` beside Help at the foot of it, for the shortcuts that work on that
-page. `g` and a letter go to another view, and the letters are drawn on the links while `g` waits.
+Press `?` on any page, or Shortcuts at the foot of it, for the shortcuts that work on that
+page. `g` and a letter go to another view, and the letters are drawn on the links while `g` waits;
+`g b` goes back to the page before.
 The same sheet has a switch for the single-key shortcuts, for anybody who would rather a stray key
 did nothing.
 
