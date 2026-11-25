@@ -803,6 +803,27 @@ def test_the_author_is_the_person_and_the_committer_is_the_bot(store: Store, rep
     assert commit.message == "task-c00001: status todo -> wip"
 
 
+def test_the_committer_date_is_when_the_commit_was_made(store: Store, repo_path: Path):
+    # It was the process's start: one Signature minted at import, and pygit2 fixes
+    # its time then. Two commits a second apart had the same committer date.
+    made = []
+    for status in ("in_progress", "done"):
+        result = store.write(
+            path=PATH,
+            content=record(status=status),
+            base_commit=store.head(),
+            author="ann",
+            message=f"task-c00001: status -> {status}",
+        )
+        made.append(pygit2.Repository(str(repo_path))[result.commit])
+        time.sleep(1.1)
+
+    first, second = made
+    assert second.committer.time > first.committer.time
+    for commit in made:
+        assert commit.committer.time >= commit.author.time
+
+
 def test_git_log_reads_back_as_the_audit_trail(store: Store, repo_path: Path):
     """Asserted through git itself, because the claim being made is about what a
     person gets from a terminal, not about what pygit2 returns."""
