@@ -64,7 +64,18 @@ _LANDING = "refs/openproj/landing"
 # instance; the durable record of a parked commit is the remote branch, never
 # this.
 _STRANDED = "refs/openproj/stranded-"
-_BOT = pygit2.Signature("openproj-bot", "openproj-bot@example.invalid")
+
+
+def _bot() -> pygit2.Signature:
+    """The committer, minted per commit.
+
+    It was one module-level Signature, and pygit2 fixes a signature's time when it is
+    made, so every commit carried the process's start as its committer date, hours
+    earlier than its author date.
+    """
+    return pygit2.Signature("openproj-bot", "openproj-bot@example.invalid")
+
+
 # The writer's flock, named here rather than in two places: `openproj demo`
 # builds a plan repository out of a directory that may have had a `Store` opened
 # against it, and the one file it must not copy is this one. A caller that spelt
@@ -1065,11 +1076,9 @@ class Store:
         unpushed, oldest = 0, None
         for commit in walk:
             unpushed += 1
-            # The author's clock and not the committer's: the committer is
-            # `_BOT`, one Signature minted at import, so its time is the
-            # process's birth. The author Signature is minted per save, and the
-            # age of the WORK is what the alarm is about — a replayed commit
-            # keeps its author verbatim, so the age survives a re-mint too.
+            # The author's clock and not the committer's: the age of the WORK is
+            # what the alarm is about, and a re-mint gives the commit a new
+            # committer date while it keeps its author verbatim.
             when = commit.author.time
             oldest = when if oldest is None or when < oldest else oldest
         return Condition(
@@ -1516,7 +1525,7 @@ class Store:
         # the message unchanged: `git log --format='%an'` stays a per-person
         # audit trail across a re-mint (invariant 4).
         minted = repo.create_commit(
-            None, commit.author, _BOT, commit.message, tree, [repo[onto].id]
+            None, commit.author, _bot(), commit.message, tree, [repo[onto].id]
         )
         return str(minted), []
 
@@ -1733,7 +1742,7 @@ class Store:
             parent = self.head()
             tree = self._insert(self._repo, self._tree(parent), name.split("/"), blob)
             who = self._signature(author)
-            self._repo.create_commit(_BRANCH, who, _BOT, f"upload {name}", tree, [parent])
+            self._repo.create_commit(_BRANCH, who, _bot(), f"upload {name}", tree, [parent])
             self._freshen(parent, self.head())
             # Through `_finish`, so an upload pokes the pusher and joins the
             # same backlog as every other commit. The name and "it is new" are
@@ -1855,7 +1864,7 @@ class Store:
                 return WriteResult(commit=parent, outcome="committed", pushed=False), str(blob)
             tree = self._insert(self._repo, self._tree(parent), path.split("/"), blob)
             who = self._signature(author)
-            self._repo.create_commit(_BRANCH, who, _BOT, message, tree, [parent])
+            self._repo.create_commit(_BRANCH, who, _bot(), message, tree, [parent])
             self._freshen(parent, self.head())
             written = self._finish(self.head(), "committed")
         return written, str(blob)
@@ -2012,7 +2021,7 @@ class Store:
         # then a per-person audit trail for free, while a future push credential
         # stays a bot that no human's departure invalidates.
         who = self._signature(author)
-        oid = self._repo.create_commit(_BRANCH, who, _BOT, message, tree, [parent])
+        oid = self._repo.create_commit(_BRANCH, who, _bot(), message, tree, [parent])
         self._freshen(parent, str(oid))
         return str(oid)
 
@@ -2187,4 +2196,5 @@ def build_plan_repository(path: Path, files: dict[str, str], message: str) -> st
                 )
         return builder.write()
 
-    return str(repo.create_commit(_BRANCH, _BOT, _BOT, message, tree(root), []))
+    bot = _bot()
+    return str(repo.create_commit(_BRANCH, bot, bot, message, tree(root), []))
