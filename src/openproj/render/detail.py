@@ -770,42 +770,57 @@ function lineOfPixel(points, top) {
   return here.line + (next.line - here.line) * (span ? (top - here.top) / span : 0);
 }
 
-// One flag each way, because setting the other pane's `scrollTop` fires its
-// scroll event and that would set this one's back — a loop that does not
-// diverge but does fight the hand on the wheel. Whoever is scrolling drives, and
-// the pane being driven does not drive back.
+// Whoever is scrolling drives, and the pane being driven does not drive back:
+// setting the other pane's `scrollTop` fires its scroll event, and answering
+// that would move this one again. So each side remembers where it last PUT the
+// other, and a scroll event that finds the pane exactly there is the echo of
+// that write and is not answered. Every other one is a person.
 //
-// Cleared on a timer and not on a frame, which is the same finding `announce`
-// records two hundred lines up: a frame never comes in a tab nobody is looking
-// at, so a flag cleared in `requestAnimationFrame` is a flag that stays set for
-// as long as the tab is in the background — and a sync that is switched off
-// until the page is next reloaded is worse than one that lags. The delay is long
-// enough to be after the scroll event this write is about to cause and short
-// enough that letting go of one pane and taking hold of the other feels like one
-// gesture.
-const SYNC_MS = 50;
-let editScrolling = false;
-let viewScrolling = false;
+// It was a flag each way, cleared on a 50ms timer, and a wheel defeated it:
+// steps arrive every frame, the timer armed by one step cleared the flag while
+// the echo of a later step was still on its way, the echo was taken for the
+// reader scrolling the preview, and that set the other flag — so for 50ms the
+// editor's own steps were ignored. The last steps of every gesture were dropped
+// and the preview stopped a few lines short of the editor, behind in whichever
+// direction it was going. jcanton, 2026-11-27, with screenshots: the preview
+// 45px and 120px ahead of an editor scrolled up. Measured in Chrome before
+// this, scrolling in 37px steps to line 67 left the preview at line 62.8.
+//
+// A position is a better witness than a clock for a second reason: a frame
+// never comes in a tab nobody is looking at, and no timer is needed at all.
+let paneSetTo = null;
+let sourceSetTo = null;
 
 function syncFromSource() {
-  if (VIEW !== 'both' || viewScrolling) return;
+  if (VIEW !== 'both') return;
+  const at = SURFACE.scrolled();
+  // Within a pixel, because a scroller rounds what it is given to its own
+  // device pixels, and Ace to whole ones
+  if (sourceSetTo !== null && Math.abs(at - sourceSetTo) < 1) return;
+  sourceSetTo = null;
   // Measured here and not only when the view changes, because the number is the
   // editor's own box height and Ace re-sizes itself on its own schedule —
   // `editor.resize()` fires no `resize` event on the window, and the split view
   // is opened before the editor inside it has been laid out. The write is
   // guarded by equality, so the ordinary scroll touches nothing.
   fitPreviewTail();
-  editScrolling = true;
-  VIEW_PANE.scrollTop = pixelOfLine(previewMap(), lineOfPixel(sourceMap(), SURFACE.scrolled()));
-  setTimeout(() => { editScrolling = false; }, SYNC_MS);
+  VIEW_PANE.scrollTop = pixelOfLine(previewMap(), lineOfPixel(sourceMap(), at));
+  paneSetTo = VIEW_PANE.scrollTop;
 }
 
 function syncFromPreview() {
-  if (VIEW !== 'both' || editScrolling) return;
+  if (VIEW !== 'both') return;
+  const at = VIEW_PANE.scrollTop;
+  if (paneSetTo !== null && Math.abs(at - paneSetTo) < 1) return;
+  paneSetTo = null;
   fitPreviewTail();
-  viewScrolling = true;
-  SURFACE.scrollTo(pixelOfLine(sourceMap(), lineOfPixel(previewMap(), VIEW_PANE.scrollTop)));
-  setTimeout(() => { viewScrolling = false; }, SYNC_MS);
+  // Written down BEFORE the write as well as after it: Ace reports
+  // `changeScrollTop` from inside `setScrollTop`, so its echo arrives before
+  // this function has returned, and a textarea's arrives as an event later on.
+  const want = pixelOfLine(sourceMap(), lineOfPixel(previewMap(), at));
+  sourceSetTo = want;
+  SURFACE.scrollTo(want);
+  sourceSetTo = SURFACE.scrolled();
 }
 
 // Through the surface and not through the box: a `<textarea>` scrolls itself and
