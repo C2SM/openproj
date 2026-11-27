@@ -217,6 +217,23 @@ def _readable(repositories: Sequence[tuple[str, str]]) -> dict[str, tuple[str, s
     }
 
 
+def _suggestable(record: Record) -> bool:
+    """Whether `/api/pr-states` could offer this record a change of status.
+
+    One predicate for the route and for the lookups it spends a budget on: the
+    lookups once asked about every record's references, and the ones on records
+    already done were most of them.
+    """
+    return record.status in STATUS_ORDER and record.status not in ("done", "shelved")
+
+
+def _cited(record: Record, lookable: dict[str, tuple[str, str]]) -> list[str]:
+    """The whole references in a record's `prs:` to repositories that can be read."""
+    return [
+        ref for ref in record.prs if _REF.fullmatch(ref) and ref.split("#")[0].lower() in lookable
+    ]
+
+
 def _origin(url: str) -> str:
     parts = urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}".lower() if parts.scheme and parts.netloc else ""
@@ -3343,29 +3360,40 @@ def create_app(
     # almost never changes back; an open one is asked about again at the
     # repository's open list, which answers every open one for a single call.
     states: dict[str, tuple[float, dict[str, object]]] = {}
+    # When each repository's closed list was last read, by its URL.
+    closed_asked: dict[str, float] = {}
     states_lock = threading.Lock()
 
     def _reference_states(
         index: Index, repositories: Sequence[tuple[str, str]]
     ) -> tuple[dict[str, dict[str, object]], bool]:
-        """What GitHub says about every reference the plan cites, within a budget.
+        """What GitHub says about every reference a suggestion could come of,
+        within a budget.
 
         **Sixty an hour is the budget this is written against**, which is what a
         deployment gets for a public repository the App is not installed on —
         and it should not be: installing it there hands this server push access
         to that repository's code. So:
 
+        * Only the references of a record `_suggestable` admits. One already
+          done or shelved can be offered nothing, and on icon4py-plan those were
+          most of the line: a pull request merged four days earlier was 33rd of
+          40 to be asked about, eight a request, in a cache that a deployment
+          scaling to zero wipes every hour or so. Nobody ever saw it suggested.
         * A cited reference that is in its repository's open list is open, for
           no call of its own. The list is the one the completion already asks
           for, read here at fifteen minutes rather than five.
-        * Anything else is asked about once, `/issues/N`, and a closed answer is
-          kept for six hours. Only an open one outside the hundred most recently
-          touched is asked about again, at the open list's age.
-        * At most `STATE_LOOKUPS` of those per request, and none once GitHub
-          says fewer than `STATE_RESERVE` calls are left, so the first page
-          after a cold start does not spend the hour the completion needs. What
-          is not resolved yet is reported as `pending` and asked about by the
-          next page that wants it.
+        * The rest are looked for first in the repository's hundred most
+          recently closed, one call at the open list's age, which answers every
+          recent merge at once — the very ones a record has not caught up with.
+        * Anything still unknown is asked about once, `/issues/N`, and a closed
+          answer is kept for six hours. Only an open one outside the hundred most
+          recently touched is asked about again, at the open list's age.
+        * At most `STATE_LOOKUPS` calls of the last two kinds per request, and
+          none once GitHub says fewer than `STATE_RESERVE` calls are left, so the
+          first page after a cold start does not spend the hour the completion
+          needs. What is not resolved yet is reported as `pending` and asked
+          about by the next page that wants it.
 
         Only the repositories the plan names. A reference to anywhere else is
         not looked up at all, for the reason `/api/prs` takes no input.
@@ -3379,8 +3407,8 @@ def create_app(
             {
                 ref
                 for record in index.plan.values()
-                for ref in record.prs
-                if _REF.fullmatch(ref) and ref.split("#")[0].lower() in lookable
+                if _suggestable(record)
+                for ref in _cited(record, lookable)
             }
         )
         open_now = {one["value"] for one in _live_pull_requests(repositories, STATE_OPEN_TTL)[0]}
@@ -3389,7 +3417,44 @@ def create_app(
         pending = False
         spent = 0
         left: int | None = None
+
+        def affordable() -> bool:
+            return spent < STATE_LOOKUPS and (left is None or left >= STATE_RESERVE)
+
         with states_lock:
+            unknown = [
+                ref
+                for ref in wanted
+                if ref not in open_now and now >= states.get(ref, (-math.inf, {}))[0]
+            ]
+            for repository in sorted({ref.split("#")[0].lower() for ref in unknown}):
+                url, forge = lookable[repository]
+                if now < closed_asked.get(url, -math.inf) + STATE_OPEN_TTL:
+                    continue
+                if not affordable():
+                    pending = True
+                    break
+                spent += 1
+                try:
+                    if forge == "github":
+                        closed, left = github.closed_references(
+                            repository_name(url), app_for, github_transport
+                        )
+                    else:
+                        origin = repository_origin(url)
+                        closed, left = forgejo.closed_references(
+                            origin, repository_name(url), token_for(origin), github_transport
+                        )
+                except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError):
+                    _LOG.warning("could not read closed pull requests for %s", url)
+                    pending = True
+                    continue
+                closed_asked[url] = now
+                for ref in unknown:
+                    name, number = ref.split("#")
+                    said = closed.get(int(number))
+                    if name.lower() == repository and said and said["state"] != "open":
+                        states[ref] = (now + STATE_CLOSED_TTL, said)
             for ref in wanted:
                 if ref in open_now:
                     known[ref] = {"state": "open", "at": None}
@@ -3398,7 +3463,7 @@ def create_app(
                 if now < until:
                     known[ref] = said
                     continue
-                if spent >= STATE_LOOKUPS or (left is not None and left < STATE_RESERVE):
+                if not affordable():
                     pending = True
                     continue
                 repository, number = ref.split("#")
@@ -3456,13 +3521,9 @@ def create_app(
         lookable = _readable(links.repositories)
         verdicts: dict[str, dict[str, object]] = {}
         for record_id, record in index.plan.items():
-            if record.status not in STATUS_ORDER or record.status in ("done", "shelved"):
+            if not _suggestable(record):
                 continue
-            refs = [
-                ref
-                for ref in record.prs
-                if _REF.fullmatch(ref) and ref.split("#")[0].lower() in lookable
-            ]
+            refs = _cited(record, lookable)
             said = [known.get(ref) for ref in refs]
             if not refs or any(one is None or one["state"] == "open" for one in said):
                 continue

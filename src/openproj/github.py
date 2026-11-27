@@ -84,6 +84,9 @@ def app_jwt(app_id: str, private_key_pem: str, now: float | None = None) -> str:
 # shares. A number that fell outside it is still offered: the page writes
 # `owner/repo#<what was typed>` whether or not it knows a title for it.
 _OPEN_QUERY = {"state": "open", "per_page": 100, "sort": "updated", "direction": "desc"}
+# The same hundred, closed. A pull request that merged this week is near the top
+# of it, which is exactly the one a record has not been marked done for yet.
+_CLOSED_QUERY = {**_OPEN_QUERY, "state": "closed"}
 # Long enough that a burst of typing is one call and short enough that a pull
 # request opened during a betting table turns up in it — jcanton, 2026-08-25: "we
 # can even reduce the call frequency to every 5 minutes".
@@ -334,10 +337,31 @@ def reference_state(
     the last one.
     """
     response = _ask(f"/repos/{repository}/issues/{number}", None, app, transport)
-    one = response.json()
-    left = response.headers.get("x-ratelimit-remaining")
+    return _state_of(response.json()), _left(response)
+
+
+def closed_references(
+    repository: str,
+    app: GitHubApp | None = None,
+    transport: httpx.BaseTransport | None = None,
+) -> tuple[dict[int, dict[str, object]], int | None]:
+    """Where the hundred most recently closed pull requests and issues stand, by
+    number, in `reference_state`'s shape — and how many calls are left.
+
+    One call where `reference_state` is one per reference. A plan cites tens of
+    them and the budget is sixty an hour, and a deployment that scales to zero
+    forgets everything it was told, so asking one at a time never reached the
+    end of the list: on icon4py-plan, a pull request merged four days earlier was
+    33rd of 40 in line, eight a request, with the cache wiped every hour or so.
+    """
+    response = _ask(f"/repos/{repository}/issues", _CLOSED_QUERY, app, transport)
+    return {int(one["number"]): _state_of(one) for one in response.json()}, _left(response)
+
+
+def _state_of(one: dict) -> dict[str, object]:
+    """One issue as the issues endpoint describes it, as a `reference_state`."""
     if one.get("state") != "closed":
-        return {"state": "open", "at": None}, int(left) if left else None
+        return {"state": "open", "at": None}
     pull = one.get("pull_request") or {}
     merged = pull.get("merged_at")
     if "pull_request" in one:
@@ -345,5 +369,9 @@ def reference_state(
     else:
         landed = one.get("state_reason") in (None, "completed")
     when = str(merged or one.get("closed_at") or "")[:10] or None
-    state = "landed" if landed else "dropped"
-    return {"state": state, "at": when}, int(left) if left else None
+    return {"state": "landed" if landed else "dropped", "at": when}
+
+
+def _left(response: httpx.Response) -> int | None:
+    left = response.headers.get("x-ratelimit-remaining")
+    return int(left) if left else None

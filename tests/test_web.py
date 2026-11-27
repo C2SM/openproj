@@ -6755,21 +6755,34 @@ def _plan_citing(
     return path
 
 
-def _github_with_states(states: dict[int, dict], asked: list[str], left: int = 50):
-    """A GitHub whose open list is empty and which answers `/issues/N` from a dict."""
+def _github_with_states(
+    states: dict[int, dict], asked: list[str], left: int = 50, closed: tuple[int, ...] = ()
+):
+    """A GitHub whose open list is empty, whose closed list holds `closed`, and
+    which answers `/issues/N` from a dict.
+
+    The closed list is written down as `.../issues?state=closed`, so that it is
+    told apart from the open list, which costs a request nothing, and counted
+    with the lookups, which share its budget.
+    """
 
     def answer(request: httpx.Request) -> httpx.Response:
-        asked.append(request.url.path)
-        if request.url.path.endswith("/issues"):
-            return httpx.Response(200, json=[])
-        number = int(request.url.path.rsplit("/", 1)[1])
-        return httpx.Response(
-            200,
-            json={"number": number, **states[number]},
-            headers={"x-ratelimit-remaining": str(left)},
-        )
+        listed = request.url.path.endswith("/issues")
+        shut = request.url.params.get("state") == "closed"
+        asked.append(request.url.path + ("?state=closed" if listed and shut else ""))
+        if listed:
+            body = [{"number": n, **states[n]} for n in closed] if shut else []
+        else:
+            number = int(request.url.path.rsplit("/", 1)[1])
+            body = {"number": number, **states[number]}
+        return httpx.Response(200, json=body, headers={"x-ratelimit-remaining": str(left)})
 
     return httpx.MockTransport(answer)
+
+
+def _lookups(asked: list[str]) -> list[str]:
+    """What a request spent its budget on: everything but the open list."""
+    return [path for path in asked if not path.endswith("/issues")]
 
 
 _MERGED = {"state": "closed", "closed_at": "2026-11-03T09:00:00Z",
@@ -6817,13 +6830,13 @@ def test_a_record_whose_pull_requests_landed_is_offered_done_and_nothing_is_writ
             },
             "pending": False,
         }
-        looked_up = sorted(path for path in asked if not path.endswith("/issues"))
+        looked_up = sorted(path for path in asked if "/issues/" in path)
         again = client.get("/api/pr-states")
         assert again.json() == first.json()
         assert head(client) == before, "asking where the pull requests stand wrote to the plan"
     assert looked_up == [f"/repos/kilnlab/kiln4py/issues/{n}" for n in (1, 2, 3, 4, 5)], asked
     assert not any("acme" in path for path in asked), "an unnamed repository was asked about"
-    assert sorted(p for p in asked if not p.endswith("/issues")) == looked_up, (
+    assert sorted(p for p in asked if "/issues/" in p) == looked_up, (
         "a closed reference was looked up a second time instead of being cached"
     )
 
@@ -6842,7 +6855,7 @@ def test_the_pull_request_states_spend_a_budget_and_say_what_is_left(tmp_path: P
     with TestClient(app) as client:
         client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
         first = client.get("/api/pr-states").json()
-        spent = len([p for p in asked if not p.endswith("/issues")])
+        spent = len(_lookups(asked))
         second = client.get("/api/pr-states").json()
     assert first == {"records": {}, "pending": True}, first
     assert spent == STATE_LOOKUPS, f"one request looked up {spent} references"
@@ -6863,9 +6876,54 @@ def test_the_pull_request_states_spend_a_budget_and_say_what_is_left(tmp_path: P
     with TestClient(app) as client:
         client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
         assert client.get("/api/pr-states").json() == {"records": {}, "pending": True}
-    assert len([p for p in asked if not p.endswith("/issues")]) == 1, (
-        f"it went on spending under the reserve: {asked}"
+    assert len(_lookups(asked)) == 1, f"it went on spending under the reserve: {asked}"
+
+
+def test_a_recent_merge_is_suggested_on_the_first_page_after_a_cold_start(tmp_path: Path):
+    """icon4py-plan cited 40 references, and a pull request merged four days
+    earlier was 33rd in line at eight lookups a request — in a cache that Cloud
+    Run, scaling to zero, wiped every hour or so. So `Mark done` was never
+    offered. The repository's hundred most recently closed answer every recent
+    merge in one call, and the first page that asks is told."""
+    asked: list[str] = []
+    cited = [f"kilnlab/kiln4py#{n}" for n in range(1, 41)]
+    repo = _plan_citing(tmp_path, {TASK: cited})
+    states = {n: _MERGED for n in range(1, 41)}
+    app = create_app(
+        repo,
+        auth="dev",
+        secret=SECRET,
+        github_transport=_github_with_states(states, asked, closed=tuple(range(1, 41))),
     )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        first = client.get("/api/pr-states").json()
+    assert first == {
+        "records": {TASK: {"verdict": "landed", "count": 40, "at": "2026-11-03"}},
+        "pending": False,
+    }
+    assert _lookups(asked) == ["/repos/kilnlab/kiln4py/issues?state=closed"], asked
+
+
+def test_the_references_of_a_record_already_done_are_not_looked_up(tmp_path: Path):
+    """A record already done or shelved can be offered nothing, so asking GitHub
+    about its pull requests spends the budget on an answer nobody reads — and on
+    a plan where most of the work has landed, that was most of the budget."""
+    asked: list[str] = []
+    repo = _plan_citing(
+        tmp_path,
+        {DONE: [f"kilnlab/kiln4py#{n}" for n in range(1, 21)], TASK: ["kilnlab/kiln4py#30"]},
+    )
+    states = {n: _MERGED for n in [*range(1, 21), 30]}
+    app = create_app(
+        repo, auth="dev", secret=SECRET, github_transport=_github_with_states(states, asked)
+    )
+    with TestClient(app) as client:
+        client.cookies.set(SESSION_COOKIE, sign_session(ANN, SECRET))
+        first = client.get("/api/pr-states").json()
+    assert first["records"] == {TASK: {"verdict": "landed", "count": 1, "at": "2026-11-03"}}
+    assert first["pending"] is False
+    assert [p for p in asked if "/issues/" in p] == ["/repos/kilnlab/kiln4py/issues/30"], asked
 
 
 def test_where_the_pull_requests_stand_is_not_told_to_a_signed_out_visitor(tmp_path: Path):
