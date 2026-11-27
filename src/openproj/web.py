@@ -5575,7 +5575,16 @@ def create_app(
                         continue
                     if not 0 <= at <= MAX_BODY_BYTES:
                         continue
-                    room.sits(connection, at)
+                    # The far end of a selection, under the same bound. One that
+                    # is not a number, or not after the caret, is no selection
+                    # rather than no seat: where somebody is still draws.
+                    try:
+                        to = int(message.get("to", at))
+                    except (TypeError, ValueError):
+                        to = at
+                    if not at <= to <= MAX_BODY_BYTES:
+                        to = at
+                    room.sits(connection, at, to)
                     # To everybody else, not to the room: a tab does not need its
                     # own caret told back to it, and this frame is sent on every
                     # line somebody moves to.

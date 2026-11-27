@@ -241,6 +241,17 @@ return {wanted: body.value.indexOf('line 5'),
         sent: window.__frames.filter(frame => frame.t === 'at').map(frame => frame.at)};
 """
 
+# And a selection, which goes up as its two ends
+_SELECTED = """
+const body = document.querySelector('textarea[name=body]');
+body.focus();
+body.selectionStart = body.value.indexOf('line 5');
+body.selectionEnd = body.value.indexOf('line 7');
+body.dispatchEvent(new Event('keyup'));
+return {from: body.value.indexOf('line 5'), to: body.value.indexOf('line 7'),
+        sent: window.__frames.filter(frame => frame.t === 'at')};
+"""
+
 
 def test_this_tab_says_where_it_is_sitting(index: Index, tmp_path: Path):
     """The other half: a room can only draw what its members tell it."""
@@ -259,6 +270,21 @@ def test_this_tab_says_where_it_is_sitting(index: Index, tmp_path: Path):
 
     assert got["wanted"] in got["sent"], (
         f"the caret moved to {got['wanted']} and the room heard {got['sent']}"
+    )
+
+
+def test_this_tab_says_what_it_has_selected(index: Index, tmp_path: Path):
+    """Both ends of a selection reach the room, so the others can draw it."""
+    record_id = a_record_with_a_document(index)
+    page = render_detail(
+        index, ROUTES, only=record_id, base_commit=HEAD, may_write=True, editor="plain"
+    )
+    page = page.replace("<head>", "<head>" + STUB, 1).replace("</body>", SEAT + "</body>")
+
+    got = measured_in(chrome(), page, tmp_path / "selected.html", 1200, _SELECTED, height=900)
+
+    assert {"t": "at", "at": got["from"], "to": got["to"]} in got["sent"], (
+        f"lines 5 to 7 were selected and the room heard {got['sent']}"
     )
 
 
@@ -639,6 +665,82 @@ def test_the_second_surface_draws_where_everybody_is(index: Index, tmp_path: Pat
         "the textarea's own seat layer drew something on a surface that is not the "
         "textarea — two bands for one caret, one of them measured through a mirror "
         "of a box nobody is typing in"
+    )
+
+
+# Somebody else with lines 2 to 4 selected, and somebody with nothing selected
+_ACE_SELECTION = """
+<script>
+addEventListener('load', () => setTimeout(() => {
+  flipEditing();
+  const socket = window.__socket;
+  socket.hear({t: 'welcome', seed: null, sv: 'AA==', update: '', people: ['ann', 'bo', 'cy']});
+  const editor = SURFACE.editor;
+  editor.setValue('%LINES%', -1);
+  const text = editor.getValue();
+  window.__from = text.indexOf('line 2');
+  window.__to = text.indexOf('line 4') + 4;
+  socket.hear({t: 'who', people: ['ann', 'bo', 'cy'], where: [
+    {login: 'bo', at: window.__from, to: window.__to},
+    {login: 'cy', at: text.indexOf('line 8'), to: text.indexOf('line 8')},
+  ]});
+}, 300));
+</script>
+""".replace("%LINES%", LINES)
+
+_ACE_SELECTION_DRAWN = """
+const host = document.querySelector('.acebox');
+host.env.editor.renderer.updateFull(true);
+const rows = [...host.querySelectorAll('.ace_line')];
+const rowOf = text => rows.find(row => row.textContent === text).getBoundingClientRect();
+const picked = [...host.querySelectorAll('.op-seat-sel')].map(mark => mark.getBoundingClientRect());
+const covers = text => {
+  const row = rowOf(text);
+  return picked.some(mark => mark.top < row.bottom - 2 && mark.bottom > row.top + 2
+                     && mark.left <= row.left + 1 && mark.right > row.left + 10);
+};
+return {
+  marks: picked.length,
+  ground: picked.length
+    ? getComputedStyle(host.querySelector('.op-seat-sel')).backgroundColor : '',
+  covered: ['line 1', 'line 2', 'line 3', 'line 4', 'line 5', 'line 8'].map(covers),
+  bands: host.querySelectorAll('.op-seat').length,
+};
+"""
+
+
+def test_somebody_elses_selection_is_drawn_on_the_second_surface(
+    index: Index, tmp_path: Path
+):
+    """jcanton, 2026-11-27: "besides highlighting the line number of another user
+    when co-editing, we can also show what chars the user is
+    highlighting/selecting?" Lines 2 to 4 are filled in bo's colour, and cy, who
+    has selected nothing, gets the band and no fill."""
+    record_id = a_record_with_a_document(index)
+    page = render_detail(
+        index, ROUTES, only=record_id, base_commit=HEAD, may_write=True, editor="ace"
+    )
+    page = page.replace("<head>", "<head>" + STUB, 1).replace(
+        "</body>", _ACE_SELECTION + "</body>"
+    )
+
+    got = measured_in(
+        chrome(),
+        page,
+        tmp_path / "ace-selection.html",
+        1200,
+        _ACE_SELECTION_DRAWN,
+        height=900,
+        query="?editor=ace",
+        patience=4800,
+    )
+
+    assert got["bands"] == 2, "the two people in the room are not both drawn"
+    assert got["marks"] >= 1, "bo has three lines selected and nothing is filled"
+    assert got["ground"] not in ("", "rgba(0, 0, 0, 0)"), "the fill has no colour"
+    assert got["covered"] == [False, True, True, True, False, False], (
+        "the fill is not on lines 2 to 4 and nowhere else: "
+        f"line 1 to 5 and 8 read {got['covered']}"
     )
 
 

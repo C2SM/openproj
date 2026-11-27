@@ -4204,7 +4204,36 @@ def test_the_room_relays_where_each_person_is_sitting(client: TestClient):
             heard = bo.take("who")
 
     assert heard["people"] == ["ann", "bo"]
-    assert heard["where"] == [{"login": "ann", "at": 421}]
+    assert heard["where"] == [{"login": "ann", "at": 421, "to": 421}]
+
+
+def test_a_selection_is_relayed_with_its_seat(client: TestClient):
+    """jcanton, 2026-11-27: show what somebody else has selected, not only the
+    line they are on. The far end travels as `to`, under the bound `at` has, and
+    one that cannot be drawn is no selection rather than no seat."""
+    with open_room(client, "ann") as one, open_room(client, "bo") as two:
+        ann, bo = Session(one, "ann"), Session(two, "bo")
+        ann.hello()
+        bo.hello()
+        heard = []
+        for frame in (
+            {"t": "at", "at": 40, "to": 95},
+            {"t": "at", "at": 40, "to": 12},
+            {"t": "at", "at": 41, "to": "here"},
+            {"t": "at", "at": 42, "to": 10**9},
+        ):
+            one.send_json(frame)
+            said = bo.take("who")
+            while not said["where"]:
+                said = bo.take("who")
+            heard.append(said["where"])
+
+    assert heard == [
+        [{"login": "ann", "at": 40, "to": 95}],
+        [{"login": "ann", "at": 40, "to": 40}],
+        [{"login": "ann", "at": 41, "to": 41}],
+        [{"login": "ann", "at": 42, "to": 42}],
+    ]
 
 
 def test_a_seat_goes_when_its_person_does(client: TestClient):
@@ -4220,7 +4249,7 @@ def test_a_seat_goes_when_its_person_does(client: TestClient):
             heard = ann.take("who")
             while not heard["where"]:
                 heard = ann.take("who")
-            assert heard["where"] == [{"login": "bo", "at": 12}]
+            assert heard["where"] == [{"login": "bo", "at": 12, "to": 12}]
 
         left = ann.take("who")
 
@@ -4251,7 +4280,7 @@ def test_a_seat_that_is_not_a_number_is_not_a_seat(client: TestClient):
         while not heard["where"]:
             heard = bo.take("who")
 
-    assert heard["where"] == [{"login": "ann", "at": 7}]
+    assert heard["where"] == [{"login": "ann", "at": 7, "to": 7}]
 
 
 # --- the second surface, in a real room -------------------------------------
