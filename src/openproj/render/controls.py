@@ -4111,14 +4111,19 @@ function attachBodyCompletion(surface) {
   }
 
   function open() {
-    const token = bodyToken(surface.text(), surface.caret().from);
+    const text = surface.text();
+    const caret = surface.caret().from;
+    const token = bodyToken(text, caret);
     if (!token) return close();
     // `kilnlab/kiln` is somebody reaching for a pull request, which is the moment
     // to find out which ones are open. The list it merges into is the one this
     // call is about to read, so a redraw is asked for.
     if (token.live) widenPullRequests(open);
     if (!token.source.length) return close();
-    if (settled && settled.from === token.from && settled.typed === token.typed) {
+    // Against the token's whole text and not `typed`, which a mention reads
+    // after its `@`: `@bo` just written is `bo` typed, and was offered back.
+    const whole = text.slice(token.from, caret);
+    if (settled && settled.from === token.from && settled.typed === whole) {
       return close();
     }
     settled = null;

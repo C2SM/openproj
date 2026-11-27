@@ -1608,7 +1608,7 @@ _THROUGH_THE_SURFACE = (
     "const now = SURFACE.text(), was = text.toString();",  # typed
     "const want = text.toString(), was = SURFACE.text();",  # reflect
     "SURFACE.seats.draw(",  # drawSeats
-    "const at = SURFACE.caret().from;",  # sit
+    "const {from, to} = SURFACE.caret();",  # sit
     "const mine = SURFACE.text() !== ORIGINAL_BODY;",  # welcomed
     "const draft = SURFACE.text();",  # welcomed's report
     "const count = surface.text().split",  # attachGutter
@@ -4187,6 +4187,10 @@ const whereIsIt = block.getBoundingClientRect().top - pane.getBoundingClientRect
 // Back to the top first, so driving from the rendered side has somewhere to
 // move the box to — otherwise this direction passes without running at all.
 area.scrollTop = 0;
+// Said, as a browser says it: the sync tells its own echo from a person by
+// where the other pane is, and a box moved with no event is one it was never
+// told had moved
+area.dispatchEvent(new Event('scroll'));
 await after();
 pane.scrollTop = blockOfEightyTwo;
 pane.dispatchEvent(new Event('scroll'));

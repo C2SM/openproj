@@ -680,10 +680,13 @@ addEventListener('load', () => setTimeout(() => {
   const text = editor.getValue();
   window.__from = text.indexOf('line 2');
   window.__to = text.indexOf('line 4') + 4;
-  socket.hear({t: 'who', people: ['ann', 'bo', 'cy'], where: [
+  // A moment later, as a roster frame does. Heard in the same tick as the text
+  // was set, both seats were drawn on the last line: the text is replaced once
+  // more after it is set here, and anchors in replaced text end up at its end
+  setTimeout(() => socket.hear({t: 'who', people: ['ann', 'bo', 'cy'], where: [
     {login: 'bo', at: window.__from, to: window.__to},
     {login: 'cy', at: text.indexOf('line 8'), to: text.indexOf('line 8')},
-  ]});
+  ]}), 300);
 }, 300));
 </script>
 """.replace("%LINES%", LINES)
