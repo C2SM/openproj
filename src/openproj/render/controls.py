@@ -3972,6 +3972,20 @@ function openRef(text, at) {
   return /[/#]/.test(typed) ? {from, typed} : null;
 }
 
+// And the `@login` the caret is at the end of. jcanton, 2026-11-27: "can we
+// add autocompleted tags a-la @jcanton in the editor?" The `@` starts a line or
+// follows something that is not part of a word, the same test `_MENTION` in
+// `markdown.py` draws the chip by, so `ann@example.org` opens nothing.
+function openMention(text, at) {
+  const line = text.lastIndexOf('\n', at - 1) + 1;
+  let from = at;
+  while (from > line && /[\w-]/.test(text[from - 1])) from--;
+  if (from <= line || text[from - 1] !== '@') return null;
+  const sign = from - 1;
+  if (sign > line && /[\w@.+-]/.test(text[sign - 1])) return null;
+  return {from: sign, typed: text.slice(from, at)};
+}
+
 // A record title, as the text of a markdown link.
 //
 // `[` and `]` end a handle and a backslash escapes whatever follows one, so all
@@ -4007,6 +4021,17 @@ function bodyToken(text, at) {
       // feature writing the defect it was asked for.
       eats: /^\](\(\s*\))?/,
       wrap: item => '[' + linkText(item) + '](' + item.value + ')',
+    };
+  }
+  const mention = openMention(text, at);
+  if (mention) {
+    return {
+      source: SUGGEST.people || [],
+      from: mention.from,
+      typed: mention.typed,
+      lead: item => item.value,
+      eats: null,
+      wrap: item => '@' + item.value,
     };
   }
   const ref = openRef(text, at);
@@ -4086,14 +4111,19 @@ function attachBodyCompletion(surface) {
   }
 
   function open() {
-    const token = bodyToken(surface.text(), surface.caret().from);
+    const text = surface.text();
+    const caret = surface.caret().from;
+    const token = bodyToken(text, caret);
     if (!token) return close();
     // `kilnlab/kiln` is somebody reaching for a pull request, which is the moment
     // to find out which ones are open. The list it merges into is the one this
     // call is about to read, so a redraw is asked for.
     if (token.live) widenPullRequests(open);
     if (!token.source.length) return close();
-    if (settled && settled.from === token.from && settled.typed === token.typed) {
+    // Against the token's whole text and not `typed`, which a mention reads
+    // after its `@`: `@bo` just written is `bo` typed, and was offered back.
+    const whole = text.slice(token.from, caret);
+    if (settled && settled.from === token.from && settled.typed === whole) {
       return close();
     }
     settled = null;
@@ -4417,26 +4447,17 @@ def _control_html(
     return _fragment(_CONTROL, f=field, describedby=describedby)
 
 
-def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> dict:
-    """What already exists, offered rather than remembered.
-
-    A reviewer who is not in this list is a typo far more often than a new
-    colleague, and an id typed from memory is a dangling reference the validator
-    will reject after the save rather than before it.
-
-    `linkable` adds the list the body's link completion reads, and only the two
-    pages that carry a body ask for it. See the key itself for why it is a
-    second list rather than a wider `records`.
+def people_of(index: Index) -> list[str]:
+    """Everybody this plan knows by login, sorted: what a person field offers and
+    what an `@login` in a document is drawn as a mention for.
     """
     people: set[str] = set()
-    tags: set[str] = set()
-    # Records, not the plan: `reported_by` and `written_by` names and an inbox
-    # record's tags belong in the datalists like anybody else's.
+    # Records, not the plan: `reported_by` and `written_by` names belong in the
+    # datalists like anybody else's.
     for record in index.records.values():
         for name in PEOPLE_FIELDS:
             value = getattr(record, name, None)
             people.update(value if isinstance(value, list) else [value] if value else [])
-        tags.update(record.tags)
     # And everybody known without a record naming them yet: the roster, whoever
     # has a `people/` file, and whoever this server lets write. Built from the
     # records alone, plan-d's Owner offered `agnese` and not `jacopo` — jcanton,
@@ -4449,7 +4470,26 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
     # a whole comma-separated string into a list field, and the picker then offered
     # "jcanton, halungge" as if it were one person — garbage in the corpus became
     # garbage suggested to the next person, which is how it spreads.
-    people = {p for p in people if p and "," not in p and " " not in p}
+    return sorted(p for p in people if p and "," not in p and " " not in p)
+
+
+def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> dict:
+    """What already exists, offered rather than remembered.
+
+    A reviewer who is not in this list is a typo far more often than a new
+    colleague, and an id typed from memory is a dangling reference the validator
+    will reject after the save rather than before it.
+
+    `linkable` adds the list the body's link completion reads, and only the two
+    pages that carry a body ask for it. See the key itself for why it is a
+    second list rather than a wider `records`.
+    """
+    people = people_of(index)
+    tags: set[str] = set()
+    # Records, not the plan: an inbox record's tags belong in the datalists like
+    # anybody else's.
+    for record in index.records.values():
+        tags.update(record.tags)
     tags = {g for g in tags if g and "," not in g}
     # {value, label}: the value is what gets written to the file, the label is the
     # human hint beside it. An id typed from memory is a dangling reference the

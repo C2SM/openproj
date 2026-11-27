@@ -2022,6 +2022,12 @@ textarea.body-field { resize: none; }
    property has nothing to do there and `.doc pre`'s own scroll is what a long
    line in a fence gets. */
 .doc code { background: var(--surface-2); padding: 0 .25em; overflow-wrap: anywhere; }
+/* `@login`, for somebody on the plan: a chip and not a link (jcanton,
+   2026-11-27), so the weight and the ground say it and the colour stays the
+   text's, which keeps it from reading as something to click. In the prose
+   face, which is what keeps it from reading as code beside `.doc code`. */
+.doc .mention { background: var(--surface-2); font-weight: 600; padding: 0 .3em;
+  border-radius: 3px; white-space: nowrap; }
 /* **A fence is one box, and the rule above was drawing it a line at a time.**
    `.doc code` is the inline rule — a tint and a quarter-em either side, so an
    identifier in running prose reads as code. A `<code>` inside a `<pre>` is the

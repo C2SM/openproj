@@ -177,7 +177,9 @@ class Room:
         # says who else is in the document and the place says which line they are
         # working on, which is the difference between knowing somebody is here
         # and knowing not to rewrite the paragraph they are in.
-        self.seats: dict[int, int] = {}
+        # A caret and the far end of what it has selected, `(at, to)`, equal when
+        # nothing is selected
+        self.seats: dict[int, tuple[int, int]] = {}
         self.refusal: str | None = None
         self._quiet_since = time.monotonic()
         self._who: str | None = None
@@ -288,8 +290,9 @@ class Room:
         """Who is in the room, each named once however many tabs they have open."""
         return sorted(set(self.members.values()))
 
-    def sits(self, connection: int, at: int) -> None:
-        """Where one member's caret is, as an index into the document.
+    def sits(self, connection: int, at: int, to: int | None = None) -> None:
+        """Where one member's caret is, as an index into the document, and where
+        their selection ends when they have one.
 
         Relayed and never read: this server does not interpret the number, it
         carries it. Which matters, because the index space is the browser's —
@@ -299,7 +302,7 @@ class Room:
         space in a file whose module note is about exactly that mistake; the two
         ends that use this one are both browsers, and they already agree.
         """
-        self.seats[connection] = at
+        self.seats[connection] = (at, at if to is None else to)
 
     def where(self) -> list[dict]:
         """Each member, once, and where they are sitting.
@@ -309,12 +312,12 @@ class Room:
         under one name is a room saying somebody is in two rooms at once. The
         newest of their sockets wins, which is the tab they are typing in.
         """
-        seats: dict[str, int] = {}
+        seats: dict[str, tuple[int, int]] = {}
         for connection, login in self.members.items():
-            at = self.seats.get(connection)
-            if at is not None:
-                seats[login] = at
-        return [{"login": login, "at": at} for login, at in sorted(seats.items())]
+            seat = self.seats.get(connection)
+            if seat is not None:
+                seats[login] = seat
+        return [{"login": login, "at": at, "to": to} for login, (at, to) in sorted(seats.items())]
 
     # -- the commit ---------------------------------------------------------
 

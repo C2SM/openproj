@@ -2390,7 +2390,8 @@ def create_app(
         )
         if tailscale is not None:
             index = index.model_copy(update={"writers": sorted(tailscale.users.values())})
-        return commit, index, render.links_for(index.views, routes)
+        links = render.links_for(index.views, routes)
+        return commit, index, links.model_copy(update={"logins": tuple(render.people_of(index))})
 
     # The last history walk, and the head it walked TO. Keyed on the commit
     # ALONE — deliberately narrower than the index cache's (commit, today)
@@ -5575,7 +5576,16 @@ def create_app(
                         continue
                     if not 0 <= at <= MAX_BODY_BYTES:
                         continue
-                    room.sits(connection, at)
+                    # The far end of a selection, under the same bound. One that
+                    # is not a number, or not after the caret, is no selection
+                    # rather than no seat: where somebody is still draws.
+                    try:
+                        to = int(message.get("to", at))
+                    except (TypeError, ValueError):
+                        to = at
+                    if not at <= to <= MAX_BODY_BYTES:
+                        to = at
+                    room.sits(connection, at, to)
                     # To everybody else, not to the room: a tab does not need its
                     # own caret told back to it, and this frame is sent on every
                     # line somebody moves to.

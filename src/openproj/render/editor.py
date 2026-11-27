@@ -59,6 +59,7 @@ _ACE_SURFACE = Markup(r"""
    is replaced wholesale, so the div loses the name in the same instruction that
    takes it away from this feature. */
 .ace-tm .ace_marker-layer .op-seat { position: absolute; }
+.ace-tm .ace_marker-layer .op-seat-sel { position: absolute; }
 .ace-tm .ace_marker-layer .op-seat::after {
   content: var(--seat-name, ""); background: var(--seat-ink, transparent);
   position: absolute; right: .25rem; top: 0; white-space: pre;
@@ -683,6 +684,23 @@ function aceSurface(area, seeded) {
         // and `lastRow` count lines of the file, while `$getTop` measures from
         // `firstRowScreen`. Ace renders only what is on screen, and a marker
         // outside that is a div in the layer with no text under it.
+        // What they have selected, in their colour and a little stronger than
+        // the band, so it reads as text picked out on the line picked out.
+        // Clipped to the rows Ace is drawing, then put in screen rows, which is
+        // what Ace's own static markers do before drawing a range.
+        const end = seat.end.getPosition();
+        if (end.row > at.row || end.column > at.column) {
+          const range = new Range(at.row, at.column, end.row, end.column)
+            .clipRows(config.firstRow, config.lastRow).toScreenRange(session_);
+          const ink = `background:hsl(${seat.hue} 70% 60% / .35);`;
+          if (range.isEmpty()) {
+            // Nothing on screen
+          } else if (range.isMultiLine()) {
+            layer.drawTextMarker(html, range, 'op-seat-sel', config, ink);
+          } else {
+            layer.drawSingleLineMarker(html, range, 'op-seat-sel', config, 0, ink);
+          }
+        }
         if (at.row < config.firstRow || at.row > config.lastRow) continue;
         const row = session_.documentToScreenRow(at.row, at.column);
         layer.drawScreenLineMarker(
@@ -889,15 +907,20 @@ function aceSurface(area, seeded) {
     // receipt.
     seats: {
       draw(others) {
-        for (const seat of sitting) seat.anchor.detach();
+        for (const seat of sitting) { seat.anchor.detach(); seat.end.detach(); }
         sitting = others.map(seat => {
           const at = document_.indexToPosition(seat.at);
-          return {...seat, anchor: document_.createAnchor(at.row, at.column)};
+          const end = document_.indexToPosition(seat.to ?? seat.at);
+          return {
+            ...seat,
+            anchor: document_.createAnchor(at.row, at.column),
+            end: document_.createAnchor(end.row, end.column),
+          };
         });
         editor.renderer.updateBackMarkers();
       },
       clear() {
-        for (const seat of sitting) seat.anchor.detach();
+        for (const seat of sitting) { seat.anchor.detach(); seat.end.detach(); }
         sitting = [];
         editor.renderer.updateBackMarkers();
       },
@@ -1599,7 +1622,9 @@ const COEDIT = (() => {
 
   function carry(delta) {
     if (!seats.length) return;
-    seats = seats.map(seat => ({...seat, at: carried(seat.at, delta)}));
+    seats = seats.map(seat => ({
+      ...seat, at: carried(seat.at, delta), to: carried(seat.to ?? seat.at, delta),
+    }));
   }
 
   // Drawn again when the box appears. See `showEditing`.
@@ -1661,6 +1686,7 @@ const COEDIT = (() => {
       // frame that arrived before this tab's copy of the text caught up, which
       // is a fact about the room rather than about a box.
       at: Math.min(seat.at, length),
+      to: Math.min(Math.max(seat.to ?? seat.at, seat.at), length),
       hue: hueOf(seat.login),
     })));
   }
@@ -1669,13 +1695,18 @@ const COEDIT = (() => {
   // index the two ends already agree on — UTF-16 code units, which is what
   // `selectionStart` counts and what a Yjs text is made of in a browser. The
   // server relays it and never reads it; see `Room.sits`.
-  let sentAt = -1;
+  //
+  // And where what it has selected ends, `to`, so the room can draw the
+  // selection as well as the line. jcanton, 2026-11-27: "besides highlighting
+  // the line number of another user when co-editing, we can also show what
+  // chars the user is highlighting/selecting?"
+  let sentAt = '';
   function sit() {
     if (!BODY || !bound) return;
-    const at = SURFACE.caret().from;
-    if (at === sentAt) return;
-    sentAt = at;
-    send({t: 'at', at});
+    const {from, to} = SURFACE.caret();
+    if (from + ':' + to === sentAt) return;
+    sentAt = from + ':' + to;
+    send({t: 'at', at: from, to});
   }
 
   // The shell counts these in pairs, so they are announced from one place each

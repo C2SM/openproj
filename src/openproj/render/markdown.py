@@ -523,6 +523,58 @@ def _pr_tokens(token: Token, links: Links) -> list[Token]:
     return pieces
 
 
+# `@login` in prose: a GitHub login is letters, digits and single hyphens, and
+# what comes before the `@` is not part of a word, so `ann@example.org` is an
+# address and not a mention of `example`.
+_MENTION = re.compile(r"(?<![\w@.+-])@([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})(?![\w-])")
+
+
+def _mentions(state: StateCore) -> None:
+    """`@login`, in prose, is drawn as a chip when the plan knows that login.
+
+    jcanton, 2026-11-27, asking for `@jcanton` to complete in the editor, and for
+    it to be drawn as a chip and not a link. Only for a login in `Links.logins`:
+    this team writes `@dataclass` in sentences. Skipped inside code and links
+    for the reasons `_pr_refs` gives, and nobody is told anything, because there
+    is nowhere here to tell them.
+    """
+    links = state.env.get("links", STATIC)
+    known = {login.lower() for login in links.logins}
+    if not known:
+        return
+    for token in state.tokens:
+        if token.type != "inline" or "@" not in token.content:
+            continue
+        depth = 0
+        children: list[Token] = []
+        for child in token.children or []:
+            if child.type == "link_open":
+                depth += 1
+            elif child.type == "link_close":
+                depth -= 1
+            if child.type == "text" and depth == 0 and "@" in child.content:
+                children.extend(_mention_tokens(child, known))
+            else:
+                children.append(child)
+        token.children = children
+
+
+def _mention_tokens(token: Token, known: set[str]) -> list[Token]:
+    pieces: list[Token] = []
+    at = 0
+    for match in _MENTION.finditer(token.content):
+        if match.group(1).lower() not in known:
+            continue
+        if match.start() > at:
+            pieces.append(_inline_token("text", token.content[at : match.start()], token.level))
+        chip = Markup('<span class="mention">{}</span>').format(match.group(0))
+        pieces.append(_inline_token("html_inline", str(chip), token.level))
+        at = match.end()
+    if at < len(token.content):
+        pieces.append(_inline_token("text", token.content[at:], token.level))
+    return pieces
+
+
 def _inline_token(kind: str, content: str, level: int) -> Token:
     token = Token(kind, "", 0)
     token.content = content
@@ -790,6 +842,7 @@ def _heading_ids(state: StateCore) -> None:
 _MD.linkify.set({"fuzzy_link": False, "fuzzy_email": False})
 _MD.core.ruler.push("openproj_source_lines", _source_lines)
 _MD.core.ruler.push("openproj_pr_refs", _pr_refs)
+_MD.core.ruler.push("openproj_mentions", _mentions)
 _MD.core.ruler.push("openproj_heading_ids", _heading_ids)
 _MD.add_render_rule("image", _image)
 _MD.add_render_rule("link_open", _link)
