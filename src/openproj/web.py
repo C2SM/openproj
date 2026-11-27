@@ -2390,7 +2390,8 @@ def create_app(
         )
         if tailscale is not None:
             index = index.model_copy(update={"writers": sorted(tailscale.users.values())})
-        return commit, index, render.links_for(index.views, routes)
+        links = render.links_for(index.views, routes)
+        return commit, index, links.model_copy(update={"logins": tuple(render.people_of(index))})
 
     # The last history walk, and the head it walked TO. Keyed on the commit
     # ALONE — deliberately narrower than the index cache's (commit, today)

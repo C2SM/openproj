@@ -587,6 +587,21 @@ def test_a_number_typed_as_a_word_is_refused_rather_than_committed(
     assert str(pygit2.Repository(str(repo_path)).references["refs/heads/main"].target) == before
 
 
+def test_a_mention_of_somebody_on_the_plan_is_drawn_as_a_chip(client: TestClient):
+    """jcanton, 2026-11-27: `@jcanton` completes in the editor and is drawn as a
+    chip, not a link. Only for a login the plan knows (`ann` and `bo` are on
+    this one's roster): a Python team writes `@dataclass` in sentences. Not in
+    code, not inside a link, and not the middle of an address."""
+    body = (
+        "Ask @bo, then @ann. Not @dataclass, not ann@bo.org,\n"
+        "not `@bo` and not [@ann](https://example.org).\n"
+    )
+    html = client.post("/api/preview", json={"body": body}).json()["html"]
+    chips = [e.text for e in elements(html) if "mention" in e.attrs.get("class", "").split()]
+    assert chips == ["@bo", "@ann"], f"the chips drawn were {chips}"
+    assert not [e for e in elements(html) if e.tag == "a" and "mention" in e.text]
+
+
 def test_the_preview_renders_markdown_without_a_client_side_library(client: TestClient):
     """Preview is a round trip rather than a second markdown implementation in
     JavaScript. Two renderers disagree eventually, and the one people trust is the
@@ -9945,6 +9960,54 @@ _COMPLETING_A_PULL_REQUEST = r"""
   return {overProse, overHeading, onRepo, tookRepo, numbered, tookRef, other, tookOther,
           pasted, tookPasted};
 """
+
+
+_COMPLETING_A_MENTION = r"""
+  flipEditing();
+  await new Promise(r => setTimeout(r, 500));
+  const editor = SURFACE.editor;
+  const open = () => document.querySelector('ul.suggest:not([hidden])');
+  const shown = () => { const list = open(); return list
+    ? [...list.children].map(item => item.dataset.value) : null; };
+  const key = code => !!editor.keyBinding.onCommandKey(
+    {preventDefault() {}, stopPropagation() {}}, 0, code);
+  const line = () => SURFACE.text().split('\n').pop();
+  const typing = async text => { editor.insert(text);
+    await new Promise(r => setTimeout(r, 250)); return shown(); };
+
+  editor.focus();
+  editor.navigateFileEnd();
+  // An address is not a mention, and neither is an `@` inside a word
+  const address = await typing('\nWrite to ann@bo');
+  editor.insert('\n');
+  const everybody = await typing('Ask @');
+  const narrowed = await typing('b');
+  const took = key(13);
+  await new Promise(r => setTimeout(r, 250));
+  return {address, everybody, narrowed, took, line: line(), after: shown()};
+"""
+
+
+def test_the_second_editor_completes_a_mention(client: TestClient, tmp_path: Path):
+    """jcanton, 2026-11-27: "can we add autocompleted tags a-la @jcanton in the
+    editor?" `@` offers the plan's people, typing narrows them, and Return writes
+    the login. An `@` in an address opens nothing, because the popup would sit
+    over somebody's writing with Enter taking its first row."""
+    got = measured_in(
+        chrome(),
+        client.get(f"/detail/{TASK}?editor=ace").text,
+        tmp_path / "mention.html",
+        1400,
+        _COMPLETING_A_MENTION,
+        query="?editor=ace",
+        patience=6000,
+    )
+
+    assert got["address"] is None, f"an address opened a popup: {got['address']}"
+    assert got["everybody"] and {"ann", "bo", "cy"} <= set(got["everybody"]), got["everybody"]
+    assert got["narrowed"] and got["narrowed"][0] == "bo", got["narrowed"]
+    assert got["took"] and got["line"] == "Ask @bo", got
+    assert got["after"] is None, "the list stayed open after the login was written"
 
 
 @pytest.fixture

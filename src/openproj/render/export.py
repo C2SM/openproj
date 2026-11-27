@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..index import Index
 from ..model import reachable
+from .controls import people_of
 from .cycles import render_cycles, render_people
 from .detail import render_detail
 from .graph import render_graph
@@ -66,7 +67,9 @@ def render_static(
         if source and source.is_dir():
             shutil.copytree(source, out_dir / named, dirs_exist_ok=True)
     # `repositories` is what the caller asked each forge, see `Links.repositories`
-    links = links_for(index.views, STATIC).model_copy(update={"repositories": repositories})
+    links = links_for(index.views, STATIC).model_copy(
+        update={"repositories": repositories, "logins": tuple(people_of(index))}
+    )
     landing = partial(render_records, index, edited=edited, now=now)
     written: list[str] = []
     # The file, the view it is — None for the three that are no view and that no

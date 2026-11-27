@@ -31,6 +31,7 @@ from .controls import (
     _control_html,
     _cycle_numbers,
     _suggestions,
+    people_of,
 )
 from .cycles import (
     _ROLE_FILTER,
@@ -231,6 +232,7 @@ __all__ = [
     "_shaping_hints",
     "_static_dir",
     "_suggestions",
+    "people_of",
     "_timeline",
     "_yjs",
     "hill_geometry",

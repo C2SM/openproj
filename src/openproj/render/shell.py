@@ -105,6 +105,11 @@ class Links(BaseModel):
     # Asked by whoever can reach the network (the server, `openproj render`) and
     # never by a renderer, so a page is drawn from what it is handed.
     repositories: tuple[tuple[str, str], ...] = ()
+    # Every login the plan knows (`people_of`), so that an `@login` in a document
+    # is drawn as a mention only for somebody who is on the plan. A Python team
+    # writes `@dataclass` in prose, and a chip on that would name a person who
+    # does not exist. Not `people`, which is the People page's address.
+    logins: tuple[str, ...] = ()
     # Whether a server is behind the page — the event stream, the health poll, per-cycle pages,
     # diagrams fetched on demand. A fact about the mode, said once. Three places used to infer
     # it from whether `table` or `cycle` began with a slash, so blanking a view's link would
