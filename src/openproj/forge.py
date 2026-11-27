@@ -162,10 +162,32 @@ def reference_state(
     Forgejo sends none by default.
     """
     one = _ask(origin, f"/repos/{repository}/issues/{number}", None, token, transport).json()
+    return _state_of(one), None
+
+
+def closed_references(
+    origin: str,
+    repository: str,
+    token: str = "",
+    transport: httpx.BaseTransport | None = None,
+) -> tuple[dict[int, dict[str, object]], int | None]:
+    """The most recently closed pull requests and issues in one Forgejo
+    repository, in `github.closed_references`' shape and for its reason."""
+    response = _ask(
+        origin,
+        f"/repos/{repository}/issues",
+        {"state": "closed", "limit": _OPEN_LIMIT},
+        token,
+        transport,
+    )
+    return {int(one["number"]): _state_of(one) for one in response.json()}, None
+
+
+def _state_of(one: dict) -> dict[str, object]:
     if one.get("state") != "closed":
-        return {"state": "open", "at": None}, None
+        return {"state": "open", "at": None}
     pull = one.get("pull_request")
     landed = bool(pull.get("merged")) if pull is not None else True
     merged = pull.get("merged_at") if pull is not None else None
     when = str(merged or one.get("closed_at") or "")[:10]
-    return {"state": "landed" if landed else "dropped", "at": when or None}, None
+    return {"state": "landed" if landed else "dropped", "at": when or None}
