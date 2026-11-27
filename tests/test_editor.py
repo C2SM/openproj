@@ -7014,6 +7014,117 @@ def test_a_reload_whose_editor_lays_out_late_still_comes_back_to_its_line(
     )
 
 
+# Headings at different depths with paragraphs and list items between them
+# that wrap to different heights on the two sides, so a point the panes meet
+# at is a point either side can miss.
+_STEPPED_BODY = "\n".join(
+    line
+    for part in range(16)
+    for line in (
+        f"## Part {part + 1}",
+        "",
+        ("word " * (20 + 15 * (part % 4))).strip(),
+        "",
+        "- one item",
+        "- " + ("long item " * 12).strip(),
+        "",
+    )
+)
+
+# Both panes scrolled the way a wheel scrolls them, 37px a step and a step a
+# frame, and where each pane stopped read as a source line once nothing is
+# moving. The caches are dropped before the reading so it is measured fresh
+# rather than read back off whatever the sync last used.
+_STEPPED = r"""
+(() => {
+  if (window.__stepped === undefined) {
+    window.__stepped = null;
+    (async () => {
+      const settle = ms => new Promise(go => setTimeout(go, ms));
+      const pane = document.getElementById('body-preview');
+      const ace = SURFACE.editor.session;
+      const row = line => ace.documentToScreenRow(line - 1, 0) * SURFACE.editor.renderer.lineHeight;
+      const lines = () => {
+        sourcePoints = null;
+        previewPoints = null;
+        return {source: lineOfPixel(sourceMap(), SURFACE.scrolled()),
+                preview: lineOfPixel(previewMap(), pane.scrollTop)};
+      };
+      const wheel = async (now, put, to) => {
+        while (Math.abs(now() - to) > 1) {
+          put(now() + Math.sign(to - now()) * Math.min(37, Math.abs(to - now())));
+          await settle(16);
+        }
+        await settle(400);
+        return lines();
+      };
+      const editor = [() => SURFACE.scrolled(), top => SURFACE.scrollTo(top)];
+      const down = await wheel(...editor, row(85));
+      const up = await wheel(...editor, row(22));
+      const block = pane.querySelector('[data-startline="64"]');
+      const inPane = block.getBoundingClientRect().top - pane.getBoundingClientRect().top
+        + pane.scrollTop;
+      const preview = await wheel(() => pane.scrollTop, top => { pane.scrollTop = top; }, inPane);
+      window.__stepped = {down, up, preview};
+    })();
+  }
+  return window.__stepped;
+})()
+"""
+
+
+def test_a_wheel_brings_the_other_pane_all_the_way_with_it(client: TestClient, tmp_path: Path):
+    """jcanton, 2026-11-27, with two screenshots of the split view: the preview
+    a few lines ahead of the editor after scrolling up. Each side held a flag
+    while it drove the other, cleared on a 50ms timer, and a wheel's steps come
+    every frame. One step's timer cleared the flag while a later step's echo was
+    still on its way, the echo was taken for somebody scrolling the preview, and
+    the editor's own steps were ignored for the next 50ms. The last steps of a
+    gesture never reached the other pane: measured in Chrome, the editor scrolled
+    to line 67 in 37px steps left the preview at line 62.8.
+
+    In a real browser on a real clock, because the defect is the order in which
+    a timer and a scroll event arrive, and under virtual time a scroll event
+    waits for a frame that never comes.
+    """
+    page = re.sub(
+        r'(<textarea name="body"[^>]*>).*?(</textarea>)',
+        lambda found: found.group(1) + _STEPPED_BODY + found.group(2),
+        client.get(f"/detail/{TASK}?editor=ace").text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    stub = (
+        "<script>sessionStorage.setItem('openproj:resumed', 'both');"
+        "window.fetch = async () => ({ok: true, json: async () => ({html: "
+        + json.dumps(preview_html(_STEPPED_BODY)).replace("</", "<\\/")
+        + "})});</script>"
+    )
+    where = tmp_path / "stepped.html"
+    where.write_text(page.replace("<head>", "<head>" + stub, 1))
+    with _devtools(chrome(), where.as_uri() + "?editor=ace", tmp_path / "p", DRAWING_WINDOW) as (
+        call,
+        _,
+    ):
+        _until(
+            call,
+            "SURFACE.editor && SURFACE.editor.renderer.lineHeight > 0"
+            " && !!document.querySelector('#body-preview [data-startline=\"64\"]')",
+        )
+        got = _until(call, _STEPPED, seconds=40)
+
+    for gesture, want in (("down", 85), ("up", 22), ("preview", 64)):
+        stopped = got[gesture]
+        assert abs(stopped["source"] - stopped["preview"]) < 0.5, (
+            f"scrolled {gesture} to line {want}: the editor stopped at line "
+            f"{stopped['source']:.2f} and the preview at {stopped['preview']:.2f}"
+        )
+        assert abs(stopped["source"] - want) < 1, (
+            f"scrolled {gesture} to line {want} and the editor is at {stopped['source']:.2f}, "
+            "so the other pane drove it back"
+        )
+
+
 def test_the_last_line_can_be_scrolled_to_the_top_of_a_full_height_editor(
     client: TestClient, tmp_path: Path
 ):
