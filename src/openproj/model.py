@@ -756,6 +756,59 @@ def repository_origin(url: str) -> str:
     return url[: found.start("name") - 1] if found else ""
 
 
+# A link to a pull request or an issue as a forge's own page spells it, after the
+# repository's page: Forgejo's `/pulls/`, GitHub's `/pull/`, `/issues/` on both, and
+# what trails the number when a link is copied from wherever somebody was reading:
+# a tab (`/files`), a query, an anchor (`#discussion_r…`).
+#
+# **The trailing path is plain segments only, never `.` or `%`.** `/pull/1/../../x/y/
+# pull/9` was drawn `a/b#1` and the browser resolved it to another pull request,
+# with nothing on the page left to say so. **And ASCII**, because under `IGNORECASE`
+# a str pattern lets `i` match `ı`: `https://gıthub.com/…` was drawn as a GitHub
+# reference linking to `xn--gthub-n4a.com`.
+#
+# Sources and not only compiled patterns, because the page builds its copy from the
+# same text (`Links.pr_rule`): written in classes both engines read alike, and
+# never escaped a second time by hand into a Python string of JavaScript.
+PR_PAGE_REF = r"/(?:pulls?|issues)/([0-9]+)(?:/[\w-]*)*(?:[?#]\S*)?"
+# github.com is the page of every repository the plan does not list, because
+# `owner/repo#N` for an unlisted name already means GitHub. The name is
+# `_REPOSITORY`'s: each half starts with a letter or digit, so `..` is not one.
+PR_GITHUB_PAGE = r"https?://(?:www\.)?github\.com/([A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*)"
+_PR_PAGE_REF = re.compile(PR_PAGE_REF, re.IGNORECASE | re.ASCII)
+_PR_GITHUB_PAGE = re.compile(PR_GITHUB_PAGE, re.IGNORECASE | re.ASCII)
+# A whole reference, `owner/repo#N`: what `/api/pr-states` looks up and a page links
+_REFERENCE = re.compile(r"[\w.-]+/[\w.-]+#[0-9]+")
+
+
+def pr_reference(ref: str, repositories: Iterable[str]) -> str:
+    """The `owner/repo#N` a pull request or issue URL names, or "" for anything else.
+
+    jcanton, 2026-11-28: plan-d's `prs:` held
+    `https://git.ciccia.synology.me/jacopo/strc-site/pulls/1` and the page drew
+    that, where a GitHub one reads `owner/repo#N`. A URL is read as the reference
+    it names wherever a reference is read — drawn, searched, asked about — and the
+    file keeps the URL as written.
+    """
+    said = ref.strip()
+    pages = [(repository_name(url), url) for url in repositories]
+    github = _PR_GITHUB_PAGE.match(said)
+    if github:
+        pages.append((github[1], github[0]))
+    for name, page in pages:
+        if said.lower().startswith(page.lower() + "/"):
+            found = _PR_PAGE_REF.fullmatch(said[len(page) :])
+            if found:
+                return f"{name}#{found[1]}"
+    return ""
+
+
+def reference_of(entry: str, repositories: Iterable[str]) -> str:
+    """The reference one entry of `prs:` names, in either spelling, or ""."""
+    entry = entry.strip()
+    return entry if _REFERENCE.fullmatch(entry) else pr_reference(entry, repositories)
+
+
 class Config(BaseModel):
     """Repository-wide planning configuration.
 

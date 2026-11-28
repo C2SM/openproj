@@ -4496,7 +4496,7 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
     # `prs` is the bare `owner/repo#` of each, for the table's menu, which
     # completes through a native datalist and a prefix and has nothing to run a
     # search with. The field and the body read `repos` and the live list.
-    names = {repository_name(url): url for url in index.repositories}
+    names = [repository_name(url) for url in index.repositories]
     return {
         "prs": [{"value": f"{r}#", "label": "pull request or issue"} for r in names],
         "repos": list(names),

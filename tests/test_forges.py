@@ -141,19 +141,24 @@ SHORTENED = {
 }
 
 
+# The URL the tests below draw, paste and search for
+WATCHFACE_3 = "https://git.example.org/jacopo/watchface/pulls/3"
+
+
 @pytest.mark.parametrize(("url", "ref"), SHORTENED.items())
 def test_a_pull_request_url_is_drawn_as_the_reference_it_names(url: str, ref: str):
     """And links to the URL as written: the file is not what changes."""
-    from openproj.render.markdown import _pr_link, pr_href, pr_reference
+    from openproj.model import pr_reference
+    from openproj.render.markdown import _pr_link, pr_href
 
-    assert pr_reference(url, LISTED) == ref
-    link = [e for e in elements(str(_pr_link(url, LISTED))) if e.tag == "a"]
-    if pr_href(url, LISTED):
-        assert [(e.attrs["href"], e.text) for e in link] == [(pr_href(url, LISTED), ref or url)]
+    assert pr_reference(url, LISTED.repository_urls()) == ref
+    href = pr_href(url, LISTED)
+    link = [(e.attrs["href"], e.text) for e in elements(str(_pr_link(url, LISTED))) if e.tag == "a"]
+    assert link == ([(href, ref or url)] if href else [])
 
 
 def test_the_page_reads_a_url_back_into_the_reference_the_server_does(seed_index):
-    """`prReference` is `pr_reference` over the same map, `Links.pr_pages`."""
+    """`prReference` is `pr_reference` built from the same pattern text, `Links.pr_rule`."""
     from test_injection import run_js
 
     from openproj.render import render_table
@@ -171,33 +176,49 @@ def test_the_table_draws_a_stored_url_as_its_number(seed_index):
 
     from openproj.render import render_table
 
-    url = "https://git.example.org/jacopo/watchface/pulls/3"
     page = render_table(seed_index, LISTED)
-    drawn = run_js(page, f"prLink({json.dumps(url)})", page=True)["value"]
+    drawn = run_js(page, f"prLink({json.dumps(WATCHFACE_3)})", page=True)["value"]
 
     assert [(e.attrs["href"], e.attrs["title"], e.text) for e in elements(drawn)] == [
-        (url, "jacopo/watchface#3", "#3")
+        (WATCHFACE_3, "jacopo/watchface#3", "#3")
     ]
 
 
-def test_the_prs_box_writes_a_pasted_url_as_the_reference_it_names(seed_index):
-    """The box used to read the plan's pages out of its own copy of the rule, and it
-    is the shell's `prReference` now."""
+def test_a_paste_from_a_forge_that_cannot_be_linked_keeps_its_url(seed_index):
+    """The prs box tidies a pasted URL into the reference it names, except where
+    `owner/repo#N` would have nowhere to link: then the URL is the one spelling
+    that still opens something, and it is drawn short anyway."""
     from test_injection import run_js
 
     from openproj.render import render_detail
 
-    url = "https://git.example.org/jacopo/watchface/pulls/3"
     page = render_detail(
         seed_index, LISTED, only=next(iter(seed_index.plan)), base_commit="deadbee", may_write=True
     )
+    pasted = [WATCHFACE_3, f"{UNREACHABLE}/pulls/1"]
+    said = run_js(page, f"{json.dumps(pasted)}.map(asReference)", page=True)["value"]
 
-    unread = f"{UNREACHABLE}/pulls/1"
-    said = run_js(page, f"[asReference({json.dumps(url)}), asReference({json.dumps(unread)})]",
-                  page=True)["value"]
-
-    # And a paste from a forge that cannot be linked by reference keeps its URL
     assert said == ["jacopo/watchface#3", None]
+
+
+def test_a_stored_url_is_asked_about_and_found_as_the_reference_it_names():
+    """Drawn as `#3`, so it is looked up and searched for as `jacopo/watchface#3` too:
+    a cell that reads like a reference and has no state mark and no search hit is a
+    cell that lies about which of the two it is."""
+    from openproj.index import query_fields
+    from openproj.model import Record
+    from openproj.web import _cited, _readable
+
+    index = build_index(
+        [Record(id="task-000001", kind="task", title="t", prs=[WATCHFACE_3, "a branch"])],
+        Config(repositories=[FORGEJO]),
+        date(2026, 8, 17),
+    )
+
+    assert _cited(index.records["task-000001"], _readable([(FORGEJO, "forgejo")])) == [
+        "jacopo/watchface#3"
+    ]
+    assert "jacopo/watchface#3" in query_fields(index, "task-000001")["prs"]
 
 
 def test_a_bare_url_in_prose_reads_as_its_reference_and_written_words_are_kept():
