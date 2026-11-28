@@ -37,6 +37,7 @@ from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
 from .markdown import _body_html, _prs_shown
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SUGGEST_STYLE
+from .tables import _TABLES
 from .tokens import (
     _KIND_MODELS,
     _SIZE_FIELD_NAME,
@@ -1751,6 +1752,8 @@ _DETAIL = """
           and this is where the settings are. -#}
       <p class="field bodybar statusbar" id="statusbar">
         {% if not creating %}<button type="button" id="draftevery"></button>{% endif %}
+        {#- On the create form too: its Save aligns the tables it creates with. -#}
+        <button type="button" id="tablefmt" class="tablefmt"></button>
       </p>
       {#- No draft and no 409-with-a-report on a create; a refused create lands
           in `#problems` above. -#}
@@ -2067,7 +2070,8 @@ grip.ondblclick = () => {
     reader at 4.19x their page for a keymap whose every save is a 403. -#}
 {% if ace %}<script>{{ ace }}</script>
 {{ acesurface }}{% endif %}
-{% if editable %}{{ combobox }}{% endif %}
+{#- The table formatter, beside the toolbar that reaches it: see `tables.py`. -#}
+{% if editable %}{{ tables }}{{ combobox }}{% endif %}
 {% if editable %}<script>{{ required }}</script><script>{{ hill }}</script>{% endif %}
 {#- Empty unless this page drew a date box — the gate is at `calendar=` below,
     where the reason is, the way `{{ pop }}` on the table is gated at `pop=`. -#}
@@ -2878,6 +2882,17 @@ async function save() {
   // past came to be refused by one door and committed by the other.
   const stops = stillNeeded(fields);
   if (stops instanceof Promise ? await stops : stops) return;
+  // The tables, aligned as an edit this person made, before either write path
+  // reads the body: in a room the splices go up the socket ahead of the save
+  // frame, and without one the PATCH sends what the box now holds. After the
+  // check above and not before it, so a save that stops there has not edited
+  // the document either.
+  //
+  // **And only in an edit session.** Ctrl-S reaches `save()` from the reading
+  // view as well, where the box is hidden and nothing has been typed; aligning
+  // there turned "nothing changed" into a commit of a reformat the reader never
+  // saw, of a file they never opened.
+  if (FORM.closest('article.record').classList.contains('editing')) alignForSave(SURFACE);
   // While a room is live the body is not this tab's to send: it is the room's,
   // and Save is one commit made over the socket against the room's base, with
   // the fields from this form. Sending both down this path would be two commits
@@ -3031,6 +3046,10 @@ async function createRecord() {
     PROBLEMS.replaceChildren(line);
     return;
   }
+  // The create form's Save is an explicit save as well, so it aligns too — here,
+  // after every refusal above, for the rule `save()` keeps: a save that was
+  // refused has not edited the document.
+  alignForSave(SURFACE);
   // The shell's banner is told before the request goes and the sha after,
   // because the server announces a commit to the event stream before it
   // answers the request that made it.
@@ -3256,6 +3275,15 @@ if (!CREATING) {
                         + 'Nothing is committed on a timer.');
              });
 }
+
+// Beside the draft interval, on both pages.
+statusPick(document.getElementById('tablefmt'), 'Format tables on save', TABLE_FORMATS,
+           EDITOR.tables, chosen => {
+             rememberEditor({tables: chosen});
+             announce(chosen === 'on'
+               ? 'Save aligns the tables in this document first.'
+               : 'Save leaves the tables in this document as they are typed.');
+           });
 
 // No restore on the create page: with no stored record there is no id, and a
 // draft key built from an empty id would be every create page's at once. The
@@ -4564,6 +4592,8 @@ def render_detail(
         # `linkable=True`: this is a page with a document being written in it, so
         # the blob carries the list `attachBodyCompletion` completes records from.
         combobox=_combobox_html(index, linkable=True, live=base_commit is not None),
+        # Gated in the template, with the toolbar it serves.
+        tables=_TABLES,
         required=_REQUIRED_JS,
         hill=_HILL_JS,
         # The popup every date box here opens, and only where there is a box to
