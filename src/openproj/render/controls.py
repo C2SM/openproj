@@ -4344,18 +4344,29 @@ function refusals(answer, status) {
   });
 }
 
+// Whether this form has switched off the gate on `field`: by the switch's own box
+// where the form draws one (`review_waived`), and otherwise by what the record
+// holds — `data-waived`, for `prs_waived`, which no box carries because answering
+// the done-without-a-PR question is what sets it. `WAIVERS` is the shell's.
+function waivedOn(form, field) {
+  const switchName = WAIVERS[field];
+  if (!switchName) return false;
+  const control = form.querySelector(`[name="${switchName}"]`);
+  if (control) return !!control.checked;
+  return (form.dataset.waived || '').split(' ').includes(switchName);
+}
+
 // What the chosen status will make the server refuse this form without. Marked
 // on the label rather than announced after a rejected save: which fields a
 // status demands is the thing you need before you fill the form in, and the
 // rules change under you the moment the status select does.
 function markRequired(form) {
   const status = form.querySelector('[name=status]')?.value || OPENS;
-  const waived = form.querySelector('[name=review_waived]')?.checked;
   for (const control of form.querySelectorAll('[data-required-at]')) {
-    // review_waived is the escape hatch from the reviewer rule, so honouring it
-    // here is the difference between a mark and a nag.
+    // A waived field is the escape hatch from its rule, so honouring it here is
+    // the difference between a mark and a nag.
     const demanded = control.dataset.requiredAt.split(' ').includes(status)
-      && !(control.name === 'reviewers' && waived);
+      && !waivedOn(form, control.name);
     if (demanded) control.setAttribute('aria-required', 'true');
     else control.removeAttribute('aria-required');
     const mark = control.closest('dd')?.previousElementSibling?.querySelector('.req');

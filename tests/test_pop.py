@@ -52,6 +52,7 @@ from pathlib import Path
 
 import pytest
 from browser import PRESSES, _devtools, _evaluated, chrome, measured_in, pressed_in
+from test_table import no_pr_answer
 
 from openproj.index import Index, build_index
 from openproj.model import KINDS, RUNG, load_repo, parse_text
@@ -75,6 +76,9 @@ from openproj.render.detail import _cascade_facts, _titles_for
 from openproj.render.tokens import (
     HUMAN,
     LABELS,
+    NO_PR_ASKED,
+    NO_PR_NO,
+    NO_PR_YES,
     PRIORITIES,
     PRIORITY_LEVEL,
     STATUS_GLYPH,
@@ -4869,6 +4873,28 @@ def test_assign_parent_offers_a_select_of_the_records_that_may_hold_this_one(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def index_with_an_unstaffed_task(demo_root: Path) -> Index:
+    """The demo, plus one task nobody has picked up: no owner, nobody on it, no
+    reviewer and no appetite, so `ready` is short of four fields that are all
+    boxes on the form.
+
+    Added because the demo's only gate short of two was `done` — its PRs and the
+    day it ended — and a missing PR is a question now (`askNoPr`) before it is
+    anything a form opens on, which leaves `done` one box. The two tests on it
+    are about a form of several fields, and this is the record that has one.
+    """
+    records, config, _ = load_repo(demo_root)
+    records.append(
+        parse_text(
+            "---\nid: task-0ff0a1\nkind: task\ntitle: Nobody has picked this up\n"
+            "status: shaping\n---\n\nUnclaimed.\n",
+            "tasks/task-0ff0a1.md",
+        )
+    )
+    return build_index(records, config, date(2026, 8, 17))
+
+
 _THE_GATE = """
 const found = shortOf(2);
 if (!found) return {error: 'the corpus holds no task short of two fields at any status'};
@@ -4919,7 +4945,7 @@ return {id: row.id, title: row.title, was: row.status, gate, missing, answers, s
 
 
 def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
-    index: Index, tmp_path: Path
+    index_with_an_unstaffed_task: Index, tmp_path: Path
 ):
     """**The gate is answered rather than fought, and this is where cut 3's
     behaviour changed.**
@@ -4944,7 +4970,9 @@ def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
     `_reject_a_start_date_this_write_puts_in_the_past` was rewritten to stop
     making — on the server, about exactly this shape of question.
     """
-    got = _at_a_form(index, tmp_path / "gateform.html", _THE_GATE, patience=5000)
+    got = _at_a_form(
+        index_with_an_unstaffed_task, tmp_path / "gateform.html", _THE_GATE, patience=5000
+    )
 
     assert not got.get("error"), got
     assert len(got["missing"]) >= 2, (
@@ -4967,7 +4995,10 @@ def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
     # The whole card is drawn — it is the card — and what the gate is about is the
     # part of it that can be touched: the fields it names are open, the status it
     # is asking for is on the chip, and every other value is a word nothing wires.
-    assert got["opened"]["open"] == got["missing"], (
+    # As sets: the open boxes are read in the card's order and the gate's names
+    # in `required_at`'s, and the two agree only when the fields happen to be
+    # drawn in the order the gate lists them.
+    assert sorted(got["opened"]["open"]) == sorted(got["missing"]), (
         f"the box opened on {got['opened']['open']} and the gate names {got['missing']} — "
         "somebody who chose a gated status has already said what they are doing"
     )
@@ -5021,6 +5052,188 @@ def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
     assert got["now"] == got["gate"], "the row did not move to the status that was picked"
     assert got["closed"] is True
     assert got["beats"] == {"writing": 1, "wrote": ["c0ffee1"]}, got["beats"]
+
+
+# --------------------------------------------------------------------------- #
+# Done without a pull request: the question `Status ▸` asks first, in this box's
+# own confirmation face
+# --------------------------------------------------------------------------- #
+
+
+# The face's two buttons, pressed the way a pointer presses them. Read in Python
+# and handed in, so the presses are `test_table`'s one driver.
+_NO_PR_PRESSES = f"""
+const pressYes = () => {{ {no_pr_answer(True, face="pop")} }};
+const pressNo = () => {{ {no_pr_answer(False, face="pop")} }};
+const faceIn = () => POP.querySelector('[data-kind="confirm-nopr"]');
+"""
+
+# A task that `done` would refuse for its PR and for something else, so the yes
+# has a form left to open. Searched rather than named, for `shortOf`'s reason.
+_NO_PR_ROW = (
+    _NO_PR_PRESSES
+    + """
+const row = rowWhere(one => one.kind === 'task' && one.status !== 'done'
+                            && popMissing(one, 'done').includes('prs')
+                            && popMissing(one, 'done').length >= 2);
+if (!row) return {error: 'the corpus holds no task short of a PR and more at done'};
+const missing = popMissing(row, 'done');
+openOn(row.id);
+itemIn('status').click();
+itemIn('status-done').click();
+await rest(300);
+const asked = {face: !!faceIn(), role: POP.getAttribute('role'),
+               said: faceIn() && faceIn().querySelector('.popheading').textContent,
+               buttons: faceIn()
+                 && [...faceIn().querySelectorAll('button')].map(b => b.textContent),
+               focused: document.activeElement.textContent, form: formUp(),
+               dialog: !!document.querySelector('dialog[open]'), sent: patches().length};
+"""
+)
+
+
+def test_done_from_the_menu_asks_about_the_pr_and_then_opens_the_form_on_the_rest(
+    index: Index, tmp_path: Path
+):
+    """`Status ▸ Done` on a record with no PR used to open the form with a PRs
+    box in it, which is the one answer some finished work does not have.
+
+    It asks first, in the box's own confirmation face — the face `Delete…` asks
+    in, so no second dialog is opened over the menu — with buttons that say what
+    they will do and the keyboard on the yes. A click no pointer made is not an
+    answer. Yes turns the box into the gated-status form on what is left, the day
+    it ended, and that form's one Save carries the waiver with the status and the
+    date, so there is never a done record in git waiting for its waiver.
+    """
+    got = _at_a_form(
+        index,
+        tmp_path / "noprform.html",
+        _NO_PR_ROW
+        + """
+faceIn().querySelector('[data-kind="confirm-nopr-yes"]').click();
+await rest(100);
+const scripted = !!faceIn();
+pressYes();
+await rest(400);
+const opened = {form: formUp(), open: opensNow(), status: valueIn('status')};
+typeInto('end_date', '2026-09-01');
+pressSave();
+await rest(1200);
+return {id: row.id, missing, asked, scripted, opened, sent: patches(), closed: !popIsOpen()};
+""",
+        patience=6000,
+    )
+
+    assert not got.get("error"), got
+    asked = got["asked"]
+    assert asked["face"] and asked["role"] == "dialog", f"Done wrote or opened a form: {asked}"
+    assert asked["said"] == NO_PR_ASKED
+    assert asked["buttons"] == [NO_PR_YES, NO_PR_NO]
+    assert asked["focused"] == NO_PR_YES, "the keyboard is not in the question"
+    assert asked["dialog"] is False, "the menu opened the shell's dialog over itself"
+    assert asked["form"] is False and asked["sent"] == 0
+    assert got["scripted"], "a click with no pointer and no key behind it answered the question"
+    rest = [name for name in got["missing"] if name != "prs"]
+    assert got["opened"]["form"], "the yes did not open the form on what done still needs"
+    assert got["opened"]["open"] == rest, got["opened"]
+    assert got["opened"]["status"] == HUMAN["done"]
+    assert len(got["sent"]) == 1, got["sent"]
+    sent = got["sent"][0]["body"]["fields"]
+    assert sent == {"status": "done", "prs_waived": True, "end_date": "2026-09-01"}, sent
+    assert got["closed"] is True
+
+
+def test_a_waiver_is_not_sent_with_a_status_it_was_not_given_for(index: Index, tmp_path: Path):
+    """The form the yes opens still shows the status chip. Moved to In progress
+    before Save, it sent `{status: 'in_progress', prs_waived: true}` — a record
+    at work and "closed without a PR" — because the waiver was staged in the
+    form's values and nothing asked whether the status still wanted it."""
+    got = _at_a_form(
+        index,
+        tmp_path / "noprmoved.html",
+        _NO_PR_ROW
+        + """
+pressYes();
+await rest(400);
+const chip = openField('status');
+chip.value = 'in_progress';
+chip.dispatchEvent(new Event('input', {bubbles: true}));
+chip.dispatchEvent(new Event('change', {bubbles: true}));
+typeInto('end_date', '2026-09-01');
+pressSave();
+await rest(1200);
+return {asked, sent: patches().map(one => one.body.fields)};
+""",
+        patience=6000,
+    )
+
+    assert not got.get("error"), got
+    assert got["asked"]["face"], got["asked"]
+    assert got["sent"] == [{"status": "in_progress", "end_date": "2026-09-01"}], got["sent"]
+
+
+def test_saving_done_from_the_edit_box_asks_the_same_question(index: Index, tmp_path: Path):
+    """`Edit…` is the other door in this box: the status changed on the card and
+    Save pressed. Its gate is `popSave`'s, and a missing PR there is the same
+    question rather than "Done needs PRs." — which the box could never answer for
+    work that has none. Asked over the form and handed back to it: no leaves the
+    edit where it was, yes goes on to the write."""
+    got = _at_a_form(
+        index,
+        tmp_path / "nopredit.html",
+        _NO_PR_PRESSES
+        + """
+const row = rowWhere(one => one.kind === 'task' && one.status !== 'done'
+                            && popMissing(one, 'done').includes('prs'));
+if (!row) return {error: 'the corpus holds no task short of a PR at done'};
+openOn(row.id);
+popForm({mode: 'edit', row: row, values: {status: 'done', end_date: '2026-09-01'},
+         label: 'Edit', verb: 'Save'});
+pressSave();
+await rest(300);
+const asked = {face: !!faceIn(), why: whyLines(), sent: patches().length};
+pressNo();
+await rest(200);
+const kept = {form: formUp(), status: valueIn('status'), said: said(), sent: patches().length};
+pressSave();
+await rest(300);
+pressYes();
+await rest(1200);
+return {asked, kept, sent: patches().map(one => one.body.fields), closed: !popIsOpen()};
+""",
+        patience=6000,
+    )
+
+    assert not got.get("error"), got
+    assert got["asked"] == {"face": True, "why": [], "sent": 0}, got["asked"]
+    assert got["kept"] == {"form": True, "status": HUMAN["done"], "said": "not saved", "sent": 0}
+    assert len(got["sent"]) == 1, got["sent"]
+    assert got["sent"][0]["status"] == "done" and got["sent"][0]["prs_waived"] is True, got
+    assert got["closed"] is True
+
+
+def test_escape_on_the_question_from_the_menu_sends_nothing(index: Index, tmp_path: Path):
+    """Escape is Cancel: nothing goes out, the question and the menu both go, and
+    the record keeps the status it had."""
+    got = _at_a_form(
+        index,
+        tmp_path / "noprescape.html",
+        _NO_PR_ROW
+        + """
+document.activeElement.dispatchEvent(
+  new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+await rest(300);
+return {asked, menu: popIsOpen(), sent: patches(), said: said(),
+        now: DATA.rows[row.id].status, was: row.status};
+""",
+    )
+
+    assert not got.get("error"), got
+    assert got["asked"]["face"], got["asked"]
+    assert got["menu"] is False, got
+    assert got["sent"] == []
+    assert got["said"] == "nothing was changed"
+    assert got["now"] == got["was"]
 
 
 # --------------------------------------------------------------------------- #
@@ -5147,7 +5360,9 @@ return {id: row.id, gate, missing, before,
 """
 
 
-def test_the_form_re_places_itself_when_a_refusal_grows_it(index: Index, tmp_path: Path):
+def test_the_form_re_places_itself_when_a_refusal_grows_it(
+    index_with_an_unstaffed_task: Index, tmp_path: Path
+):
     """**The form is the exception to "the menu never moves once placed; it only
     dies", and the reason is concrete rather than aesthetic.**
 
@@ -5172,7 +5387,13 @@ def test_the_form_re_places_itself_when_a_refusal_grows_it(index: Index, tmp_pat
     box caps at `70vh` and scrolls, so a window tall enough makes this form fit
     with its refusals and there is nothing to move.
     """
-    got = _at_a_form(index, tmp_path / "replacing.html", _REPLACING, patience=4000, tall=600)
+    got = _at_a_form(
+        index_with_an_unstaffed_task,
+        tmp_path / "replacing.html",
+        _REPLACING,
+        patience=4000,
+        tall=600,
+    )
 
     assert not got.get("error"), got
     assert got["why"] == [

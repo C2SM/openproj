@@ -17,6 +17,7 @@ from ..model import (
     SWITCHES_FILE,
     VIEW_NEEDS,
     VIEWS,
+    WAIVERS,
     Unreadable,
     Unusable,
     repository_name,
@@ -34,6 +35,10 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
+    NO_PR_ASKED,
+    NO_PR_NO,
+    NO_PR_SAID,
+    NO_PR_YES,
     PRIORITY_LEVEL,
     RUNG_CHEVRON,
     RUNG_LIST_ID,
@@ -1323,6 +1328,21 @@ body:has([data-fills]) { padding-bottom: 0; }
    `position: fixed` so a card on the graph survives the canvas being panned and
    zoomed under it: the anchor moves, the card is placed again from the pointer,
    and neither is inside the transformed layer. */
+{% if live %}
+/* The done-without-a-PR question (`askNoPr`), which the table and the record
+   page open — the right-click box asks in its own face. Placed by `placeFloat`
+   beside what was pressed, like the card, so the UA's centring of a modal
+   dialog is undone here: `inset: auto` and `margin: 0`. The backdrop is clear
+   because the question is about one row on a page the reader still needs to
+   see. */
+#noprask { position: fixed; inset: auto; margin: 0; max-width: 22rem;
+           padding: .5rem .6rem; background: var(--surface); color: var(--fg);
+           font-size: 13px; border: 1px solid var(--line-strong); border-radius: 3px; }
+#noprask::backdrop { background: transparent; }
+#noprask p { margin: 0 0 .45rem; }
+#noprask .acts { display: flex; gap: .4rem; }
+#noprask button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+{% endif %}
 /* No `pointer-events: none`. The card holds a shaping document that is capped
    and scrollable, and a box the pointer passes straight through is a scrollbar
    nobody can grab — which is exactly what shipped. It does not follow the
@@ -3318,6 +3338,69 @@ function placeFloat(box, x, y) {
   box.style.top = Math.max(8, top) + 'px';
 }
 
+// --- done without a pull request -------------------------------------------
+//
+// **One question, put by every door that sets a status before it writes `done`
+// on a record with no PR**: the table's status cell and its selection, `Status ▸`
+// and `Edit…` in the right-click box, and Save on the record page and the create
+// form. The door then sends `status: done` and `prs_waived: true` in the same
+// write as anything else the status needs, so the plan never holds a done record
+// waiting for its waiver in a second commit.
+//
+// The words are `NO_PR_*` in `tokens.py`, handed here once: what the question
+// says, what its two buttons say, and what a record closed that way reads where
+// its PRs would be drawn.
+const NO_PR = {{ no_pr|tojson }};
+// The field the question answers instead of a box. A missing PR is the one gate a
+// form cannot type an answer to for work that finished with nothing merged.
+const NO_PR_FIELD = 'prs';
+// Which stored switch turns off which gate — `WAIVERS` in `model.py`, the map the
+// validator reads. Every filter that skips a field its record has waived reads
+// this, rather than spelling out the reviewer and the PR clauses one more time.
+const WAIVERS = {{ waivers|tojson }};
+
+// Whether a row's PRs are drawn as `NO_PR.said`: done, waived and empty, all
+// three. `closed_without_a_pr` (`model.py`) is the server's copy, for the record
+// page and the slide; this one is asked of a row the page may have just written
+// itself, where a reload is the thing that has not happened.
+function closedWithoutPr(row) {
+  return !!row && row.status === 'done' && !!row[WAIVERS[NO_PR_FIELD]]
+    && !(row[NO_PR_FIELD] || []).length;
+}
+
+// **The doors' one call.** `missing` is what the status about to be written needs
+// and the record has not got; `ask` puts the question in the door's own box and
+// answers whether to go on. `then` gets `{rest, waived}` — the fields still to be
+// answered, and whether the PR was waived — or `null` when the question was
+// cancelled.
+//
+// The question comes FIRST and the rest after it, at every door: whether this is
+// done at all with nothing merged is what decides whether there is a day it
+// ended, and a date panel in front of the question would be asking when somebody
+// finished work they may yet decide not to close.
+//
+// A callback and not a promise, so a door with nothing to ask carries on in the
+// same turn: the table's panel and the right-click form open under the press
+// that asked for them, as they did before there was a question.
+function answerTheGate(missing, ask, then) {
+  if (!missing.includes(NO_PR_FIELD)) { then({rest: missing, waived: false}); return; }
+  ask().then(yes => then(yes
+    ? {rest: missing.filter(name => name !== NO_PR_FIELD), waived: true}
+    : null));
+}
+
+// The same, for a door that awaits: the answer itself when nothing needs asking,
+// and a promise of it only while the question is up. An `await` on the plain
+// answer would still give up the turn, and the doors that await — `popSave`, the
+// record page's Save — disable their button and send their request in that same
+// turn, which is what stops a second press in the gap from writing twice.
+function gateAnswered(missing, ask) {
+  let now = null;
+  let later = null;
+  answerTheGate(missing, ask, answer => { if (later) later(answer); else now = {answer}; });
+  return now ? now.answer : new Promise(done => { later = done; });
+}
+
 // --- the hover card ---------------------------------------------------------
 //
 // One card, three views: the timeline's bars, the graph's nodes and the table's
@@ -3799,6 +3882,7 @@ function cardFact(row, name) {
     return Array.isArray(value) && value.length
       ? esc(value.map(id => cardTitleOf(id, row)).join(', ')) : null;
   if (name === 'review_waived') return value ? 'Yes' : null;
+  if (name === NO_PR_FIELD && closedWithoutPr(row)) return esc(NO_PR.said);
   if (Array.isArray(value)) return value.length ? esc(value.join(', ')) : null;
   if (value == null || value === '') return null;
   return esc(String(value));
@@ -5461,6 +5545,85 @@ if (!ORIGIN) {
 }
 </script>
 {% if live %}
+{#- The done-without-a-PR question, for the doors with no box of their own to put
+    it in: the table and the record page. The right-click box asks it in its own
+    confirmation face. Only on a page that is served, because nothing else can
+    write a status. -#}
+<dialog id="noprask" aria-labelledby="noprask-q">
+  <p id="noprask-q">{{ no_pr.asked }}</p>
+  <span class="acts"><button type="button" id="noprask-yes" class="primary">{{ no_pr.yes }}</button>
+    <button type="button" id="noprask-no">{{ no_pr.no }}</button></span>
+</dialog>
+<script>
+// Modal, so the page behind it is inert and Tab stays on the two buttons, and
+// `covered()` counts an open dialog, so the single-key shortcuts stand down while
+// it is up. The door says what happened afterwards; this says nothing itself.
+const NO_PR_BOX = document.getElementById('noprask');
+let NO_PR_ANSWER = null;
+let NO_PR_TURN = 0;
+// **Whether a key has gone down inside the question since it opened.** A key
+// pressed somewhere else can finish inside it: Enter committing a table cell runs
+// the save, and so this, inside its own keydown, and Chrome delivers the rest of
+// that press to whatever has the focus by then — the yes button, which it
+// activates. The question was answered before anybody saw it, and the waiver
+// committed. So a click a key made (`detail === 0`) counts only if that key went
+// down in here, and a pointer's click always counts.
+let NO_PR_KEYED = false;
+NO_PR_BOX.addEventListener('keydown', event => {
+  NO_PR_KEYED = true;
+  if (event.key !== 'Escape') return;
+  // Stopped here, because the table's selection listens for Escape on the
+  // document and an Escape that cancelled this question must not also drop the
+  // rows it was asked about.
+  event.preventDefault();
+  event.stopPropagation();
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+});
+// The browser's own Escape on a modal dialog, which would close it unanswered.
+NO_PR_BOX.addEventListener('cancel', event => {
+  event.preventDefault();
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+});
+const noPrPressed = yes => event => {
+  if (!NO_PR_ANSWER) return;
+  if (event && event.detail === 0 && !NO_PR_KEYED) return;
+  NO_PR_ANSWER(yes);
+};
+document.getElementById('noprask-yes').onclick = noPrPressed(true);
+document.getElementById('noprask-no').onclick = noPrPressed(false);
+
+// Put the question beside `near` and answer whether to go on.
+function askNoPr(near) {
+  // A second question replaces the first, and the first is answered no: two
+  // writes waiting on one box is two doors each believing it was asked.
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+  const back = document.activeElement;
+  const turn = ++NO_PR_TURN;
+  return new Promise(resolve => {
+    NO_PR_ANSWER = yes => {
+      NO_PR_ANSWER = null;
+      if (NO_PR_BOX.open) NO_PR_BOX.close();
+      if (back && back.isConnected && back !== document.body) back.focus();
+      resolve(yes);
+    };
+    // Opened after the event that asked has finished, which is the other half of
+    // `NO_PR_KEYED`: the press that asked is over before the yes button exists
+    // under the keyboard at all.
+    setTimeout(() => {
+      if (turn !== NO_PR_TURN || !NO_PR_ANSWER) return;
+      NO_PR_KEYED = false;
+      NO_PR_BOX.showModal();
+      // Beside what the status was chosen on, so the question reads as being
+      // about that record and not about the page.
+      const at = near && near.getBoundingClientRect ? near.getBoundingClientRect() : null;
+      placeFloat(NO_PR_BOX, at ? at.left : innerWidth / 3, at ? at.bottom : innerHeight / 3);
+      document.getElementById('noprask-yes').focus();
+    }, 0);
+  });
+}
+</script>
+{% endif %}
+{% if live %}
 {#- role="status" and not a bare div: news that somebody else moved the plan
     under you is the one thing on screen that must reach a reader who is not
     looking at that corner. Polite, because it is not an emergency — the banner
@@ -6071,6 +6234,11 @@ def _page(
         # because five pages inventing their own capitalisation is how one status
         # came to be spelled three ways on one screen; a card is the fourth page.
         words=HUMAN,
+        # What a done record closed without a PR reads in the two places the
+        # browser draws its PRs — the card and the table's cell — off the same
+        # string the record page and the slide draw on the server.
+        no_pr={"said": NO_PR_SAID, "asked": NO_PR_ASKED, "yes": NO_PR_YES, "no": NO_PR_NO},
+        waivers=WAIVERS,
         # The marks that go with those words, for the hover card: one map per
         # ladder, so a card says the rung the same way on all three views.
         # The priority meter as the server draws it, so a row the table draws

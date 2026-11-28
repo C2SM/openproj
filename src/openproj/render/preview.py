@@ -95,6 +95,13 @@ def card_fields(index: Index, record: Record, names: tuple[str, ...]) -> dict:
                     if index.records[blocker].status not in ("done", "shelved")
                 ),
             )
+        elif name == "prs":
+            fields["prs"] = read(name, record.prs)
+            # The switch for the done rule's PR gate, beside the field it waives:
+            # the status doors ask it before they put the question, and the PRs
+            # cell and every card read it to say "Done without a PR" rather than
+            # nothing (`closedWithoutPr`), a body link's card included.
+            fields["prs_waived"] = read("prs_waived", record.prs_waived)
         elif name == "parent":
             fields["parent"] = record.parent if record.parent in index.plan else None
             fields["off_plan_parent"] = bool(record.parent) and record.parent not in index.plan
