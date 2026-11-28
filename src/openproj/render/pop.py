@@ -1,4 +1,4 @@
-"""The right-click menu: one floating box, three hosts.
+"""The right-click menu: one floating box, four hosts.
 
 `design/context-menus.md` is the whole argument. Cut 2 built the box, the host
 contract and the reader's three items; cut 3 added the submenu machinery and the
@@ -26,7 +26,7 @@ and every page that decided for itself which key the body holds has got it wrong
 — see `popSettled`.
 
 **Here and not in `shell.py`.** That file is 4000 lines and ships on all twelve
-pages, including `/help` and `/people`; this menu is wanted by three. A module
+pages, including `/help` and `/people`; this menu is wanted by four. A module
 imported by the pages that want it is the shape this codebase already uses three
 times over — `_FILTER_JS` (`controls.py`), `_REQUIRED_JS` and `_combobox_html`.
 
@@ -90,7 +90,7 @@ from .tokens import blank_record as _blank
 # write out three times, and nothing in this sheet can be right under the media
 # query and wrong under the theme toggle — the rule is met by there being nothing
 # for it to bite on.
-_POP_STYLE = """
+_POP_CORE_STYLE = """
 /* The menu box. `position: fixed` and parked on the body, not `position:
    absolute` the way `.drawmenu` is: `.table-scroll`'s `overflow: auto` and the
    frozen columns' sticky stacking contexts clip and under-paint anything
@@ -163,17 +163,6 @@ _POP_STYLE = """
   text-overflow: ellipsis;
 }
 #pop .poptext { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-/* A status or a priority item's chip: it does not shrink, and the dot behind it
-   sits after it as it does after any word. */
-#pop .popchip { flex: none; display: flex; }
-/* Its row is highlighted the way the picker's rows are, with a tint of the accent,
-   and not with the full accent fill and inverted ink every other item takes: the
-   chip carries the ladder's own colours, and a priority chip, which has no ground
-   of its own, put its ink straight onto the accent and could not be read. (1,3,0)
-   over `#pop .popitem:hover, #pop .popitem:focus` at (1,2,0). */
-#pop .popitem.poprung:hover, #pop .popitem.poprung:focus {
-  background: color-mix(in oklab, var(--accent) 16%, transparent); color: inherit;
-}
 #pop .popmark { flex: none; color: var(--muted); }
 /* **The marks have to be recoloured on a lit row, not merely dimmed on a cold
    one.** `--muted` is a grey chosen against `--surface`; the rule above fills a
@@ -358,10 +347,6 @@ _POP_STYLE = """
    shell's own `input:not([type="checkbox"]):not([type="radio"])` at (0,2,1) on
    the first component, so the question is settled rather than left to which
    stylesheet `_page` inlines second. */
-/* A sentence under a control, which only the delete confirmation draws now: the
-   card says why a row will not open in its `title` instead, because a card has
-   no room for a paragraph per row. */
-#pop .popnote { margin: 0; color: var(--muted); font-size: 12px; }
 /* What the server, or the gate, said about this save. A list because a create
    is refused with a `problems` array and three blockers read as three lines
    rather than one long one — `refusalLines` (`table.py`) makes the same split.
@@ -394,6 +379,30 @@ _POP_STYLE = """
    is how it is shown — `CREATING`'s bargain in `table.py`, where two presses
    0.9s apart minted two records on the deployed service. */
 #pop .popsave:disabled { opacity: .6; cursor: progress; }
+
+"""
+
+# The rules for what only a row host draws, and the whole sheet the three row
+# hosts concatenate.
+_POP_ROW_STYLE = """
+/* What only a row's menu draws: the status and priority items' chips, and the
+   delete confirmation. Out of the core so the record page, whose menu holds
+   neither, does not carry them — see `_pop_js`. */
+/* A status or a priority item's chip: it does not shrink, and the dot behind it
+   sits after it as it does after any word. */
+#pop .popchip { flex: none; display: flex; }
+/* Its row is highlighted the way the picker's rows are, with a tint of the accent,
+   and not with the full accent fill and inverted ink every other item takes: the
+   chip carries the ladder's own colours, and a priority chip, which has no ground
+   of its own, put its ink straight onto the accent and could not be read. (1,3,0)
+   over `#pop .popitem:hover, #pop .popitem:focus` at (1,2,0). */
+#pop .popitem.poprung:hover, #pop .popitem.poprung:focus {
+  background: color-mix(in oklab, var(--accent) 16%, transparent); color: inherit;
+}
+/* A sentence under a control, which only the delete confirmation draws now: the
+   card says why a row will not open in its `title` instead, because a card has
+   no room for a paragraph per row. */
+#pop .popnote { margin: 0; color: var(--muted); font-size: 12px; }
 
 /* --- the confirmation: the box's fourth face -------------------------------
 
@@ -461,6 +470,7 @@ _POP_STYLE = """
 }
 #pop .popreally:disabled { opacity: .6; cursor: default; }
 """
+_POP_STYLE = _POP_CORE_STYLE + _POP_ROW_STYLE
 
 
 # The menu itself. One `<script>` block, the shape `_FILTER_JS` already has, put
@@ -540,6 +550,16 @@ const POP_SCHEMA = {{ schema|tojson }};
 // never silence: the parent items refuse with a sentence, and the create's
 // receipt stops claiming to know where the record went.
 //
+//     items: row => [item, …],      // in place of every item below
+//     base: () => ({value}),        // the base commit a write is sent against
+//
+// `items` is the record page's, the fourth host, and it REPLACES the standard
+// list rather than adding to it the way `extras` does. That page hosts the menu
+// only while an edit is open, and what it is about is the text selected in the
+// editor (`attachSelectionMenu`, `editor.py`). `Status ▸`, `Edit…` and the rest
+// would be a second write path to the record whose own form is open around the
+// editor, and `Delete…` would delete the document under it.
+//
 // `may` gates the write half and is asked on every open, never cached: a page
 // that learns it is signed out does not get to go on offering writes until
 // somebody reloads.
@@ -618,38 +638,8 @@ function popAbout() { return POP_ID; }
 // a form, a status choice the gate sends to one, and `Delete…`. It said "exactly
 // one item" for as long as that was true, which was cut 3.
 function popItems(row) {
-  const href = POP_RECORD + row.id;
-  const items = [];
-  // **The write half**, behind `POP_HOST.may()` — `Status ▸`, `Owner ▸` and
-  // `Take out of "X"` here; `New child ▸`, `Edit…` and `Assign parent…` in cut
-  // 4, `Delete…` in cut 5. The ORDER is the design: what changes the plan, then
-  // what this view can do, then the three that only look — which are the ones a
-  // reader gets, and the ones that stay at the bottom so their position does not
-  // move when somebody signs in.
-  const writes = popWriteItems(row);
-  // **`Delete…` is last on the menu, under even the three that only look**, and
-  // it is lifted out of the write half by its slug rather than returned
-  // separately. The design's table puts it there and the reason is the gesture:
-  // a destructive item sitting between `Take out of "X"` and `Focus subtree` is
-  // one slip of the wrist away from the two harmless items either side of it.
-  //
-  // By the slug and not by position, and through the one function this half is
-  // allowed to call: the read half may reach exactly `popWriteItems` across the
-  // split (see the module comment), so a second crossing named `popDeleteItem`
-  // would be a `ReferenceError` on a reader's page — and in a classic script
-  // that takes the whole block, including the three items a reader does get.
-  for (const item of writes) if (item.kind !== 'delete') items.push(item);
-  //
-  // This view's own items, spliced in whole. Asked on every open and never
-  // stored, which is `attachDrawing`'s rule (`controls.py`) and the reason a
-  // host can refuse against state that moved since the last open. A host with
-  // none of its own may leave `extras` out entirely.
-  for (const extra of (POP_HOST.extras ? POP_HOST.extras(row) : null) || []) items.push(extra);
-  items.push({kind: 'open', text: 'Open', run: () => { location.href = href; }});
-  items.push({kind: 'open-tab', text: 'Open in new tab', href: href});
-  items.push({kind: 'copy-link', text: 'Copy link', run: () => popCopy(href)});
-  for (const item of writes) if (item.kind === 'delete') items.push(item);
-  return items;
+  if (POP_HOST.items) return POP_HOST.items(row);
+  return popRowItems(row);
 }
 
 // --- opening ----------------------------------------------------------------
@@ -1351,64 +1341,6 @@ POP.addEventListener('pointerover', event => {
   }
 });
 
-// --- copy link --------------------------------------------------------------
-
-// The absolute URL and not the relative one the page links by: what goes on the
-// clipboard is pasted somewhere else, and `detail.html#pop-art` is not a link
-// anywhere else.
-//
-// **The hand-made copy first, and the Clipboard API as the fallback.** That is
-// the wrong way round by age and the right way round by what each one answers,
-// and the reason is a measurement on the case this has to work in. On a
-// `file://` page in headless Chrome, 2026-09-18: `isSecureContext` is TRUE and
-// `navigator.clipboard.writeText` exists, so a feature test passes — and the
-// promise it returns then neither resolved nor rejected within 300ms, because
-// there is no clipboard to write to and no prompt to ask with. A `.catch()`
-// fallback never runs, and "announce either way" quietly becomes announce
-// neither way. `execCommand('copy')` is deprecated, is implemented everywhere,
-// and answers `true` or `false` in the same tick, which is the whole of what
-// this needs.
-function popCopy(href) {
-  const url = new URL(href, location.href).href;
-  // Said once, by whichever path answers first, and said either way. A refusal
-  // carries the link so that hearing it is still worth something: the reader
-  // asked for this URL, and a live region that says only "could not copy" has
-  // taken the answer away as well as the clipboard.
-  let spoken = false;
-  const say = copied => {
-    if (spoken) return;
-    spoken = true;
-    announce(copied ? 'Link copied: ' + url : 'Could not copy. The link is ' + url);
-  };
-  if (popCopiedByHand(url)) { say(true); return; }
-  if (!navigator.clipboard || !navigator.clipboard.writeText) { say(false); return; }
-  navigator.clipboard.writeText(url).then(() => say(true), () => say(false));
-  // **A promise that never settles is not a hypothetical here**, which is the
-  // measurement above: on a `file://` page in headless Chrome that `writeText`
-  // neither resolved nor rejected, so without this line the item was pressed and
-  // nothing at all was announced — checked by driving this menu, 2026-09-18.
-  // 600ms because a granted clipboard write resolves in microseconds and a
-  // refusal that arrives a second after the press is a refusal about nothing.
-  setTimeout(() => say(false), 600);
-}
-
-function popCopiedByHand(url) {
-  const box = document.createElement('textarea');
-  box.value = url;
-  // `readonly` so a soft keyboard does not come up, and off the side of the
-  // window rather than `hidden` or `display: none`: an unrendered box has no
-  // selection, and `execCommand('copy')` copies the selection and nothing else.
-  box.setAttribute('readonly', '');
-  box.style.position = 'fixed';
-  box.style.top = '-1000px';
-  document.body.append(box);
-  box.select();
-  let copied = false;
-  try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
-  box.remove();
-  return copied;
-}
-
 // --- drawn and run ----------------------------------------------------------
 //
 // These live in the READ half although they were written beside the write
@@ -1439,6 +1371,10 @@ const popTitle = row => row.title || row.id;
 // Three modes, one function:
 //
 //   `new`   a kind, with `parent` filled and LOCKED — `New child ▸ <kind>`.
+//           Without `parent`, a parent staged in `values` is only a default
+//           and may be changed or cleared — the record page's menu over a
+//           selection, where the record being edited is a likely home and not
+//           a promise.
 //   `edit`  every field `_editable_for` offers this kind — `Edit…`.
 //   `only`  a named few — `Assign parent…`, and a status the gate refuses.
 //
@@ -1654,6 +1590,109 @@ function popRan(event, item) {
 }
 """
 
+# What only a row host runs, read half: see `_pop_js`.
+_POP_READ_ROWS = r"""
+// --- what only a row's menu runs --------------------------------------------
+//
+// The standard list a table, a graph or a timeline row gets, and Copy link,
+// which only that list offers. Out of the core so the record page, whose one
+// host supplies its own `items`, does not carry them — see `_pop_js`.
+function popRowItems(row) {
+  const href = POP_RECORD + row.id;
+  const items = [];
+  // **The write half**, behind `POP_HOST.may()` — `Status ▸`, `Owner ▸` and
+  // `Take out of "X"` here; `New child ▸`, `Edit…` and `Assign parent…` in cut
+  // 4, `Delete…` in cut 5. The ORDER is the design: what changes the plan, then
+  // what this view can do, then the three that only look — which are the ones a
+  // reader gets, and the ones that stay at the bottom so their position does not
+  // move when somebody signs in.
+  const writes = popWriteItems(row);
+  // **`Delete…` is last on the menu, under even the three that only look**, and
+  // it is lifted out of the write half by its slug rather than returned
+  // separately. The design's table puts it there and the reason is the gesture:
+  // a destructive item sitting between `Take out of "X"` and `Focus subtree` is
+  // one slip of the wrist away from the two harmless items either side of it.
+  //
+  // By the slug and not by position, and through the one function this half is
+  // allowed to call: the read half may reach exactly `popWriteItems` across the
+  // split (see the module comment), so a second crossing named `popDeleteItem`
+  // would be a `ReferenceError` on a reader's page — and in a classic script
+  // that takes the whole block, including the three items a reader does get.
+  for (const item of writes) if (item.kind !== 'delete') items.push(item);
+  //
+  // This view's own items, spliced in whole. Asked on every open and never
+  // stored, which is `attachDrawing`'s rule (`controls.py`) and the reason a
+  // host can refuse against state that moved since the last open. A host with
+  // none of its own may leave `extras` out entirely.
+  for (const extra of (POP_HOST.extras ? POP_HOST.extras(row) : null) || []) items.push(extra);
+  items.push({kind: 'open', text: 'Open', run: () => { location.href = href; }});
+  items.push({kind: 'open-tab', text: 'Open in new tab', href: href});
+  items.push({kind: 'copy-link', text: 'Copy link', run: () => popCopy(href)});
+  for (const item of writes) if (item.kind === 'delete') items.push(item);
+  return items;
+}
+
+// --- copy link --------------------------------------------------------------
+
+// The absolute URL and not the relative one the page links by: what goes on the
+// clipboard is pasted somewhere else, and `detail.html#pop-art` is not a link
+// anywhere else.
+//
+// **The hand-made copy first, and the Clipboard API as the fallback.** That is
+// the wrong way round by age and the right way round by what each one answers,
+// and the reason is a measurement on the case this has to work in. On a
+// `file://` page in headless Chrome, 2026-09-18: `isSecureContext` is TRUE and
+// `navigator.clipboard.writeText` exists, so a feature test passes — and the
+// promise it returns then neither resolved nor rejected within 300ms, because
+// there is no clipboard to write to and no prompt to ask with. A `.catch()`
+// fallback never runs, and "announce either way" quietly becomes announce
+// neither way. `execCommand('copy')` is deprecated, is implemented everywhere,
+// and answers `true` or `false` in the same tick, which is the whole of what
+// this needs.
+function popCopy(href) {
+  const url = new URL(href, location.href).href;
+  // Said once, by whichever path answers first, and said either way. A refusal
+  // carries the link so that hearing it is still worth something: the reader
+  // asked for this URL, and a live region that says only "could not copy" has
+  // taken the answer away as well as the clipboard.
+  let spoken = false;
+  const say = copied => {
+    if (spoken) return;
+    spoken = true;
+    announce(copied ? 'Link copied: ' + url : 'Could not copy. The link is ' + url);
+  };
+  if (popCopiedByHand(url)) { say(true); return; }
+  if (!navigator.clipboard || !navigator.clipboard.writeText) { say(false); return; }
+  navigator.clipboard.writeText(url).then(() => say(true), () => say(false));
+  // **A promise that never settles is not a hypothetical here**, which is the
+  // measurement above: on a `file://` page in headless Chrome that `writeText`
+  // neither resolved nor rejected, so without this line the item was pressed and
+  // nothing at all was announced — checked by driving this menu, 2026-09-18.
+  // 600ms because a granted clipboard write resolves in microseconds and a
+  // refusal that arrives a second after the press is a refusal about nothing.
+  setTimeout(() => say(false), 600);
+}
+
+function popCopiedByHand(url) {
+  const box = document.createElement('textarea');
+  box.value = url;
+  // `readonly` so a soft keyboard does not come up, and off the side of the
+  // window rather than `hidden` or `display: none`: an unrendered box has no
+  // selection, and `execCommand('copy')` copies the selection and nothing else.
+  box.setAttribute('readonly', '');
+  box.style.position = 'fixed';
+  box.style.top = '-1000px';
+  document.body.append(box);
+  box.select();
+  let copied = false;
+  try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+  box.remove();
+  return copied;
+}
+
+"""
+
+
 
 _POP_WRITE_JS = r"""
 // --- the write half ---------------------------------------------------------
@@ -1672,34 +1711,6 @@ function popTitleOf(id) {
   return (row && row.title) || id;
 }
 
-function popWriteItems(row) {
-  if (!POP_HOST.may || !POP_HOST.may()) return [];
-  // A host whose reader may write, on a page rendered without a schema, is a
-  // wiring mistake and not a reader-only page: `_pop_js` takes the index and
-  // this view did not give it one. Said out loud and in the box, for the reason
-  // `popMenu` calls `cardYields` with no `typeof` guard — the alternative is a
-  // menu that quietly has no write half on the one view somebody has just wired,
-  // which looks exactly like a menu that is working.
-  if (!POP_SCHEMA)
-    return [{kind: 'no-schema', text: 'Editing is unavailable here',
-             why: 'This page was rendered without the menu\'s schema.'}];
-  // The ORDER is the design's table: what makes a record, what changes this
-  // one, where it is filed, then what this view can do, then the three that only
-  // look. `New child ▸` is first because it is the thing that was asked for, and
-  // `Delete…` is last — `popItems` lifts it out by its slug and puts it under
-  // even the three read items, so that the one irreversible thing on this menu
-  // has no neighbour anybody reaches for by accident.
-  return [popNewChildItem(row), popEditItem(row), popStatusItem(row),
-          popPriorityItem(row), popOwnerItem(row), popParentItem(row), popTakeOutItem(row),
-          // No refusal arm, and that is the record page's own answer rather than
-          // an omission: `may_write` is the only gate on the Delete button there
-          // (`detail.py`), because every record a writer may write is a record
-          // they may take out of the plan. What the delete would take WITH it is
-          // not a reason to withhold the item — it is the question the panel
-          // exists to put, and `popAsk` is where it is asked.
-          {kind: 'delete', text: 'Delete…', stays: true, run: () => popAsk(row)}];
-}
-
 // Whether a field has nothing in it — the four ways one can be unset, in one
 // place, because `holds` (`table.py`) records what it costs to have them written
 // out twice: an `developers: []` that read as a value in one copy and as unset in
@@ -1707,363 +1718,6 @@ function popWriteItems(row) {
 function popEmpty(value) {
   return value === null || value === undefined || value === ''
     || (Array.isArray(value) && value.length === 0);
-}
-
-// Whether this row has a value for that field at all.
-function popHolds(row, field) { return !popEmpty(row[field]); }
-
-// What this status will make the server refuse the row without, and the row has
-// not got. The same map `missingFor` (`table.py`) asks — `required_at()`, which
-// is derived by running the gate over a blank record rather than written beside
-// it, so it cannot drift from the rule it mirrors.
-//
-// **One of that function's filters is deliberately not here.** `missingFor`
-// drops any field the table cannot edit, because the panel it feeds has to offer
-// a box for every field it names. This menu offers no boxes at all — cut 3 has
-// no form — so a field it could not write is still a reason the write would be
-// refused, and dropping it would draw the item as available and let the server
-// answer for it.
-function popMissing(row, status) {
-  const gates = (POP_SCHEMA.required || {})[row.kind] || {};
-  return Object.keys(gates)
-    .filter(field => gates[field].includes(status))
-    // A waived field is honoured for the reason `missingFor` honours it: the
-    // switch is the escape hatch from that rule, and asking a row for what it
-    // has waived is a nag rather than a question. `WAIVERS` is the shell's.
-    .filter(field => !(WAIVERS[field] && row[WAIVERS[field]]))
-    .filter(field => !popHolds(row, field));
-}
-
-// The gate's refusal, in the app's own words.
-//
-// **What is shared with `askFor` (`table.py`) is everything that can drift, and
-// not the sentence itself.** The fields come from `required_at()` through
-// `popMissing`, which is the rule rather than a copy of it; the names come from
-// `LABELS` and `human`, which is what every other control here calls them; and
-// the opening clause is `askFor`'s. The rest is this box's own wording, because
-// `askFor` is a heading over a box per field and this is a refusal with no boxes
-// at all — it has to say where to go instead. Do not go looking for a shared
-// string; look at the three inputs, which are where a drift would come from.
-//
-// **This is now the branch that cannot be answered here rather than the whole
-// case.** Cut 3 drew every gated status refused because there was no form to
-// open; cut 4 opens one on the missing fields with the new status pre-filled and
-// saves both in one commit, which is what `askFor` does today. What is left for
-// this sentence is a missing field the form has no box for — `popMissing` reads
-// `required_at` and the form draws `_editable_for`, and those are two maps — so
-// a rule could name a field no form here can offer. Drawing an item that opened
-// a form which could not answer the gate would be worse than saying so.
-function popNeeds(row, status, fields) {
-  const named = fields.map(popLabel).join(' and ');
-  return `${popHuman(status)} needs ${named}, and ${popTitle(row)} has not got `
-    + `${fields.length === 1 ? 'it' : 'them'}. Add `
-    + `${fields.length === 1 ? 'it' : 'them'} on the record's own page.`;
-}
-
-function popStatusItem(row) {
-  const ladder = (POP_SCHEMA.statuses || {})[row.kind] || [];
-  // `statuses: ()` on the ladder is how a rung says it reads no status at all —
-  // jcanton, 2026-08-20: a codebase is not `in_progress` — and it is the same
-  // fact `_row` empties the cell by. Drawn refused rather than left out, because
-  // a control that disappears teaches nothing about why.
-  if (!ladder.length)
-    return {kind: 'status', text: 'Status', why: `A ${row.kind} has no status.`};
-  return {kind: 'status', text: 'Status',
-          items: () => ladder.map(status => popStatusChoice(row, status))};
-}
-
-function popStatusChoice(row, status) {
-  // Drawn as the status chip, the picker's own row (`popControl`), so a status
-  // looks the same wherever it is chosen; the dot beside it says which it is on.
-  const item = {kind: 'status-' + status, text: popHuman(status),
-                rung: ['status', status], checked: row.status === status};
-  // The status it already has writes nothing. The server would take it — every
-  // write path here relies on `_merge_frontmatter` skipping a key whose stored
-  // value equals the one being sent — but a commit is a line in somebody's
-  // history, and "set it to what it is" is not a thing anybody meant to do.
-  if (item.checked) {
-    item.run = () => announce(`${popTitle(row)} is already ${popHuman(status)}`);
-    return item;
-  }
-  // **The gate is answered, not fought and no longer merely reported.** A status
-  // whose `required_at` names fields this record has not got cannot be written,
-  // so picking it opens the form on exactly those fields with the new status
-  // already in its box — and one Save commits the status and the answers
-  // together. Two commits would leave the plan holding, for the length of the
-  // first one, a record the validator refuses; that is `askFor`'s argument
-  // (`table.py`) and it is why the question is asked BEFORE the write there too.
-  const missing = popMissing(row, status);
-  if (missing.length) {
-    // Every field the form will be asked to type has to be one it can draw, or
-    // it opens on a gate it cannot answer. See `popNeeds`. A missing PR is not
-    // one of them: `answerTheGate` (`shell.py`) puts it as a question, in this
-    // box's own confirmation face, before the form opens on the rest.
-    const typed = missing.filter(field => field !== NO_PR_FIELD);
-    const boxes = (POP_SCHEMA.fields || {})[row.kind] || [];
-    if (!typed.every(field => boxes.includes(field))) {
-      item.why = popNeeds(row, status, typed);
-      return item;
-    }
-    item.stays = true;
-    item.run = () => answerTheGate(missing, () => popNoPr(row, null), gate => {
-      if (!gate) return;
-      const waiver = gate.waived ? {[WAIVERS[NO_PR_FIELD]]: true} : {};
-      if (!gate.rest.length) {
-        popWrite(row.id, {status: status, ...waiver},
-          `${popTitle(row)} is now ${popHuman(status)}`);
-        return;
-      }
-      popForm({
-        mode: 'edit', row: row,
-        // The status first and then what it needs, which is the order the
-        // sentence over the boxes reads in. It is drawn rather than sent
-        // invisibly: this form's one job is that nothing is committed that the
-        // reader cannot see. The waiver rides along unseen because the reader
-        // has just answered for it in words, and `popSave` drops it if the
-        // status on the form is moved off the one that asked.
-        only: ['status', ...gate.rest],
-        // Open, so the box asks rather than waiting to be clicked: somebody who
-        // chose a gated status has already said what they are doing.
-        opens: gate.rest,
-        values: {status: status, ...waiver},
-        // `askFor`'s own opening clause, because it is the same question asked
-        // by the same rule about the same record — see `popNeeds` for what is
-        // shared and what is not.
-        label: `${popHuman(status)} needs ${gate.rest.length === 1 ? 'this' : 'these'}`,
-        verb: 'Save',
-      });
-    });
-    return item;
-  }
-  item.run = () => popWrite(row.id, {status: status},
-    `${popTitle(row)} is now ${popHuman(status)}`);
-  return item;
-}
-
-// **Priority, directly below the status and built like it.** jcanton, 2026-09-18:
-// "in the right-click menu add priority just below status please, I didn't
-// notice we didn't have it there".
-//
-// Two differences from `popStatusItem`, and both are the ladder's rather than
-// this menu's. The vocabulary is ONE list for every kind — `PRIORITIES`, not a
-// per-rung tuple — so there is nothing to look up per row; and what varies is
-// whether the kind reads the field at all, which is the `unread_fields` question
-// the Owner item already asks (`priority` is in `_WORK_FIELDS`, so a product
-// holds none).
-//
-// **And no gate.** `required_at` names no status that demands a priority, so
-// there is no `popMissing` arm here and no form to open: every rung of this
-// ladder is writable on every record that reads the field, which is the whole
-// reason this item is three lines where the status item is sixty.
-function popPriorityItem(row) {
-  if (((POP_SCHEMA.unread || {})[row.kind] || []).includes('priority'))
-    return {kind: 'priority', text: 'Priority', why: `A ${row.kind} holds no priority.`};
-  return {kind: 'priority', text: 'Priority',
-          items: () => (POP_SCHEMA.priorities || []).map(one => popPriorityChoice(row, one))};
-}
-
-function popPriorityChoice(row, priority) {
-  // Drawn as the priority chip, the picker's own row (`popControl`), so the menu
-  // cannot disagree with the card it opens over or with the picker in a cell.
-  const item = {kind: 'priority-' + priority, text: popHuman(priority),
-                rung: ['priority', priority],
-                checked: (row.priority || null) === priority};
-  // Already there writes nothing, for the reason the status choice says: the
-  // server would take it, and "set it to what it is" is not a line anybody meant
-  // to put in the history.
-  if (item.checked) {
-    item.run = () => announce(`${popTitle(row)} is already ${popHuman(priority)} priority`);
-    return item;
-  }
-  item.run = () => popWrite(row.id, {priority: priority},
-    `${popTitle(row)} is now ${popHuman(priority)} priority`);
-  return item;
-}
-
-// The one value in the owner list that is not a person.
-const POP_NOBODY = '— nobody —';
-
-function popOwnerItem(row) {
-  // `owner` is one of the nine fields a container does not read
-  // (`unread_fields`), which is why `_row` withholds the value and why the
-  // table's status cell drew an empty box that still committed. Refused here
-  // before anything is sent, the way the graph refuses its edge gestures at tap
-  // time.
-  if (((POP_SCHEMA.unread || {})[row.kind] || []).includes('owner'))
-    return {kind: 'owner', text: 'Owner', why: `A ${row.kind} holds no owner.`};
-  return {kind: 'owner', text: 'Owner', items: () => {
-    // The same people the table's own suggestion list offers — `_suggestions`
-    // (`controls.py`), read off every record in the corpus. A second list would
-    // be a second answer to "who is on this plan", and the first thing it would
-    // do is disagree with the box next to it.
-    const items = (POP_SCHEMA.people || []).map(login => popOwnerChoice(row, login, login));
-    // Last, and spelled as a value rather than as a verb: the list is a set of
-    // answers to "who owns this" and "nobody" is one of them, not a command.
-    items.push(popOwnerChoice(row, null, POP_NOBODY));
-    return items;
-  }};
-}
-
-function popOwnerChoice(row, login, text) {
-  // `null` and not `''`: `patch_text` round-trips a value, so `owner: ''` is a
-  // field that is present and empty while `owner:` with nothing after it is the
-  // shape every other unset field in this corpus already has.
-  const item = {kind: login === null ? 'owner-nobody' : 'owner-' + login, text: text,
-                checked: (row.owner || null) === login};
-  if (item.checked) {
-    item.run = () => announce(login
-      ? `${popTitle(row)} is already owned by ${login}`
-      : `${popTitle(row)} already has no owner`);
-    return item;
-  }
-  item.run = () => popWrite(row.id, {owner: login}, login
-    ? `${popTitle(row)} is now owned by ${login}`
-    : `${popTitle(row)} has no owner`);
-  return item;
-}
-
-// **Three sentences, not two.**
-//
-// `_row` (`rows.py`) nulls a parent that is not in `index.plan` and sets
-// `off_plan_parent` beside it, because an inbox id may not reach these pages'
-// bytes. So `row.parent` being empty means one of two completely different
-// things: nothing holds this record, or something does and this view cannot draw
-// it. Telling the second one it is inside nothing is the bug
-// `tests/test_exclusion.py` was written for seen from the other side — and
-// acting on it would overwrite a line the page never showed anybody, which the
-// server cannot tell from the record page legitimately refiling it.
-//
-// The wording of the third is `moveTip`'s (`table.py`), which says the same
-// thing about the same records for the drag gesture.
-function popTakeOutItem(row) {
-  if (row.off_plan_parent)
-    return {kind: 'take-out', text: 'Take out',
-            why: `${popTitle(row)} is filed under something this view cannot show `
-                 + '— where it belongs is edited on its own page.'};
-  if (!row.parent)
-    return {kind: 'take-out', text: 'Take out',
-            // Two sentences under one branch, because "not inside anything" and
-            // "cannot be inside anything" are different news: the first is a
-            // state somebody can change and the second is the ladder. `moveTip`
-            // (`table.py`) already draws them apart for the drag gesture, off
-            // this same map, and an error that implies a fix which does not
-            // exist is the copy failure this repository names in as many words.
-            //
-            // Which kind that is comes off `PARENT_KINDS` and is not written
-            // here: it was `project` until a `product` was added above it, and a
-            // rule that names the top rung is a rule that is wrong the day the
-            // ladder grows.
-            why: ((POP_SCHEMA.parent_kinds || {})[row.kind] || []).length
-                 ? `${popTitle(row)} is not inside anything.`
-                 : `A ${row.kind} belongs to nothing, so there is nothing to take it out of.`};
-  // Out of the parent and into whatever holds THAT — `row.out_to`, the one
-  // answer this, the table's move bar and its `+` row all read (`out_to`,
-  // `model.py`). It was `{parent: null}` here, so a pitch taken out of the pitch
-  // it had been filed under left its project as well — jcanton, 2026-10-12,
-  // "move-out should always move to the upper parent". The label names where it
-  // lands, because that is part of what pressing it does.
-  const into = row.out_to || null;
-  return {kind: 'take-out',
-    text: `Take out of "${popTitleOf(row.parent)}"`
-          + (into ? ` into "${popTitleOf(into)}"` : ''),
-    // `null` where nothing above may hold it, which is what `reparent`
-    // (`table.py`) sends for the same case. Two spellings of "no parent" would
-    // not even be the same write: `patch_text` round-trips, so `parent: ''`
-    // writes an empty string into the file where `null` writes the key with
-    // nothing after it.
-    run: () => popWrite(row.id, {parent: into}, into
-      ? `${popTitle(row)} is now inside "${popTitleOf(into)}"`
-      : `${popTitle(row)} is no longer inside anything`)};
-}
-
-// --- the three items that open a form ---------------------------------------
-//
-// **This is the answer to the question that started the whole design.** jcanton,
-// 2026-09-18: "I'd like to be able to right-click a record in table and graph
-// view and have the option of creating a child record", and then "can we make
-// new-child stay on the same page? ... in both pages a new popup opens: the same
-// as the floating menu but with editable fields (with parent pre-filled) and a
-// save button that commits the new record?" — and, of `Edit…`, that it should
-// open that same editable card. Yes to both, which is what these three are.
-
-function popNewChildItem(row) {
-  // The model's own `CHILD_KINDS`, read downwards off the ladder rather than
-  // inverted from `parent_kinds` here. A third spelling of the ladder in the one
-  // language nothing tests it in is the drift this schema exists to stop.
-  const kinds = (POP_SCHEMA.child_kinds || {})[row.kind] || [];
-  // Refused rather than left out, and the sentence is about the LADDER and not
-  // about this record: nothing can be filed inside a task, ever, and an error
-  // that implies a fix which does not exist is this repository's own named copy
-  // failure. `moveTip` (`table.py`) draws the same distinction for the drag.
-  if (!kinds.length)
-    return {kind: 'new-child', text: 'New child',
-            why: `Nothing is filed inside a ${row.kind}.`};
-  return {kind: 'new-child', text: 'New child', items: () => kinds.map(kind => ({
-    kind: 'new-child-' + kind, text: popHuman(kind),
-    // `stays`, because `popRan` dismisses the box after a synchronous `run` and
-    // this one has just filled it with a form. The same flag `‹ Back` carries,
-    // and for the same reason: the run's whole job is to leave the box open
-    // showing something else.
-    stays: true,
-    run: () => popForm({
-      mode: 'new', kind: kind, parent: row,
-      label: `New ${popHuman(kind).toLowerCase()} in "${popTitle(row)}"`,
-      verb: `Create ${popHuman(kind).toLowerCase()}`,
-    }),
-  }))};
-}
-
-function popEditItem(row) {
-  // A kind with no editable field at all would be a form with a heading and a
-  // Save button. It cannot happen — every rung has a title — and it is said
-  // rather than assumed, because what `_editable_for` offers is a function of
-  // the model and this is the one item that draws all of it.
-  if (!((POP_SCHEMA.fields || {})[row.kind] || []).length)
-    return {kind: 'edit', text: 'Edit…', why: `A ${row.kind} has nothing to edit here.`};
-  // The card, with nothing open. Every value in it is a thing you click, and
-  // what you type is held in the box until Save — the same bargain as the box a
-  // gated status opens, which is the whole of why this one changed. jcanton,
-  // 2026-09-18: "I'd like them to be consistent, and I think I'd prefer them
-  // both to have the save/cancel buttons and save only when clicking save, not
-  // on every edit as I asked before."
-  return {kind: 'edit', text: 'Edit…', stays: true, run: () => popForm({
-    mode: 'edit', row: row,
-    label: `Edit "${popTitle(row)}"`,
-    verb: 'Save',
-  })};
-}
-
-// Where this record is filed, as its own item, because it is the one field the
-// menu cannot ask about with a list of words: the answer is another record.
-//
-// The four refusals are four different sentences and not one, exactly as
-// `popTakeOutItem`'s three are. A ladder with nothing above this kind, a parent
-// this view cannot show, a view that cannot list what it could be filed under,
-// and a plan with nothing of the right kind on it are four states, and only two
-// of them are anything a reader can act on.
-function popParentItem(row) {
-  const named = row.parent || row.off_plan_parent ? 'Change parent…' : 'Assign parent…';
-  if (!((POP_SCHEMA.parent_kinds || {})[row.kind] || []).length)
-    return {kind: 'parent', text: 'Assign parent…',
-            why: `A ${row.kind} belongs to nothing, so there is nowhere to file it.`};
-  if (row.off_plan_parent)
-    return {kind: 'parent', text: named,
-            why: `${popTitle(row)} is filed under something this view cannot show `
-                 + '— where it belongs is edited on its own page.'};
-  const candidates = popCandidates(row.kind, row.id);
-  if (!candidates)
-    return {kind: 'parent', text: named, why: popNoRows()};
-  if (!candidates.length)
-    return {kind: 'parent', text: named,
-            why: `There is nothing on this plan that a ${row.kind} may be filed under.`};
-  // The same card as `Edit…` — every field on it is still a field — with the one
-  // somebody came here to change already open. `only` would draw a box about one
-  // field, and the box is a card: a card of one row is not a card.
-  return {kind: 'parent', text: named, stays: true, run: () => popForm({
-    mode: 'edit', row: row, opens: ['parent'],
-    label: `Where "${popTitle(row)}" is filed`,
-    verb: 'Save',
-  })};
 }
 
 // --- what the host knows about the other records ----------------------------
@@ -2175,6 +1829,10 @@ function popForm(spec) {
   POP_FORM = {
     mode: spec.mode, kind: kind, row: spec.row || null, parent: spec.parent || null,
     label: spec.label, verb: spec.verb,
+    // The host's own receipt for a create: handed the server's answer once the
+    // record exists, it does what the host does with it and says so. Without it
+    // the receipt is `popLanded`'s, which is about where the record went.
+    landed: spec.landed || null,
     // What has been typed and not yet written. Empty on a live box — where a
     // field that has been answered is a field that has been saved — and the
     // whole of a staged one's answer.
@@ -2682,10 +2340,14 @@ function popLockedWhy(name) {
   // opened on, and choosing it again is the gesture said twice. Drawn and
   // disabled rather than hidden, so the form says what it is about to file this
   // under instead of asking the reader to remember.
-  if (form.mode === 'new')
-    return name === 'parent' && form.parent
-      ? `Filed under "${popTitle(form.parent)}", which is what New child means.`
-      : '';
+  if (form.mode === 'new') {
+    if (name !== 'parent') return '';
+    if (form.parent)
+      return `Filed under "${popTitle(form.parent)}", which is what New child means.`;
+    // Unlocked, the parent is a choice like any other, and the choice is the
+    // host's rows — the same picker `Assign parent…` draws.
+    return popCandidates(form.kind, null) ? '' : popNoRows();
+  }
   // **A box drawn empty over a field whose value this view does not carry would
   // delete it.** `_row` (`rows.py`) ships `blocked_by` — a COUNT of unfinished
   // blockers — and no `depends_on` at all, so an Edit form would draw an empty
@@ -3111,6 +2773,684 @@ function popReadOf(name, control) {
   return raw === '' ? null : raw;
 }
 
+function popCreated(values) {
+  const form = POP_FORM;
+  const fields = {kind: form.kind};
+  for (const [name, value] of Object.entries(values)) {
+    // **Empty is not a value on a create.** `opening_fields` (`model.py`) is what
+    // decides what a new record of this kind starts life with — the same one the
+    // CLI's `openproj new` uses — and a form that sent `owner: null` for every
+    // box nobody filled would write an empty key into the file for each of them,
+    // in a corpus whose whole premise is that the file is the document. `false`
+    // goes with them for the same reason: it is the model's own default for the
+    // one bool here, and naming a default is not saying anything.
+    if (popEmpty(value) || value === false) continue;
+    fields[name] = value;
+  }
+  // The parent, which is the whole of what `New child` means and is never read
+  // off its control — that control is disabled, so `popSave` skipped it. An
+  // unlocked parent is an answer like any other and is already in `values`,
+  // staged there by whoever opened the form, so clearing it sends nothing.
+  if (form.parent) fields.parent = form.parent.id;
+  // The present continuous, before the request rather than after the answer: two
+  // seconds of a box that looks untouched is what taught somebody to press
+  // Create twice on the deployed service.
+  announce(`Creating this ${popHuman(form.kind).toLowerCase()}…`);
+  return popCreate(fields, String(fields.title), form.landed);
+}
+
+// --- the write doors --------------------------------------------------------
+//
+// **Three doors, because there are three writes.** Cut 4 had one, with the
+// address and the verb passed in as data, and what that cost is not duplication
+// saved: the page then carried a single `fetch` whose address is not in the
+// source a reader sweeps, announcing one write where three can happen.
+// `test_every_write_a_page_makes_is_announced_before_and_after_it` counts a
+// page's write call sites against its `openproj:writing` pairs, and its premise
+// is written in its own comment — every write path is one call site because it
+// is one write. One call site for three writes breaks that premise as surely as
+// the drawing save's two call sites for one write, which it has to special-case.
+// So: one door per verb, each with its own literal address, its own body, its
+// own event pair and its own `finally`.
+//
+// The body is built in each door rather than handed to one, and that is the
+// same rule again read once further: the delete sends `{base_commit, also}` and
+// the two saving verbs send `{base_commit, fields, body}`, so a shared door
+// would have taken the body as data too and the page would carry one `fetch`
+// whose payload is as invisible to a reader as its address was.
+//
+// **Everything else is shared and lives in one place**, which is the rule that
+// made it one door in the first place — an invariant written twice will be
+// guarded once. `popStart` is what all three do before the request, `popSettled`
+// what all three do with an answer, and `popLost` what all three do when there
+// is none; between them they hold the re-entrancy flag, the `#base` guard and
+// its advance, the `POP_GEN` snapshot, the one reading of a refusal, and the
+// host's `wrote()`. What is left in each door is the four things that genuinely
+// differ: the address, the verb, the body, and what to do about a lost answer.
+//
+// All three answer a promise for `true` when the commit landed, which is also
+// how `popRan` knows the item owns its own dismissal.
+
+// Whether one is in the air. See the re-entrancy note in `popStart`, which is
+// where the failure it prevents is written down.
+let POP_WRITING = false;
+
+// A refusal, into the box that asked for it — or nowhere, if that box has gone.
+//
+// `popSay` draws the sentence and moves focus onto it. Both are right for the
+// menu that sent the write and wrong for any other: by the time a commit answers,
+// the reader may have dismissed that box and opened one on a different record,
+// and drawing there would put a true sentence about one record under the title of
+// another and take the keyboard with it. `announce` still says it either way,
+// because a refusal nobody is told about is a write that looks like it worked.
+function popSaid(gen, text) {
+  if (POP_GEN === gen && !POP.hidden) popSay(text);
+  else announce(text);
+}
+
+// **What both doors do before the request, and the two ways they refuse to make
+// one.** Answers the write in flight — the `#base` element and the generation it
+// belongs to — or nothing at all, having already said why.
+//
+// On either refusal `POP_WRITING` has NOT been taken and no `openproj:writing`
+// has been dispatched: the door returns before its `try`, so the `finally` that
+// would clear a flag this write never owned, and announce the end of an event
+// pair that never began, does not run.
+function popStart() {
+  // **Two presses 0.9s apart minted two records on the deployed service**, which
+  // is why `CREATING` exists in `table.py`. A status item is easier to press
+  // twice than that button was — it sits under the pointer, and this box stays
+  // up until the answer comes back — and two PATCHes against one base is a page
+  // picking a conflict with itself. Before the event in either door, or the
+  // count the shell keeps never comes back down.
+  if (POP_WRITING) {
+    // Drawn and not merely announced, which every other refusal in this box
+    // already is: `popSay`'s own comment says a refusal only a screen reader
+    // hears is a menu that looks like it did nothing at all. This one is the
+    // easiest of them to meet — the item is under the pointer and the box stays
+    // up — so it is the last one that should be invisible.
+    popSay('A save is already going out. Wait for it to answer.');
+    return null;
+  }
+  // **`#base` is not on every page this module ships on.** It is inside the
+  // `editable` branch of the table's template and of the graph's, so a
+  // signed-out reader and the static export have none — and the timeline has
+  // none at all, having no `may_write` on its route and not one `fetch` in it.
+  // A bare
+  // `getElementById('base').value` is a null dereference, and in a classic
+  // script that throw takes the rest of the block with it: on the timeline it
+  // would take the whole menu, including the three items a reader does get.
+  //
+  // The write half is already behind `POP_HOST.may()`, so this is the belt and
+  // not the braces. It is here because `may()` is the host's answer and this is
+  // the page's, and the two have disagreed before — `/graph` served a signed-out
+  // reader the whole edit mode for the length of the `reader-table` branch.
+  //
+  // A host may hand in a base of its own instead (`base` in the contract): the
+  // record page does, because its `base_commit` is what that record's own save
+  // is compared against, and the advance in `popSettled` would move it past
+  // commits the page never saw.
+  const base = POP_HOST && POP_HOST.base ? POP_HOST.base() : document.getElementById('base');
+  if (!base) {
+    popSay('This page cannot save. Open the record to edit it.');
+    return null;
+  }
+  POP_WRITING = true;
+  // `committed` and `landed` travel with the write because each door's `catch`
+  // and `finally` need them and neither can see inside `popSettled`. `landed` is
+  // whether the commit is known to exist: `wrote()` is awaited inside the `try`
+  // and the host's re-read has no `catch` of its own, so a connection dropped
+  // after the commit landed rejects there and arrives in the `catch` with the
+  // write already in git.
+  return {base: base, gen: POP_GEN, committed: null, landed: false};
+}
+
+// **What both doors do with an answer**, from the refusal read to the host's
+// re-read. Answers the server's answer, or `null` when the write was refused.
+//
+// `said` is what the live region gets when the commit lands: a sentence naming
+// the record and what is now true of it, because the box is gone by then and a
+// receipt that says only "saved" is a receipt about nothing. Falsy on a create,
+// whose sentence cannot be said yet — what a create needs to report is where the
+// new record went, and that has no answer until the host has re-read the plan.
+//
+// `about` is the record this write was about: the id in the path for a change,
+// and nothing at all for a create, which has no id until the server mints one,
+// so there the answer supplies it.
+async function popSettled(flight, response, said, about) {
+  const answer = await answerOf(response);
+  // **One reading of a refusal, and it is `refusal()`'s.** A 409 from this
+  // server has two shapes — the store's compare-and-swap report and a rule's
+  // own sentence, raised before anything is written — and every page that
+  // decided for itself which key the body holds has got it wrong. That
+  // function is where the two are read in the right order, and
+  // `tests/test_writes.py` sweeps for any call site that reaches past it.
+  //
+  // No `status === 409` arm, which every other write path in this app has.
+  // Those have one because they draw a conflict somewhere of their own and
+  // merely ANNOUNCE everything else — so a refusal that fell to the `!ok` arm
+  // would stop being drawn. Here both arms end in the same place, `popSay`,
+  // which says it and draws it in the box the reader is looking at. A branch
+  // whose two sides do the same thing is a branch that will drift.
+  if (!response.ok) {
+    popSaid(flight.gen, refusal(answer, response.status));
+    return null;
+  }
+  flight.committed = answer.commit;
+  flight.landed = true;
+  // The page moves forward with the repository, or its next write collides
+  // with the commit it just made.
+  flight.base.value = answer.commit;
+  if (said) announce(said);
+  // **The menu closes on a write that lands, and it closes here** — before the
+  // host redraws, so the keyboard goes back to the element the menu was opened
+  // from while that element is still on the page.
+  //
+  // Closing rather than staying and redrawing, for three reasons that point
+  // the same way: the box is placed against a pointer that is now somewhere
+  // else; the row it was built from is about to be replaced wholesale by
+  // `wrote()`; and the design's own rule is that this box never moves, it only
+  // dies. A menu that survived its own write would have to re-read the row and
+  // re-place itself, which is the flyout's bargain arriving through the back
+  // door.
+  //
+  // A host whose `wrote()` replaces the element focus has just gone back to —
+  // the table's `draw()` does, it rebuilds the whole tbody — owes the keyboard
+  // a home of its own. `rove` is what the table hands focus with, and it
+  // survives that redraw.
+  // **Every write that lands closes the box.** `stays` used to be the
+  // exception, for the live card that wrote a field and went on standing there;
+  // with one Save per box there is nothing left to stand there for, so the rule
+  // is the rule again.
+  if (POP_GEN === flight.gen) popDone();
+  // **`wrote` is handed the answer and the id**, which cut 2 declared as
+  // taking nothing because nothing here wrote. A host needs both to keep a
+  // feature it already has: `markSaved` (`table.py`) remembers a commit the
+  // server reported as `pushed: false` and marks that row until a later read
+  // confirms it landed, and a menu write that did not hand the answer back
+  // would take that mark off the one gesture that has no other way to earn it.
+  // Both arguments are optional to a host that ignores them.
+  if (POP_HOST && POP_HOST.wrote) await POP_HOST.wrote(answer, about || answer.id);
+  return answer;
+}
+
+// **What both doors do when the request got no answer at all** — two different
+// failures, and the pair of sentences `saveCell` (`table.py`) already tells
+// apart.
+//
+// `landed`: the commit came back and the re-read after it did not. The write is
+// in git, `#base` has already moved to it, and what is stale is the page.
+//
+// Otherwise the write itself never got an answer, and this makes no claim about
+// what reached the server: a fetch rejects when the answer is lost as readily as
+// when the request never left. **What to do about that is the door's to say and
+// not this function's**, because the three verbs have different advice — a PATCH
+// repeated is the same write, a POST repeated is a second record, and a DELETE
+// repeated is a second deletion aimed at a record that may already be gone.
+// `retry` is where each one says so.
+//
+// **A door whose verb is not "save" hands in a function instead of a clause**,
+// and it is the delete. "Saved" and "Not saved" are the wrong verb for a record
+// that is gone, and a door owning both sentences is the same mechanism read to
+// its end rather than a second one parked beside it — the alternative, a fourth
+// parameter naming the other half, is two ways of saying who owns the sentence.
+function popLost(flight, error, retry) {
+  popSaid(flight.gen, typeof retry === 'function'
+    ? retry(error, flight.landed)
+    : (flight.landed
+       ? `Saved, but the page could not read the plan back — ${error.message}. `
+         + 'The save went through; reload to see what it changed.'
+       : `Not saved — ${error.message}. ${retry}`));
+  return flight.landed;
+}
+
+// A record that does not exist yet, which is the same shape and a different verb.
+//
+// **`POST /api/record` is not idempotent, and that is the whole difference.**
+// `CREATING` exists in `table.py` because two presses 0.9s apart minted two
+// records on the deployed service; `POP_WRITING` covers the press, and the
+// sentence a lost answer gets cannot be the PATCH one — "try it again" against a
+// create is advice to make a second record.
+async function popCreate(fields, title, landed) {
+  const flight = popStart();
+  if (!flight) return false;
+  // Before the request, for the reason written in `popWrite`.
+  dispatchEvent(new Event('openproj:writing'));
+  try {
+    // `body: null` here means the opposite end of the same wire value: the route
+    // reads `_body_in(payload) or ""`, so a create gets an empty document.
+    //
+    // **That is the one thing this form does not do that `+ New row` does.** The
+    // draft row posts `TEMPLATES[kind]`, the same kind template `/new` offers,
+    // and that map is the table's payload and is in no schema this module has.
+    // A record created from the menu therefore opens with a blank document where
+    // one created from the row below opens with the kind's headings.
+    const response = await fetch('/api/record', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({base_commit: flight.base.value, fields: fields, body: null}),
+    });
+    // Nothing said on the commit itself and no id to name the record by: a
+    // create has neither until the answer arrives, and `popSettled` reads the
+    // minted id off the answer.
+    const answer = await popSettled(flight, response, '', null);
+    // After the host has redrawn, which is what makes "it is not on screen" a
+    // question with an answer. Inside the `try`, so a throw in here is reported
+    // by the same catch as a failed re-read rather than escaping unhandled.
+    if (answer) announce(landed ? landed(answer) : popLanded(answer.id, title));
+    return Boolean(answer);
+  } catch (error) {
+    // `createDraft`'s own advice, for `createDraft`'s own reason. And the
+    // looking must not be a reload: this box is gone by then either way, but a
+    // reload is what takes a second tab's answer away from somebody who is about
+    // to decide whether a record exists.
+    return popLost(flight, error, 'Look for it in a second tab before pressing Create '
+      + 'again, because a second press that both landed would make two records.');
+  } finally {
+    POP_WRITING = false;
+    // See `popWrite`'s: refused or not, the pair has to close.
+    dispatchEvent(new CustomEvent('openproj:wrote', {detail: flight.committed}));
+  }
+}
+
+"""
+
+# What only a row host runs, write half: see `_pop_js`.
+_POP_WRITE_ROWS = r"""
+// --- what only a row's menu runs, the write half ------------------------------
+//
+// Every standard item that writes — the ladders, Owner, Take out, New child,
+// Edit…, Assign parent… — the Edit form's diff and its receipt, the receipt a
+// create gets when its host has none of its own, the delete face and the two
+// doors only those reach. `popSave` still names `popEdited` and `popCreate`
+// still names `popLanded`, behind a branch the record page's create never
+// takes; a page without this block that took one would throw, loudly, at the
+// press.
+
+function popWriteItems(row) {
+  if (!POP_HOST.may || !POP_HOST.may()) return [];
+  // A host whose reader may write, on a page rendered without a schema, is a
+  // wiring mistake and not a reader-only page: `_pop_js` takes the index and
+  // this view did not give it one. Said out loud and in the box, for the reason
+  // `popMenu` calls `cardYields` with no `typeof` guard — the alternative is a
+  // menu that quietly has no write half on the one view somebody has just wired,
+  // which looks exactly like a menu that is working.
+  if (!POP_SCHEMA)
+    return [{kind: 'no-schema', text: 'Editing is unavailable here',
+             why: 'This page was rendered without the menu\'s schema.'}];
+  // The ORDER is the design's table: what makes a record, what changes this
+  // one, where it is filed, then what this view can do, then the three that only
+  // look. `New child ▸` is first because it is the thing that was asked for, and
+  // `Delete…` is last — `popItems` lifts it out by its slug and puts it under
+  // even the three read items, so that the one irreversible thing on this menu
+  // has no neighbour anybody reaches for by accident.
+  return [popNewChildItem(row), popEditItem(row), popStatusItem(row),
+          popPriorityItem(row), popOwnerItem(row), popParentItem(row), popTakeOutItem(row),
+          // No refusal arm, and that is the record page's own answer rather than
+          // an omission: `may_write` is the only gate on the Delete button there
+          // (`detail.py`), because every record a writer may write is a record
+          // they may take out of the plan. What the delete would take WITH it is
+          // not a reason to withhold the item — it is the question the panel
+          // exists to put, and `popAsk` is where it is asked.
+          {kind: 'delete', text: 'Delete…', stays: true, run: () => popAsk(row)}];
+}
+
+// Whether this row has a value for that field at all.
+function popHolds(row, field) { return !popEmpty(row[field]); }
+
+// What this status will make the server refuse the row without, and the row has
+// not got. The same map `missingFor` (`table.py`) asks — `required_at()`, which
+// is derived by running the gate over a blank record rather than written beside
+// it, so it cannot drift from the rule it mirrors.
+//
+// **One of that function's filters is deliberately not here.** `missingFor`
+// drops any field the table cannot edit, because the panel it feeds has to offer
+// a box for every field it names. This menu offers no boxes at all — cut 3 has
+// no form — so a field it could not write is still a reason the write would be
+// refused, and dropping it would draw the item as available and let the server
+// answer for it.
+function popMissing(row, status) {
+  const gates = (POP_SCHEMA.required || {})[row.kind] || {};
+  return Object.keys(gates)
+    .filter(field => gates[field].includes(status))
+    // A waived field is honoured for the reason `missingFor` honours it: the
+    // switch is the escape hatch from that rule, and asking a row for what it
+    // has waived is a nag rather than a question. `WAIVERS` is the shell's.
+    .filter(field => !(WAIVERS[field] && row[WAIVERS[field]]))
+    .filter(field => !popHolds(row, field));
+}
+
+// The gate's refusal, in the app's own words.
+//
+// **What is shared with `askFor` (`table.py`) is everything that can drift, and
+// not the sentence itself.** The fields come from `required_at()` through
+// `popMissing`, which is the rule rather than a copy of it; the names come from
+// `LABELS` and `human`, which is what every other control here calls them; and
+// the opening clause is `askFor`'s. The rest is this box's own wording, because
+// `askFor` is a heading over a box per field and this is a refusal with no boxes
+// at all — it has to say where to go instead. Do not go looking for a shared
+// string; look at the three inputs, which are where a drift would come from.
+//
+// **This is now the branch that cannot be answered here rather than the whole
+// case.** Cut 3 drew every gated status refused because there was no form to
+// open; cut 4 opens one on the missing fields with the new status pre-filled and
+// saves both in one commit, which is what `askFor` does today. What is left for
+// this sentence is a missing field the form has no box for — `popMissing` reads
+// `required_at` and the form draws `_editable_for`, and those are two maps — so
+// a rule could name a field no form here can offer. Drawing an item that opened
+// a form which could not answer the gate would be worse than saying so.
+function popNeeds(row, status, fields) {
+  const named = fields.map(popLabel).join(' and ');
+  return `${popHuman(status)} needs ${named}, and ${popTitle(row)} has not got `
+    + `${fields.length === 1 ? 'it' : 'them'}. Add `
+    + `${fields.length === 1 ? 'it' : 'them'} on the record's own page.`;
+}
+
+function popStatusItem(row) {
+  const ladder = (POP_SCHEMA.statuses || {})[row.kind] || [];
+  // `statuses: ()` on the ladder is how a rung says it reads no status at all —
+  // jcanton, 2026-08-20: a codebase is not `in_progress` — and it is the same
+  // fact `_row` empties the cell by. Drawn refused rather than left out, because
+  // a control that disappears teaches nothing about why.
+  if (!ladder.length)
+    return {kind: 'status', text: 'Status', why: `A ${row.kind} has no status.`};
+  return {kind: 'status', text: 'Status',
+          items: () => ladder.map(status => popStatusChoice(row, status))};
+}
+
+function popStatusChoice(row, status) {
+  // Drawn as the status chip, the picker's own row (`popControl`), so a status
+  // looks the same wherever it is chosen; the dot beside it says which it is on.
+  const item = {kind: 'status-' + status, text: popHuman(status),
+                rung: ['status', status], checked: row.status === status};
+  // The status it already has writes nothing. The server would take it — every
+  // write path here relies on `_merge_frontmatter` skipping a key whose stored
+  // value equals the one being sent — but a commit is a line in somebody's
+  // history, and "set it to what it is" is not a thing anybody meant to do.
+  if (item.checked) {
+    item.run = () => announce(`${popTitle(row)} is already ${popHuman(status)}`);
+    return item;
+  }
+  // **The gate is answered, not fought and no longer merely reported.** A status
+  // whose `required_at` names fields this record has not got cannot be written,
+  // so picking it opens the form on exactly those fields with the new status
+  // already in its box — and one Save commits the status and the answers
+  // together. Two commits would leave the plan holding, for the length of the
+  // first one, a record the validator refuses; that is `askFor`'s argument
+  // (`table.py`) and it is why the question is asked BEFORE the write there too.
+  const missing = popMissing(row, status);
+  if (missing.length) {
+    // Every field the form will be asked to type has to be one it can draw, or
+    // it opens on a gate it cannot answer. See `popNeeds`. A missing PR is not
+    // one of them: `answerTheGate` (`shell.py`) puts it as a question, in this
+    // box's own confirmation face, before the form opens on the rest.
+    const typed = missing.filter(field => field !== NO_PR_FIELD);
+    const boxes = (POP_SCHEMA.fields || {})[row.kind] || [];
+    if (!typed.every(field => boxes.includes(field))) {
+      item.why = popNeeds(row, status, typed);
+      return item;
+    }
+    item.stays = true;
+    item.run = () => answerTheGate(missing, () => popNoPr(row, null), gate => {
+      if (!gate) return;
+      const waiver = gate.waived ? {[WAIVERS[NO_PR_FIELD]]: true} : {};
+      if (!gate.rest.length) {
+        popWrite(row.id, {status: status, ...waiver},
+          `${popTitle(row)} is now ${popHuman(status)}`);
+        return;
+      }
+      popForm({
+        mode: 'edit', row: row,
+        // The status first and then what it needs, which is the order the
+        // sentence over the boxes reads in. It is drawn rather than sent
+        // invisibly: this form's one job is that nothing is committed that the
+        // reader cannot see. The waiver rides along unseen because the reader
+        // has just answered for it in words, and `popSave` drops it if the
+        // status on the form is moved off the one that asked.
+        only: ['status', ...gate.rest],
+        // Open, so the box asks rather than waiting to be clicked: somebody who
+        // chose a gated status has already said what they are doing.
+        opens: gate.rest,
+        values: {status: status, ...waiver},
+        // `askFor`'s own opening clause, because it is the same question asked
+        // by the same rule about the same record — see `popNeeds` for what is
+        // shared and what is not.
+        label: `${popHuman(status)} needs ${gate.rest.length === 1 ? 'this' : 'these'}`,
+        verb: 'Save',
+      });
+    });
+    return item;
+  }
+  item.run = () => popWrite(row.id, {status: status},
+    `${popTitle(row)} is now ${popHuman(status)}`);
+  return item;
+}
+
+// **Priority, directly below the status and built like it.** jcanton, 2026-09-18:
+// "in the right-click menu add priority just below status please, I didn't
+// notice we didn't have it there".
+//
+// Two differences from `popStatusItem`, and both are the ladder's rather than
+// this menu's. The vocabulary is ONE list for every kind — `PRIORITIES`, not a
+// per-rung tuple — so there is nothing to look up per row; and what varies is
+// whether the kind reads the field at all, which is the `unread_fields` question
+// the Owner item already asks (`priority` is in `_WORK_FIELDS`, so a product
+// holds none).
+//
+// **And no gate.** `required_at` names no status that demands a priority, so
+// there is no `popMissing` arm here and no form to open: every rung of this
+// ladder is writable on every record that reads the field, which is the whole
+// reason this item is three lines where the status item is sixty.
+function popPriorityItem(row) {
+  if (((POP_SCHEMA.unread || {})[row.kind] || []).includes('priority'))
+    return {kind: 'priority', text: 'Priority', why: `A ${row.kind} holds no priority.`};
+  return {kind: 'priority', text: 'Priority',
+          items: () => (POP_SCHEMA.priorities || []).map(one => popPriorityChoice(row, one))};
+}
+
+function popPriorityChoice(row, priority) {
+  // Drawn as the priority chip, the picker's own row (`popControl`), so the menu
+  // cannot disagree with the card it opens over or with the picker in a cell.
+  const item = {kind: 'priority-' + priority, text: popHuman(priority),
+                rung: ['priority', priority],
+                checked: (row.priority || null) === priority};
+  // Already there writes nothing, for the reason the status choice says: the
+  // server would take it, and "set it to what it is" is not a line anybody meant
+  // to put in the history.
+  if (item.checked) {
+    item.run = () => announce(`${popTitle(row)} is already ${popHuman(priority)} priority`);
+    return item;
+  }
+  item.run = () => popWrite(row.id, {priority: priority},
+    `${popTitle(row)} is now ${popHuman(priority)} priority`);
+  return item;
+}
+
+// The one value in the owner list that is not a person.
+const POP_NOBODY = '— nobody —';
+
+function popOwnerItem(row) {
+  // `owner` is one of the nine fields a container does not read
+  // (`unread_fields`), which is why `_row` withholds the value and why the
+  // table's status cell drew an empty box that still committed. Refused here
+  // before anything is sent, the way the graph refuses its edge gestures at tap
+  // time.
+  if (((POP_SCHEMA.unread || {})[row.kind] || []).includes('owner'))
+    return {kind: 'owner', text: 'Owner', why: `A ${row.kind} holds no owner.`};
+  return {kind: 'owner', text: 'Owner', items: () => {
+    // The same people the table's own suggestion list offers — `_suggestions`
+    // (`controls.py`), read off every record in the corpus. A second list would
+    // be a second answer to "who is on this plan", and the first thing it would
+    // do is disagree with the box next to it.
+    const items = (POP_SCHEMA.people || []).map(login => popOwnerChoice(row, login, login));
+    // Last, and spelled as a value rather than as a verb: the list is a set of
+    // answers to "who owns this" and "nobody" is one of them, not a command.
+    items.push(popOwnerChoice(row, null, POP_NOBODY));
+    return items;
+  }};
+}
+
+function popOwnerChoice(row, login, text) {
+  // `null` and not `''`: `patch_text` round-trips a value, so `owner: ''` is a
+  // field that is present and empty while `owner:` with nothing after it is the
+  // shape every other unset field in this corpus already has.
+  const item = {kind: login === null ? 'owner-nobody' : 'owner-' + login, text: text,
+                checked: (row.owner || null) === login};
+  if (item.checked) {
+    item.run = () => announce(login
+      ? `${popTitle(row)} is already owned by ${login}`
+      : `${popTitle(row)} already has no owner`);
+    return item;
+  }
+  item.run = () => popWrite(row.id, {owner: login}, login
+    ? `${popTitle(row)} is now owned by ${login}`
+    : `${popTitle(row)} has no owner`);
+  return item;
+}
+
+// **Three sentences, not two.**
+//
+// `_row` (`rows.py`) nulls a parent that is not in `index.plan` and sets
+// `off_plan_parent` beside it, because an inbox id may not reach these pages'
+// bytes. So `row.parent` being empty means one of two completely different
+// things: nothing holds this record, or something does and this view cannot draw
+// it. Telling the second one it is inside nothing is the bug
+// `tests/test_exclusion.py` was written for seen from the other side — and
+// acting on it would overwrite a line the page never showed anybody, which the
+// server cannot tell from the record page legitimately refiling it.
+//
+// The wording of the third is `moveTip`'s (`table.py`), which says the same
+// thing about the same records for the drag gesture.
+function popTakeOutItem(row) {
+  if (row.off_plan_parent)
+    return {kind: 'take-out', text: 'Take out',
+            why: `${popTitle(row)} is filed under something this view cannot show `
+                 + '— where it belongs is edited on its own page.'};
+  if (!row.parent)
+    return {kind: 'take-out', text: 'Take out',
+            // Two sentences under one branch, because "not inside anything" and
+            // "cannot be inside anything" are different news: the first is a
+            // state somebody can change and the second is the ladder. `moveTip`
+            // (`table.py`) already draws them apart for the drag gesture, off
+            // this same map, and an error that implies a fix which does not
+            // exist is the copy failure this repository names in as many words.
+            //
+            // Which kind that is comes off `PARENT_KINDS` and is not written
+            // here: it was `project` until a `product` was added above it, and a
+            // rule that names the top rung is a rule that is wrong the day the
+            // ladder grows.
+            why: ((POP_SCHEMA.parent_kinds || {})[row.kind] || []).length
+                 ? `${popTitle(row)} is not inside anything.`
+                 : `A ${row.kind} belongs to nothing, so there is nothing to take it out of.`};
+  // Out of the parent and into whatever holds THAT — `row.out_to`, the one
+  // answer this, the table's move bar and its `+` row all read (`out_to`,
+  // `model.py`). It was `{parent: null}` here, so a pitch taken out of the pitch
+  // it had been filed under left its project as well — jcanton, 2026-10-12,
+  // "move-out should always move to the upper parent". The label names where it
+  // lands, because that is part of what pressing it does.
+  const into = row.out_to || null;
+  return {kind: 'take-out',
+    text: `Take out of "${popTitleOf(row.parent)}"`
+          + (into ? ` into "${popTitleOf(into)}"` : ''),
+    // `null` where nothing above may hold it, which is what `reparent`
+    // (`table.py`) sends for the same case. Two spellings of "no parent" would
+    // not even be the same write: `patch_text` round-trips, so `parent: ''`
+    // writes an empty string into the file where `null` writes the key with
+    // nothing after it.
+    run: () => popWrite(row.id, {parent: into}, into
+      ? `${popTitle(row)} is now inside "${popTitleOf(into)}"`
+      : `${popTitle(row)} is no longer inside anything`)};
+}
+
+// --- the three items that open a form ---------------------------------------
+//
+// **This is the answer to the question that started the whole design.** jcanton,
+// 2026-09-18: "I'd like to be able to right-click a record in table and graph
+// view and have the option of creating a child record", and then "can we make
+// new-child stay on the same page? ... in both pages a new popup opens: the same
+// as the floating menu but with editable fields (with parent pre-filled) and a
+// save button that commits the new record?" — and, of `Edit…`, that it should
+// open that same editable card. Yes to both, which is what these three are.
+
+function popNewChildItem(row) {
+  // The model's own `CHILD_KINDS`, read downwards off the ladder rather than
+  // inverted from `parent_kinds` here. A third spelling of the ladder in the one
+  // language nothing tests it in is the drift this schema exists to stop.
+  const kinds = (POP_SCHEMA.child_kinds || {})[row.kind] || [];
+  // Refused rather than left out, and the sentence is about the LADDER and not
+  // about this record: nothing can be filed inside a task, ever, and an error
+  // that implies a fix which does not exist is this repository's own named copy
+  // failure. `moveTip` (`table.py`) draws the same distinction for the drag.
+  if (!kinds.length)
+    return {kind: 'new-child', text: 'New child',
+            why: `Nothing is filed inside a ${row.kind}.`};
+  return {kind: 'new-child', text: 'New child', items: () => kinds.map(kind => ({
+    kind: 'new-child-' + kind, text: popHuman(kind),
+    // `stays`, because `popRan` dismisses the box after a synchronous `run` and
+    // this one has just filled it with a form. The same flag `‹ Back` carries,
+    // and for the same reason: the run's whole job is to leave the box open
+    // showing something else.
+    stays: true,
+    run: () => popForm({
+      mode: 'new', kind: kind, parent: row,
+      label: `New ${popHuman(kind).toLowerCase()} in "${popTitle(row)}"`,
+      verb: `Create ${popHuman(kind).toLowerCase()}`,
+    }),
+  }))};
+}
+
+function popEditItem(row) {
+  // A kind with no editable field at all would be a form with a heading and a
+  // Save button. It cannot happen — every rung has a title — and it is said
+  // rather than assumed, because what `_editable_for` offers is a function of
+  // the model and this is the one item that draws all of it.
+  if (!((POP_SCHEMA.fields || {})[row.kind] || []).length)
+    return {kind: 'edit', text: 'Edit…', why: `A ${row.kind} has nothing to edit here.`};
+  // The card, with nothing open. Every value in it is a thing you click, and
+  // what you type is held in the box until Save — the same bargain as the box a
+  // gated status opens, which is the whole of why this one changed. jcanton,
+  // 2026-09-18: "I'd like them to be consistent, and I think I'd prefer them
+  // both to have the save/cancel buttons and save only when clicking save, not
+  // on every edit as I asked before."
+  return {kind: 'edit', text: 'Edit…', stays: true, run: () => popForm({
+    mode: 'edit', row: row,
+    label: `Edit "${popTitle(row)}"`,
+    verb: 'Save',
+  })};
+}
+
+// Where this record is filed, as its own item, because it is the one field the
+// menu cannot ask about with a list of words: the answer is another record.
+//
+// The four refusals are four different sentences and not one, exactly as
+// `popTakeOutItem`'s three are. A ladder with nothing above this kind, a parent
+// this view cannot show, a view that cannot list what it could be filed under,
+// and a plan with nothing of the right kind on it are four states, and only two
+// of them are anything a reader can act on.
+function popParentItem(row) {
+  const named = row.parent || row.off_plan_parent ? 'Change parent…' : 'Assign parent…';
+  if (!((POP_SCHEMA.parent_kinds || {})[row.kind] || []).length)
+    return {kind: 'parent', text: 'Assign parent…',
+            why: `A ${row.kind} belongs to nothing, so there is nowhere to file it.`};
+  if (row.off_plan_parent)
+    return {kind: 'parent', text: named,
+            why: `${popTitle(row)} is filed under something this view cannot show `
+                 + '— where it belongs is edited on its own page.'};
+  const candidates = popCandidates(row.kind, row.id);
+  if (!candidates)
+    return {kind: 'parent', text: named, why: popNoRows()};
+  if (!candidates.length)
+    return {kind: 'parent', text: named,
+            why: `There is nothing on this plan that a ${row.kind} may be filed under.`};
+  // The same card as `Edit…` — every field on it is still a field — with the one
+  // somebody came here to change already open. `only` would draw a box about one
+  // field, and the box is a card: a card of one row is not a card.
+  return {kind: 'parent', text: named, stays: true, run: () => popForm({
+    mode: 'edit', row: row, opens: ['parent'],
+    label: `Where "${popTitle(row)}" is filed`,
+    verb: 'Save',
+  })};
+}
+
 // Whether two values of a field are the same value. `null`, `undefined` and the
 // empty string are one state — a field with nothing in it — because `patch_text`
 // round-trips and all three round-trip to a key with nothing after it.
@@ -3165,30 +3505,6 @@ function popSavedSaid(row, diff) {
 function popNamed(words) {
   if (words.length < 2) return words.join('');
   return words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
-}
-
-function popCreated(values) {
-  const form = POP_FORM;
-  const fields = {kind: form.kind};
-  for (const [name, value] of Object.entries(values)) {
-    // **Empty is not a value on a create.** `opening_fields` (`model.py`) is what
-    // decides what a new record of this kind starts life with — the same one the
-    // CLI's `openproj new` uses — and a form that sent `owner: null` for every
-    // box nobody filled would write an empty key into the file for each of them,
-    // in a corpus whose whole premise is that the file is the document. `false`
-    // goes with them for the same reason: it is the model's own default for the
-    // one bool here, and naming a default is not saying anything.
-    if (popEmpty(value) || value === false) continue;
-    fields[name] = value;
-  }
-  // The parent, which is the whole of what `New child` means and is never read
-  // off its control — that control is disabled, so `popSave` skipped it.
-  if (form.parent) fields.parent = form.parent.id;
-  // The present continuous, before the request rather than after the answer: two
-  // seconds of a box that looks untouched is what taught somebody to press
-  // Create twice on the deployed service.
-  announce(`Creating this ${popHuman(form.kind).toLowerCase()}…`);
-  return popCreate(fields, String(fields.title));
 }
 
 // **Where the new record went, and whether it can be seen.**
@@ -3555,206 +3871,6 @@ async function popReally(asking) {
   if (!done && popAsking(asking)) popCascade(asking);
 }
 
-// --- the write doors --------------------------------------------------------
-//
-// **Three doors, because there are three writes.** Cut 4 had one, with the
-// address and the verb passed in as data, and what that cost is not duplication
-// saved: the page then carried a single `fetch` whose address is not in the
-// source a reader sweeps, announcing one write where three can happen.
-// `test_every_write_a_page_makes_is_announced_before_and_after_it` counts a
-// page's write call sites against its `openproj:writing` pairs, and its premise
-// is written in its own comment — every write path is one call site because it
-// is one write. One call site for three writes breaks that premise as surely as
-// the drawing save's two call sites for one write, which it has to special-case.
-// So: one door per verb, each with its own literal address, its own body, its
-// own event pair and its own `finally`.
-//
-// The body is built in each door rather than handed to one, and that is the
-// same rule again read once further: the delete sends `{base_commit, also}` and
-// the two saving verbs send `{base_commit, fields, body}`, so a shared door
-// would have taken the body as data too and the page would carry one `fetch`
-// whose payload is as invisible to a reader as its address was.
-//
-// **Everything else is shared and lives in one place**, which is the rule that
-// made it one door in the first place — an invariant written twice will be
-// guarded once. `popStart` is what all three do before the request, `popSettled`
-// what all three do with an answer, and `popLost` what all three do when there
-// is none; between them they hold the re-entrancy flag, the `#base` guard and
-// its advance, the `POP_GEN` snapshot, the one reading of a refusal, and the
-// host's `wrote()`. What is left in each door is the four things that genuinely
-// differ: the address, the verb, the body, and what to do about a lost answer.
-//
-// All three answer a promise for `true` when the commit landed, which is also
-// how `popRan` knows the item owns its own dismissal.
-
-// Whether one is in the air. See the re-entrancy note in `popStart`, which is
-// where the failure it prevents is written down.
-let POP_WRITING = false;
-
-// A refusal, into the box that asked for it — or nowhere, if that box has gone.
-//
-// `popSay` draws the sentence and moves focus onto it. Both are right for the
-// menu that sent the write and wrong for any other: by the time a commit answers,
-// the reader may have dismissed that box and opened one on a different record,
-// and drawing there would put a true sentence about one record under the title of
-// another and take the keyboard with it. `announce` still says it either way,
-// because a refusal nobody is told about is a write that looks like it worked.
-function popSaid(gen, text) {
-  if (POP_GEN === gen && !POP.hidden) popSay(text);
-  else announce(text);
-}
-
-// **What both doors do before the request, and the two ways they refuse to make
-// one.** Answers the write in flight — the `#base` element and the generation it
-// belongs to — or nothing at all, having already said why.
-//
-// On either refusal `POP_WRITING` has NOT been taken and no `openproj:writing`
-// has been dispatched: the door returns before its `try`, so the `finally` that
-// would clear a flag this write never owned, and announce the end of an event
-// pair that never began, does not run.
-function popStart() {
-  // **Two presses 0.9s apart minted two records on the deployed service**, which
-  // is why `CREATING` exists in `table.py`. A status item is easier to press
-  // twice than that button was — it sits under the pointer, and this box stays
-  // up until the answer comes back — and two PATCHes against one base is a page
-  // picking a conflict with itself. Before the event in either door, or the
-  // count the shell keeps never comes back down.
-  if (POP_WRITING) {
-    // Drawn and not merely announced, which every other refusal in this box
-    // already is: `popSay`'s own comment says a refusal only a screen reader
-    // hears is a menu that looks like it did nothing at all. This one is the
-    // easiest of them to meet — the item is under the pointer and the box stays
-    // up — so it is the last one that should be invisible.
-    popSay('A save is already going out. Wait for it to answer.');
-    return null;
-  }
-  // **`#base` is not on every page this module ships on.** It is inside the
-  // `editable` branch of the table's template and of the graph's, so a
-  // signed-out reader and the static export have none — and the timeline has
-  // none at all, having no `may_write` on its route and not one `fetch` in it.
-  // A bare
-  // `getElementById('base').value` is a null dereference, and in a classic
-  // script that throw takes the rest of the block with it: on the timeline it
-  // would take the whole menu, including the three items a reader does get.
-  //
-  // The write half is already behind `POP_HOST.may()`, so this is the belt and
-  // not the braces. It is here because `may()` is the host's answer and this is
-  // the page's, and the two have disagreed before — `/graph` served a signed-out
-  // reader the whole edit mode for the length of the `reader-table` branch.
-  const base = document.getElementById('base');
-  if (!base) {
-    popSay('This page cannot save. Open the record to edit it.');
-    return null;
-  }
-  POP_WRITING = true;
-  // `committed` and `landed` travel with the write because each door's `catch`
-  // and `finally` need them and neither can see inside `popSettled`. `landed` is
-  // whether the commit is known to exist: `wrote()` is awaited inside the `try`
-  // and the host's re-read has no `catch` of its own, so a connection dropped
-  // after the commit landed rejects there and arrives in the `catch` with the
-  // write already in git.
-  return {base: base, gen: POP_GEN, committed: null, landed: false};
-}
-
-// **What both doors do with an answer**, from the refusal read to the host's
-// re-read. Answers the server's answer, or `null` when the write was refused.
-//
-// `said` is what the live region gets when the commit lands: a sentence naming
-// the record and what is now true of it, because the box is gone by then and a
-// receipt that says only "saved" is a receipt about nothing. Falsy on a create,
-// whose sentence cannot be said yet — what a create needs to report is where the
-// new record went, and that has no answer until the host has re-read the plan.
-//
-// `about` is the record this write was about: the id in the path for a change,
-// and nothing at all for a create, which has no id until the server mints one,
-// so there the answer supplies it.
-async function popSettled(flight, response, said, about) {
-  const answer = await answerOf(response);
-  // **One reading of a refusal, and it is `refusal()`'s.** A 409 from this
-  // server has two shapes — the store's compare-and-swap report and a rule's
-  // own sentence, raised before anything is written — and every page that
-  // decided for itself which key the body holds has got it wrong. That
-  // function is where the two are read in the right order, and
-  // `tests/test_writes.py` sweeps for any call site that reaches past it.
-  //
-  // No `status === 409` arm, which every other write path in this app has.
-  // Those have one because they draw a conflict somewhere of their own and
-  // merely ANNOUNCE everything else — so a refusal that fell to the `!ok` arm
-  // would stop being drawn. Here both arms end in the same place, `popSay`,
-  // which says it and draws it in the box the reader is looking at. A branch
-  // whose two sides do the same thing is a branch that will drift.
-  if (!response.ok) {
-    popSaid(flight.gen, refusal(answer, response.status));
-    return null;
-  }
-  flight.committed = answer.commit;
-  flight.landed = true;
-  // The page moves forward with the repository, or its next write collides
-  // with the commit it just made.
-  flight.base.value = answer.commit;
-  if (said) announce(said);
-  // **The menu closes on a write that lands, and it closes here** — before the
-  // host redraws, so the keyboard goes back to the element the menu was opened
-  // from while that element is still on the page.
-  //
-  // Closing rather than staying and redrawing, for three reasons that point
-  // the same way: the box is placed against a pointer that is now somewhere
-  // else; the row it was built from is about to be replaced wholesale by
-  // `wrote()`; and the design's own rule is that this box never moves, it only
-  // dies. A menu that survived its own write would have to re-read the row and
-  // re-place itself, which is the flyout's bargain arriving through the back
-  // door.
-  //
-  // A host whose `wrote()` replaces the element focus has just gone back to —
-  // the table's `draw()` does, it rebuilds the whole tbody — owes the keyboard
-  // a home of its own. `rove` is what the table hands focus with, and it
-  // survives that redraw.
-  // **Every write that lands closes the box.** `stays` used to be the
-  // exception, for the live card that wrote a field and went on standing there;
-  // with one Save per box there is nothing left to stand there for, so the rule
-  // is the rule again.
-  if (POP_GEN === flight.gen) popDone();
-  // **`wrote` is handed the answer and the id**, which cut 2 declared as
-  // taking nothing because nothing here wrote. A host needs both to keep a
-  // feature it already has: `markSaved` (`table.py`) remembers a commit the
-  // server reported as `pushed: false` and marks that row until a later read
-  // confirms it landed, and a menu write that did not hand the answer back
-  // would take that mark off the one gesture that has no other way to earn it.
-  // Both arguments are optional to a host that ignores them.
-  if (POP_HOST && POP_HOST.wrote) await POP_HOST.wrote(answer, about || answer.id);
-  return answer;
-}
-
-// **What both doors do when the request got no answer at all** — two different
-// failures, and the pair of sentences `saveCell` (`table.py`) already tells
-// apart.
-//
-// `landed`: the commit came back and the re-read after it did not. The write is
-// in git, `#base` has already moved to it, and what is stale is the page.
-//
-// Otherwise the write itself never got an answer, and this makes no claim about
-// what reached the server: a fetch rejects when the answer is lost as readily as
-// when the request never left. **What to do about that is the door's to say and
-// not this function's**, because the three verbs have different advice — a PATCH
-// repeated is the same write, a POST repeated is a second record, and a DELETE
-// repeated is a second deletion aimed at a record that may already be gone.
-// `retry` is where each one says so.
-//
-// **A door whose verb is not "save" hands in a function instead of a clause**,
-// and it is the delete. "Saved" and "Not saved" are the wrong verb for a record
-// that is gone, and a door owning both sentences is the same mechanism read to
-// its end rather than a second one parked beside it — the alternative, a fourth
-// parameter naming the other half, is two ways of saying who owns the sentence.
-function popLost(flight, error, retry) {
-  popSaid(flight.gen, typeof retry === 'function'
-    ? retry(error, flight.landed)
-    : (flight.landed
-       ? `Saved, but the page could not read the plan back — ${error.message}. `
-         + 'The save went through; reload to see what it changed.'
-       : `Not saved — ${error.message}. ${retry}`));
-  return flight.landed;
-}
-
 // A change to a record that exists. Three call sites in cut 3 and the form's
 // diff-only Save in cut 4.
 // `stays` is the card-shaped box saving one field and going on being open.
@@ -3797,54 +3913,6 @@ async function popWrite(id, fields, said) {
     // Announced even when the write was refused, or one refusal leaves every
     // banner after it held back and the news that the plan moved never appears
     // again. In a `finally` for that reason, in both doors.
-    dispatchEvent(new CustomEvent('openproj:wrote', {detail: flight.committed}));
-  }
-}
-
-// A record that does not exist yet, which is the same shape and a different verb.
-//
-// **`POST /api/record` is not idempotent, and that is the whole difference.**
-// `CREATING` exists in `table.py` because two presses 0.9s apart minted two
-// records on the deployed service; `POP_WRITING` covers the press, and the
-// sentence a lost answer gets cannot be the PATCH one — "try it again" against a
-// create is advice to make a second record.
-async function popCreate(fields, title) {
-  const flight = popStart();
-  if (!flight) return false;
-  // Before the request, for the reason written in `popWrite`.
-  dispatchEvent(new Event('openproj:writing'));
-  try {
-    // `body: null` here means the opposite end of the same wire value: the route
-    // reads `_body_in(payload) or ""`, so a create gets an empty document.
-    //
-    // **That is the one thing this form does not do that `+ New row` does.** The
-    // draft row posts `TEMPLATES[kind]`, the same kind template `/new` offers,
-    // and that map is the table's payload and is in no schema this module has.
-    // A record created from the menu therefore opens with a blank document where
-    // one created from the row below opens with the kind's headings.
-    const response = await fetch('/api/record', {
-      method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify({base_commit: flight.base.value, fields: fields, body: null}),
-    });
-    // Nothing said on the commit itself and no id to name the record by: a
-    // create has neither until the answer arrives, and `popSettled` reads the
-    // minted id off the answer.
-    const answer = await popSettled(flight, response, '', null);
-    // After the host has redrawn, which is what makes "it is not on screen" a
-    // question with an answer. Inside the `try`, so a throw in here is reported
-    // by the same catch as a failed re-read rather than escaping unhandled.
-    if (answer) announce(popLanded(answer.id, title));
-    return Boolean(answer);
-  } catch (error) {
-    // `createDraft`'s own advice, for `createDraft`'s own reason. And the
-    // looking must not be a reload: this box is gone by then either way, but a
-    // reload is what takes a second tab's answer away from somebody who is about
-    // to decide whether a record exists.
-    return popLost(flight, error, 'Look for it in a second tab before pressing Create '
-      + 'again, because a second press that both landed would make two records.');
-  } finally {
-    POP_WRITING = false;
-    // See `popWrite`'s: refused or not, the pair has to close.
     dispatchEvent(new CustomEvent('openproj:wrote', {detail: flight.committed}));
   }
 }
@@ -3978,7 +4046,7 @@ function popWriteItems(row) {
 _AS_SELECT = ("status", "priority", "parent")
 
 
-def _pop_schema(index: Index | None) -> dict | None:
+def _pop_schema(index: Index | None, rows: bool = True) -> dict | None:
     """What the write half is built from, per render.
 
     **Baked here rather than read out of the host's payload, because the three
@@ -4010,7 +4078,8 @@ def _pop_schema(index: Index | None) -> dict | None:
     """
     if index is None:
         return None
-    return {
+    suggested = _suggestions(index)
+    schema = {
         # The status vocabulary per kind, off the ladder itself. `()` is how a
         # rung says it reads no status at all — a product is not `in_progress` —
         # and the menu draws that as a refusal rather than an empty list.
@@ -4087,7 +4156,7 @@ def _pop_schema(index: Index | None) -> dict | None:
         # would disagree with the box beside it the first time somebody joined.
         # Values only: the menu writes a login, and the `{value, label}` shape is
         # for a control that completes as you type.
-        "people": [person["value"] for person in _suggestions(index)["people"]],
+        "people": [person["value"] for person in suggested["people"]],
         # And the three lists that are neither a person nor a record, from the
         # same function, in the same `{value, label}` shape the detail form's own
         # completion reads them in: a tag is a bare word, a pull request carries
@@ -4098,13 +4167,15 @@ def _pop_schema(index: Index | None) -> dict | None:
         # complete off `popAllRows()`, which is the host's own rows — the same
         # list the parent picker is built from — and a second copy of every
         # record in the plan is the one key that would double this payload.
-        "lists": {
-            source: _suggestions(index)[source] for source in ("tags", "prs", "cycles")
-        },
+        "lists": {source: suggested[source] for source in ("tags", "prs", "cycles")},
     }
+    if not rows:
+        # Read by the Priority and Owner items alone, which only a row's menu has.
+        del schema["unread"], schema["priorities"]
+    return schema
 
 
-def _pop_js(links: Links, index: Index | None = None) -> Markup:
+def _pop_js(links: Links, index: Index | None = None, rows: bool = True) -> Markup:
     """The menu's whole script, with the two things in it the server decides.
 
     A function rather than the constant `_FILTER_JS` is, because where a record's
@@ -4120,10 +4191,20 @@ def _pop_js(links: Links, index: Index | None = None) -> Markup:
     write — which is the one failure that would look exactly like the feature
     working. The default is for the export and for a view that is reader-only by
     construction, which is the timeline.
+
+    **`rows=False` is the record page**, whose one host supplies its own
+    `items` and so never runs the standard list, the one-field writes, Edit…,
+    the delete face or the two doors only those reach. Measured on seed's
+    pitch-0a0001 that is the difference written in the commit that split them;
+    what is left is the box, the form, and the create door.
     """
-    half = _POP_WRITE_JS if index is not None else _POP_NO_WRITE_JS
+    if index is None:
+        half = _POP_NO_WRITE_JS
+    else:
+        half = _POP_WRITE_JS + (_POP_WRITE_ROWS if rows else "")
+    read = _POP_JS_READ + (_POP_READ_ROWS if rows else "")
     return _fragment(
-        "<script>" + _POP_JS_READ + half + "</script>",
+        "<script>" + read + half + "</script>",
         record=links.record,
-        schema=_pop_schema(index),
+        schema=_pop_schema(index, rows),
     )

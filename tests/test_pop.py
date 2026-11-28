@@ -51,7 +51,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from browser import PRESSES, _devtools, _evaluated, chrome, measured_in, pressed_in
+from browser import _devtools, _evaluated, chrome, measured_in, press, pressed_in
 from test_table import no_pr_answer
 
 from openproj.index import Index, build_index
@@ -161,11 +161,11 @@ def index_holding_an_off_plan_parent(demo_root: Path) -> Index:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_menu_ships_on_the_three_views_that_want_it_and_not_on_the_rest(index: Index):
+def test_the_menu_ships_on_the_pages_that_host_it_and_not_on_the_rest(index: Index):
     """`pop.py` and not `shell.py`, and this is the assertion that holds the line.
 
     The shell ships on all twelve pages, including `/help` and `/people`; this
-    menu is wanted by three. So the module is imported by the views that want
+    menu is wanted by four. So the module is imported by the views that want
     it, and a later "it would be simpler in the shell" shows up here as two
     pages that grew a menu nobody asked them for.
 
@@ -187,8 +187,20 @@ def test_the_menu_ships_on_the_three_views_that_want_it_and_not_on_the_rest(inde
         )
         assert "#pop .popitem" in page, f"{name} carries the menu with no stylesheet for it"
 
+    # The record page is a fourth host, and only for a writer on one record's own
+    # page: what its menu is about is the editor's selection (`tests/test_
+    # selection.py`). A reader of that page, the index of every record, and the
+    # static export are the shell's failure mode exactly as before.
+    one = next(iter(index.plan))
+    writer = render_detail(index, ROUTES, only=one, base_commit=HEAD, may_write=True)
+    assert "function popServes(" in writer, "the record page carries no menu for its writer"
+    assert "#pop .popitem" in writer, "the record page carries the menu with no stylesheet"
     elsewhere = {
-        "the record page": render_detail(index, ROUTES, base_commit=HEAD, may_write=True),
+        "the record page, to a reader": render_detail(
+            index, ROUTES, only=one, base_commit=HEAD, may_write=False
+        ),
+        "the index of every record": render_detail(index, ROUTES, base_commit=HEAD, may_write=True),
+        "the static export's record page": render_detail(index, STATIC),
         "help": render_help(index, ROUTES),
     }
     for name, page in elsewhere.items():
@@ -431,30 +443,10 @@ _ASK_AFTER_A_PRESS = """
 
 
 def _right_press(call, at: list[int], *, shift: bool) -> None:
-    """A trusted right press, with a modifier `pressed_in` has no parameter for.
-
-    `pressed_in` sends `button` and the `buttons` mask and nothing else, and
-    shift is the entire question here — so the press is made through the same
-    DevTools method it uses, with CDP's modifier mask beside it (Shift is 8).
-    The mask for the button itself is imported rather than written out again:
-    it is left 1, right 2, middle 4 and *not* `1 << index`, which is the
-    arithmetic that looks right and silently swaps middle and right.
-    """
+    """A trusted right press, with Shift held or not — `press` (`browser.py`)
+    with CDP's modifier mask, where Shift is 8."""
     _evaluated(call, "window.__native = null")
-    for kind in ("mousePressed", "mouseReleased"):
-        call(
-            "Input.dispatchMouseEvent",
-            {
-                "type": kind,
-                "x": at[0],
-                "y": at[1],
-                "button": "right",
-                "clickCount": 1,
-                "buttons": PRESSES["right"] if kind == "mousePressed" else 0,
-                "modifiers": 8 if shift else 0,
-            },
-        )
-        time.sleep(0.1)
+    press(call, at[0], at[1], "right", 8 if shift else 0)
     time.sleep(0.5)
 
 

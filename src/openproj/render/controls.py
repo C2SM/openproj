@@ -829,6 +829,7 @@ function textareaSurface(area) {
     area.addEventListener(kind, () => fire('caret'));
   }
 
+
   return {
     // The box, for the questions that are about a box rather than a document:
     // scroll offsets, class names, `closest`, and the events the seven do not
@@ -1267,8 +1268,14 @@ function historyOf(surface) {
 const ORDERED = /^(\s*)\d+\.\s+/;
 
 function lineRange(surface) {
-  const text = surface.text();
-  const {from: start, to: end} = surface.caret();
+  const {from, to} = surface.caret();
+  return linesOf(surface.text(), from, to);
+}
+
+// The whole lines `[start, end)` touches, as `[from, to)` — the same question
+// asked of a text and a range rather than of the caret, for a caller that has a
+// range of its own (`selectionRefusal`).
+function linesOf(text, start, end) {
   const from = text.lastIndexOf('\n', start - 1) + 1;
   const to = text.indexOf('\n', end);
   return [from, to === -1 ? text.length : to];
