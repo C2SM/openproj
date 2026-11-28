@@ -3494,26 +3494,11 @@ function foldInPullRequests(live) {
   OPEN_REFS.push(...live);
 }
 
-// A link to a pull request or an issue on GitHub, as the reference `_pr_refs`
-// draws. A pasted URL and the `owner/repo#N` the list offered were two spellings
-// of one thing, and only one of them was what the list would complete to.
-// `/pull/` and `/issues/` both, and whatever trails the number — `/files`, a
-// `#discussion_r…` — because a link is copied from wherever somebody was reading.
-const GITHUB_REF = new RegExp(
-  '^https?://(?:www\\.)?github\\.com/([\\w.-]+)/([\\w.-]+)/(?:pull|issues)/([0-9]+)'
-  + '(?:[/?#]\\S*)?$', 'i');
-// After a listed repository's page: Forgejo's `/pulls/` as well as GitHub's `/pull/`
-const PAGE_REF = /^\/(?:pulls?|issues)\/([0-9]+)(?:[/?#]\S*)?$/i;
-
+// A link pasted into a pull request or issue box is the reference it names, so
+// the file holds one spelling: `prReference` in the shell, which the table draws
+// stored URLs with too. `null` and not '' for "not a link", the callers' contract.
 function asReference(text) {
-  const said = String(text).trim();
-  for (const [name, page] of Object.entries(SUGGEST.pages || {})) {
-    if (!said.toLowerCase().startsWith(page.toLowerCase() + '/')) continue;
-    const link = PAGE_REF.exec(said.slice(page.length));
-    if (link) return `${name}#${link[1]}`;
-  }
-  const link = GITHUB_REF.exec(said);
-  return link ? `${link[1]}/${link[2]}#${link[3]}` : null;
+  return prReference(text) || null;
 }
 
 // What a pull request or issue box offers for what has been typed in it.
@@ -4510,8 +4495,6 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
     return {
         "prs": [{"value": f"{r}#", "label": "pull request or issue"} for r in names],
         "repos": list(names),
-        # Each one's page, so a link pasted from any of them reads as `owner/repo#N`
-        "pages": names,
         "people": [{"value": p, "label": ""} for p in sorted(people)],
         # Named `records`, filled from the PLAN, deliberately: these complete
         # `parent` and `depends_on`, and offering an issue or a note there

@@ -135,6 +135,17 @@ class Links(BaseModel):
             for url, forge in self.repositories
         }
 
+    def pr_pages(self) -> dict[str, str]:
+        """Each listed repository's page, by its `owner/repo` as the plan spells it.
+
+        What a pasted or stored link is read back into `owner/repo#N` against
+        (`pr_reference`). Every listed repository and not only the ones whose forge
+        answered, because the question is about the shape of a URL somebody wrote
+        and no forge has to be asked to answer it: plan-d's two were stored as full
+        URLs while its server could not reach the host, and were drawn as URLs.
+        """
+        return {repository_name(url): url for url, _ in self.repositories}
+
     def unread_repositories(self) -> list[tuple[str, str]]:
         """Each repository whose pull requests openproj cannot link or read, and why."""
         said = {
@@ -2666,6 +2677,9 @@ tr.nothing .hint { margin: 0 0 .75rem; }
 {#- Where `owner/repo#N` is linked, per repository: `Links.pr_bases`, so the
     table's script looks a reference up and never spells a forge's URL itself. -#}
 <script id="prbases" type="application/json">{{ links.pr_bases()|tojson }}</script>
+{#- And each listed repository's page, which a URL is read back into a reference
+    against: `Links.pr_pages`, for `prReference` below and the prs box. -#}
+<script id="prpages" type="application/json">{{ links.pr_pages()|tojson }}</script>
 {#- One list per field every picker on the page opens (`rung_picker`), and the
     picker itself in a template per field, for the editors a script builds: the
     table's cell and the edit card clone it rather than writing a second copy of
@@ -3354,6 +3368,27 @@ function prHref(ref) {
   const base = PR_BASES[found[1].toLowerCase()];
   if (base === undefined) return `https://github.com/${found[1]}/pull/${found[2]}`;
   return base ? base + found[2] : '';
+}
+
+// `pr_reference` in `render/markdown.py`, over `Links.pr_pages`: the `owner/repo#N`
+// a pull request or issue URL names, or '' for anything else. The table draws a
+// stored URL as the reference, and the prs box writes a pasted one as it.
+const PR_PAGES = (() => {
+  try { return JSON.parse(document.getElementById('prpages').textContent); }
+  catch (error) { return {}; }
+})();
+const PR_PAGE_REF = /^\\/(?:pulls?|issues)\\/([0-9]+)(?:[\\/?#]\\S*)?$/i;
+const PR_GITHUB_REF =
+  /^https?:\\/\\/(?:www\\.)?github\\.com\\/([\\w.-]+\\/[\\w.-]+)\\/(?:pull|issues)\\/([0-9]+)(?:[\\/?#]\\S*)?$/i;
+function prReference(ref) {
+  const said = String(ref).trim();
+  for (const [name, page] of Object.entries(PR_PAGES)) {
+    if (!said.toLowerCase().startsWith(page.toLowerCase() + '/')) continue;
+    const link = PR_PAGE_REF.exec(said.slice(page.length));
+    if (link) return `${name}#${link[1]}`;
+  }
+  const link = PR_GITHUB_REF.exec(said);
+  return link ? `${link[1]}#${link[2]}` : '';
 }
 
 // `2026-07-14` as `14.07.2026`. The card's dates keep the century — it is the one

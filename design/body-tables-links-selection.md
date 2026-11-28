@@ -206,14 +206,18 @@ that URL, where a GitHub pull request is drawn as `owner/repo#N`.
 
 ### What was found
 
-The prs box already rewrites a pasted link to `owner/repo#N` (`asReference`, `controls.py`) — a
-github.com URL by its shape, and a listed repository's URL only when the server knows its forge
-(`SUGGEST.pages`). Measured on 2026-11-28: the served plan-d's footer says "2 repositories not
-read", both "the server could not reach its host to ask which forge it is". On the NAS,
-`git.ciccia.synology.me` resolves to the public address and the connection never completes; asked
-through the NAS's own reverse proxy (`--resolve …:443:127.0.0.1`) Forgejo answers 403, which
-`forge_of` counts as Forgejo. That is a deployment fix — an `extra_hosts` entry in plan-d's
-`compose.yaml` — and jcanton's to make on the NAS, not this code's.
+The prs box already rewrote a pasted link to `owner/repo#N` (`asReference`, `controls.py`) — a
+github.com URL by its shape, and a listed repository's against its page — but only a paste into the
+box, and only from then on. plan-d's two entries were stored as URLs some other way, and nothing
+reads a stored entry back, so they were drawn as written.
+
+Separately, measured on 2026-11-28: the served plan-d's footer said "2 repositories not read", both
+"the server could not reach its host to ask which forge it is". On the NAS, `git.ciccia.synology.me`
+resolved to the public address and the connection never completed; asked through the NAS's own
+reverse proxy (`--resolve …:443:127.0.0.1`) Forgejo answered 403, which `forge_of` counts as
+Forgejo. That was a deployment fix — an `extra_hosts` entry in plan-d's `compose.yaml`, made by
+jcanton the same day — and not this code's; it is what lets `owner/repo#N` LINK there, which is a
+different question from how a URL is drawn.
 
 ### Decided
 

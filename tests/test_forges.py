@@ -108,6 +108,102 @@ def test_the_page_links_a_reference_where_the_server_does(seed_index):
     assert said["value"] == list(REFERENCES.values())
 
 
+# Each URL, and the reference it is drawn as — jcanton, 2026-11-28: plan-d stored
+# its Forgejo pull requests as full URLs and the page drew them that way. A listed
+# repository's page with GitHub's or Forgejo's spelling, an issue, a trailing tab
+# or anchor, a host in capitals; GitHub's whether listed or not; and the near
+# misses that must stay as written: a repository whose name only STARTS like a
+# listed one, a number with a letter on it, GitLab's own spelling, and anything
+# that is already a reference or is not a link at all.
+SHORTENED = {
+    "https://git.example.org/jacopo/watchface/pulls/3": "jacopo/watchface#3",
+    "https://git.example.org/jacopo/watchface/issues/7": "jacopo/watchface#7",
+    "https://GIT.example.org/jacopo/watchface/pulls/3/files": "jacopo/watchface#3",
+    "https://github.com/C2SM/icon4py/pull/12#discussion_r1": "C2SM/icon4py#12",
+    "https://github.com/GridTools/gt4py/pull/5": "GridTools/gt4py#5",
+    "https://github.com/GridTools/gt4py/issues/6?x=1": "GridTools/gt4py#6",
+    "https://git.example.org/jacopo/watchface-two/pulls/3": "",
+    "https://git.example.org/jacopo/watchface/pulls/3x": "",
+    "https://gitlab.com/someone/thing/-/merge_requests/4": "",
+    "C2SM/icon4py#12": "",
+    "see the meeting notes": "",
+}
+
+
+@pytest.mark.parametrize(("url", "ref"), SHORTENED.items())
+def test_a_pull_request_url_is_drawn_as_the_reference_it_names(url: str, ref: str):
+    """And links to the URL as written: the file is not what changes."""
+    from openproj.render.markdown import _pr_link, pr_href, pr_reference
+
+    assert pr_reference(url, LISTED) == ref
+    link = [e for e in elements(str(_pr_link(url, LISTED))) if e.tag == "a"]
+    if pr_href(url, LISTED):
+        assert [(e.attrs["href"], e.text) for e in link] == [(pr_href(url, LISTED), ref or url)]
+
+
+def test_the_page_reads_a_url_back_into_the_reference_the_server_does(seed_index):
+    """`prReference` is `pr_reference` over the same map, `Links.pr_pages`."""
+    from test_injection import run_js
+
+    from openproj.render import render_table
+
+    page = render_table(seed_index, LISTED)
+    said = run_js(page, f"{json.dumps(list(SHORTENED))}.map(prReference)", page=True)
+
+    assert said["value"] == list(SHORTENED.values())
+
+
+def test_the_table_draws_a_stored_url_as_its_number(seed_index):
+    """The cell keeps only the number, as it does for a reference, with the whole
+    reference in the title."""
+    from test_injection import run_js
+
+    from openproj.render import render_table
+
+    url = "https://git.example.org/jacopo/watchface/pulls/3"
+    page = render_table(seed_index, LISTED)
+    drawn = run_js(page, f"prLink({json.dumps(url)})", page=True)["value"]
+
+    assert [(e.attrs["href"], e.attrs["title"], e.text) for e in elements(drawn)] == [
+        (url, "jacopo/watchface#3", "#3")
+    ]
+
+
+def test_the_prs_box_writes_a_pasted_url_as_the_reference_it_names(seed_index):
+    """Whatever the forge answered: the box used to read the plan's pages out of its
+    own copy of the rule, and it is the shell's `prReference` now."""
+    from test_injection import run_js
+
+    from openproj.render import render_detail
+
+    url = "https://git.example.org/jacopo/watchface/pulls/3"
+    page = render_detail(
+        seed_index, LISTED, only=next(iter(seed_index.plan)), base_commit="deadbee", may_write=True
+    )
+
+    assert run_js(page, f"asReference({json.dumps(url)})", page=True)["value"] == (
+        "jacopo/watchface#3"
+    )
+
+
+def test_a_bare_url_in_prose_reads_as_its_reference_and_written_words_are_kept():
+    from openproj.render.markdown import _markdown
+
+    forgejo = "https://git.example.org/jacopo/watchface/pulls"
+    body = (
+        f"landed in {forgejo}/3 and <https://github.com/a/b/pull/9>, "
+        f"see [the fix]({forgejo}/4), and `{forgejo}/5` is code"
+    )
+    links = [(e.attrs["href"], e.text) for e in elements(str(_markdown(body, LISTED)))
+             if e.tag == "a"]
+
+    assert links == [
+        (f"{forgejo}/3", "jacopo/watchface#3"),
+        ("https://github.com/a/b/pull/9", "a/b#9"),
+        (f"{forgejo}/4", "the fix"),
+    ]
+
+
 def _footer_warning(page: str) -> list:
     return [e for e in elements(page) if e.attrs.get("id") == "forgewarn"]
 

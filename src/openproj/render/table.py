@@ -1092,11 +1092,15 @@ function prMarkOf(id) {
 //
 // Where it links is the shell's `prHref`, which knows each repository's forge.
 // Anything that is not a reference or a URL is drawn as the text it is.
+// A URL is drawn as the reference it names when it names one (`prReference`), so
+// plan-d's stored Forgejo links read `#1` like everybody else's.
 function prLink(ref) {
   const href = prHref(ref);
   if (!href) return esc(ref);
-  const number = /^https?:/i.test(ref) ? '' : String(ref).split('#')[1];
-  return `<a href="${esc(href)}" title="${esc(ref)}">${esc(number ? '#' + number : ref)}</a>`;
+  const named = /^https?:/i.test(ref) ? prReference(ref) : String(ref).trim();
+  const number = named ? named.split('#')[1] : '';
+  const text = number ? '#' + number : ref;
+  return `<a href="${esc(href)}" title="${esc(named || ref)}">${esc(text)}</a>`;
 }
 
 // What the id cell says about whether this row's last save has reached GitHub.
