@@ -12,10 +12,10 @@ from ..model import KINDS as KIND_LADDER
 from ..model import (
     NOTE_STATES,
     RUNG,
+    WAIVERS,
     Record,
     a_number,
     checklist,
-    closed_without_a_pr,
     sections,
     size_weeks,
     staffing_of,
@@ -34,7 +34,7 @@ from .editor import (
 )
 from .env import PHONE, _compiled, _fragment
 from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
-from .markdown import _body_html, _pr_link
+from .markdown import _body_html, _prs_shown
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SUGGEST_STYLE
 from .tokens import (
@@ -44,7 +44,6 @@ from .tokens import (
     FIELD_TEACH,
     KINDS,
     LABELS,
-    NO_PR_SAID,
     PREFIX,
     STATUS_TEACH,
     STATUSES,
@@ -1433,7 +1432,7 @@ _DETAIL = """
   {#- The form opens ABOVE the heading so the title box can live inside it and
       still be one of `FORM`'s own controls — `CONTROLS` is a `querySelectorAll`
       over the form's subtree, and a title outside it is a title no save sends. -#}
-  <form id="edit" data-id="{{ e.id }}"{% if e.prs_waived %} data-prs-waived="true"{% endif %}
+  <form id="edit" data-id="{{ e.id }}" data-waived="{{ e.waived|join(' ') }}"
         onsubmit="return false">
     <input type="hidden" name="base_commit" value="{{ base_commit }}">
   {% endif %}
@@ -2733,27 +2732,38 @@ for (const article of document.querySelectorAll('article.record')) {
 // box as well as on the press that could not: a value the page wrote is a value
 // nobody has read yet, and committing it unseen is the prefill deciding rather
 // than offering.
-function stillNeeded(fields) {
+//
+// **And the done-without-a-PR question is put first**, through the doors' one
+// seam (`answerHere`), before any date is offered: a waiver it answers yes to
+// goes into `fields`, and Cancel stops the save. Returns a promise for that
+// reason.
+async function stillNeeded(fields) {
   if (!('status' in fields)) return false;
   const status = FORM.querySelector('[name=status]')?.value || OPENS;
-  const waived = FORM.querySelector('[name=review_waived]')?.checked;
-  const filled = [];
-  const missing = [];
-  let first = null;
+  const gated = [];
   for (const control of FORM.querySelectorAll('[data-required-at]')) {
     // A field this kind does not have is not empty, it is absent — the same
     // skip `createRecord` makes, for the same reason.
     if (control.closest('[data-kinds]')?.hidden) continue;
     if (!control.dataset.requiredAt.split(' ').includes(status)) continue;
-    // review_waived is the escape hatch from the reviewer rule, honoured here
-    // exactly as `markRequired` honours it: otherwise this is a nag.
-    if (control.name === 'reviewers' && waived) continue;
-    // A missing PR is not named here: it is the question `prsUnanswered` puts
-    // once this has nothing left to say, so a press that is still filling in
-    // the date does not ask it and then ask it again.
-    if (control.name === 'prs') continue;
+    // A waived field is the escape hatch from its rule, honoured here exactly as
+    // `markRequired` honours it: otherwise this is a nag.
+    if (waivedOn(FORM, control.name)) continue;
     const value = read(control);
     if (!(value === null || (Array.isArray(value) && !value.length))) continue;
+    gated.push(control);
+  }
+  const gate = await answerHere(gated.map(control => control.name), status);
+  if (!gate) {
+    announce('not saved');
+    return true;
+  }
+  if (gate.waived) fields[WAIVERS[NO_PR_FIELD]] = true;
+  const filled = [];
+  const missing = [];
+  let first = null;
+  for (const control of gated) {
+    if (!gate.rest.includes(control.name)) continue;
     if (control.dataset.type === 'date') {
       control.value = today();
       filled.push(labelOf(control));
@@ -2786,18 +2796,24 @@ function stillNeeded(fields) {
   return true;
 }
 
-// Whether this save moves the status to one that needs a PR the form has not got
-// and the record has not waived — the done rule, read off `data-required-at`
-// like every other gate on this page rather than written down as `done`. Asked
-// of a press that MOVES the status, for `stillNeeded`'s reason.
-function prsUnanswered(fields) {
-  if (!('status' in fields) || FORM.dataset.prsWaived === 'true') return false;
-  const status = FORM.querySelector('[name=status]')?.value || OPENS;
-  const control = FORM.querySelector('[data-required-at][name=prs]');
-  if (!control || control.closest('[data-kinds]')?.hidden) return false;
-  if (!control.dataset.requiredAt.split(' ').includes(status)) return false;
-  const value = read(control);
-  return !value || !value.length;
+// A yes to the done-without-a-PR question this page has not written yet, as the
+// status it was given for. Kept across the press that stops to offer the end
+// date, so the press after it does not ask again; dropped by Reset and by the end
+// of the session, and spent when a save lands (`savedHere`).
+let WAIVING = null;
+addEventListener('openproj:reverted', () => { WAIVING = null; });
+addEventListener('openproj:session', event => { if (!event.detail) WAIVING = null; });
+
+// The doors' one seam (`answerTheGate`, the shell), for this page's two: Save and
+// Create. A yes already given for this status answers without asking.
+function answerHere(names, status) {
+  const ask = () => WAIVING === status
+    ? Promise.resolve(true)
+    : askNoPr(document.getElementById('save'));
+  return new Promise(done => answerTheGate(names, ask, gate => {
+    WAIVING = gate && gate.waived ? status : null;
+    done(gate);
+  }));
 }
 
 // What both save paths do with the fields a commit took, and the flag that says
@@ -2808,10 +2824,18 @@ function savedHere(fields) {
   for (const [name, value] of Object.entries(fields || {})) {
     ORIGINAL[name] = JSON.stringify(value);
   }
-  // Answered once, and the next press that moves the status back to done is not
-  // asked again — `missingFor` (`table.py`) reads the same switch off the row.
-  if (fields && fields.prs_waived) FORM.dataset.prsWaived = 'true';
-  markRequired(FORM);
+  // A waiver no box carries is now what the record holds, so the next press
+  // that moves the status back is not asked again — `missingFor` (`table.py`)
+  // reads the same switch off the row. The marks follow only when one moved.
+  const held = (FORM.dataset.waived || '').split(' ').filter(Boolean);
+  const landed = Object.values(WAIVERS)
+    .filter(name => fields && fields[name] === true && !held.includes(name)
+                    && !FORM.querySelector(`[name="${name}"]`));
+  if (landed.length) {
+    FORM.dataset.waived = [...held, ...landed].join(' ');
+    WAIVING = null;
+    markRequired(FORM);
+  }
   STALE = true;
   dirty();
   // The session was left while this was in the air, so the read view is on the
@@ -2837,17 +2861,7 @@ async function save() {
   // the ordinary case — so a check written after that branch would be a check on
   // the surface nobody uses, which is exactly how a start date typed into the
   // past came to be refused by one door and committed by the other.
-  if (stillNeeded(fields)) return;
-  // The done-without-a-PR question, last and before either write path for the
-  // reason the line above is: the room's save takes these same fields. Its
-  // answer travels in them, so the status and the waiver are one commit.
-  if (prsUnanswered(fields)) {
-    if (!(await askNoPr(document.getElementById('save')))) {
-      announce('not saved');
-      return;
-    }
-    fields.prs_waived = true;
-  }
+  if (await stillNeeded(fields)) return;
   // While a room is live the body is not this tab's to send: it is the room's,
   // and Save is one commit made over the socket against the room's base, with
   // the fields from this form. Sending both down this path would be two commits
@@ -2959,8 +2973,7 @@ async function createRecord() {
   // is how the form comes to check the gates of a status the server will not
   // give the record it is about to create.
   const status = FORM.querySelector('[name=status]')?.value || OPENS;
-  const missing = [];
-  let waive = false;
+  const gated = [];
   for (const control of FORM.querySelectorAll('[data-type]')) {
     // A field this kind does not have is not empty, it is absent — sending it
     // would ask the server to set an attribute the model does not define.
@@ -2968,19 +2981,22 @@ async function createRecord() {
     let value;
     try { value = read(control); } catch (error) { announce(error.message); return; }
     const empty = value === null || (Array.isArray(value) && !value.length);
-    const waived = control.name === 'reviewers' &&
-      FORM.querySelector('[name=review_waived]')?.checked;
     // The same gates the labels are marked from, so what the form refuses and
     // what it warned you about cannot be two different lists.
     const gates = control.dataset.requiredAt;
-    // A missing PR is the question below and not a line in the refusal: a
-    // record can be created done with nothing merged, if somebody says so.
-    if (gates && empty && control.name === 'prs' && gates.split(' ').includes(status))
-      waive = true;
-    else if (gates && empty && !waived && gates.split(' ').includes(status))
-      missing.push(labelOf(control));
+    if (gates && empty && !waivedOn(FORM, control.name) && gates.split(' ').includes(status))
+      gated.push(control);
     if (!empty) fields[control.name] = value;
   }
+  // The question first, as at Save: a record can be created done with nothing
+  // merged, if somebody says so, and the rest is refused by name after it.
+  const gate = await answerHere(gated.map(control => control.name), status);
+  if (!gate) {
+    announce('not created');
+    return;
+  }
+  if (gate.waived) fields[WAIVERS[NO_PR_FIELD]] = true;
+  const missing = gated.filter(control => gate.rest.includes(control.name)).map(labelOf);
   if (TITLED.value.trim()) fields.title = TITLED.value.trim(); else missing.push('Title');
   if (missing.length) {
     // The words on the page, not the words in the file: `person_weeks` is what
@@ -2997,13 +3013,6 @@ async function createRecord() {
       + missing.join(', ');
     PROBLEMS.replaceChildren(line);
     return;
-  }
-  if (waive) {
-    if (!(await askNoPr(document.getElementById('save')))) {
-      announce('not created');
-      return;
-    }
-    fields.prs_waived = true;
   }
   // The shell's banner is told before the request goes and the sha after,
   // because the server announces a commit to the event stream before it
@@ -3460,14 +3469,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             # id is not an answer anybody can press.
             display = _link_lines(getattr(record, name), index, links) or empty
         elif name == "prs":
-            # The waiver's words where a done record was closed with nothing
-            # merged, and not the dash: the dash says a PR is missing, and this
-            # record is not short of anything.
-            display = (
-                Markup("{}").format(NO_PR_SAID)
-                if closed_without_a_pr(record)
-                else Markup(", ").join(_pr_link(ref, links) for ref in record.prs) or empty
-            )
+            display = Markup(", ").join(_prs_shown(record, links)) or empty
         elif name == "review_waived":
             display = Markup("waived") if record.review_waived else empty
         elif name == "status":
@@ -4423,7 +4425,7 @@ def render_detail(
                     [row for row in blank_rows if creating in row["kinds"].split()],
                 ),
                 "raw_body": "",
-                "prs_waived": False,
+                "waived": [],
                 "also": [],
                 "reach": [],
                 # Explicit rather than riding Jinja's default Undefined
@@ -4447,10 +4449,11 @@ def render_detail(
                 record.state(index.records), record.priority, record.owner, row["rows"]
             )
             row["raw_body"] = record.body
-            # Whether the done rule's PR gate is already answered, for the two
-            # places this page asks it from — Save, and the marks on the labels.
-            # No control carries it: it is set by answering the question.
-            row["prs_waived"] = record.prs_waived
+            # Which gates the record has switched off, for `waivedOn` — read by
+            # Save and by the marks on the labels. A switch with a box of its own
+            # (`review_waived`) is read off the box instead; `prs_waived` has none,
+            # because it is set by answering the question.
+            row["waived"] = [name for name in WAIVERS.values() if getattr(record, name, False)]
             # What deleting it would take with it, drawn into the confirmation
             # before anybody presses anything — the ids that go back to the
             # server as `data-also`, and the sentences that name the same

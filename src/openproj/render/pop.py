@@ -688,7 +688,7 @@ function popMenu(x, y, id) {
   // than declined, because the browser's own menu drawn over the top of our form
   // is a stranger answer than the press doing nothing. Escape and Cancel are how
   // a form is left, and they are both one key and one control away.
-  if (POP_FORM) return true;
+  if (popHoldsAForm()) return true;
   const row = POP_HOST.rows(id);
   if (!row) return false;
   // Read before anything of ours takes focus, because `document.activeElement`
@@ -1070,9 +1070,14 @@ function popAt(x, y) {
 // and an optional argument would be truthy on every pan.
 let POP_SHUTTING = false;
 
+// A form under the done-without-a-PR question is still the form being filled in.
+const popHoldsAForm = () => !!(POP_FORM || (POP_CONFIRM && POP_CONFIRM.form));
+
 function popClose() {
   if (POP.hidden) return;
-  if (POP_FORM && !POP_SHUTTING) return;
+  if (popHoldsAForm() && !POP_SHUTTING) return;
+  // A question nobody answered is answered no, or its door waits for ever.
+  if (POP_CONFIRM && POP_CONFIRM.settle) POP_CONFIRM.settle(false);
   popCloseSub(false);
   POP.hidden = true;
   POP_ID = null;
@@ -1147,7 +1152,7 @@ POP.addEventListener('keydown', event => {
     // has already had one word mean three things on one screen. `Cancel` and
     // `Keep it` say exactly these, which is the point: a control and the key
     // that does the same thing may not report it differently.
-    announce(POP_FORM ? 'nothing was changed' : 'nothing was deleted');
+    announce(POP_FORM ? 'nothing was changed' : (POP_CONFIRM.unsaid || 'nothing was deleted'));
     popDone();
     return;
   }
@@ -1254,7 +1259,7 @@ function popFocusIn(box, at) {
 // The priority list (`#pripop`) counts as inside: it hangs off the body so the card
 // cannot clip it, and a press on one of its rows is a press on the card's field.
 const popOwns = target => POP.contains(target)
-  || !!(target && target.closest && target.closest('.pripop, #noprask'));
+  || !!(target && target.closest && target.closest('.pripop'));
 document.addEventListener('pointerdown', event => {
   if (POP.hidden || popOwns(event.target)) return;
   popClose();
@@ -1722,13 +1727,10 @@ function popMissing(row, status) {
   const gates = (POP_SCHEMA.required || {})[row.kind] || {};
   return Object.keys(gates)
     .filter(field => gates[field].includes(status))
-    // `review_waived` is honoured for the reason `missingFor` honours it: it is
-    // the escape hatch from the reviewer rule, and asking for reviewers on a row
-    // that has waived them is a nag rather than a question.
-    .filter(field => !(field === 'reviewers' && row.review_waived))
-    // And `prs_waived` for the same reason on the done rule: a row that has once
-    // said it was closed without a PR is not asked again.
-    .filter(field => !(field === 'prs' && row.prs_waived))
+    // A waived field is honoured for the reason `missingFor` honours it: the
+    // switch is the escape hatch from that rule, and asking a row for what it
+    // has waived is a nag rather than a question. `WAIVERS` is the shell's.
+    .filter(field => !(WAIVERS[field] && row[WAIVERS[field]]))
     .filter(field => !popHolds(row, field));
 }
 
@@ -1791,76 +1793,51 @@ function popStatusChoice(row, status) {
   // first one, a record the validator refuses; that is `askFor`'s argument
   // (`table.py`) and it is why the question is asked BEFORE the write there too.
   const missing = popMissing(row, status);
-  // **A missing PR is asked about rather than typed in.** `askNoPr` (`shell.py`)
-  // puts the question every status door asks, and the rest of the gate — the
-  // day it ended — is answered by the form below as before, with the waiver
-  // already in what that form will send.
-  const rest = missing.filter(field => field !== 'prs');
   if (missing.length) {
-    // Every missing field has to be one the form can draw, or the form opens on
-    // a gate it cannot answer. See `popNeeds`.
+    // Every field the form will be asked to type has to be one it can draw, or
+    // it opens on a gate it cannot answer. See `popNeeds`. A missing PR is not
+    // one of them: `answerTheGate` (`shell.py`) puts it as a question, in this
+    // box's own confirmation face, before the form opens on the rest.
+    const typed = missing.filter(field => field !== NO_PR_FIELD);
     const boxes = (POP_SCHEMA.fields || {})[row.kind] || [];
-    if (!rest.every(field => boxes.includes(field))) {
-      item.why = popNeeds(row, status, rest);
-      return item;
-    }
-    if (rest.length < missing.length) {
-      item.run = () => popWaive(row, status, rest);
+    if (!typed.every(field => boxes.includes(field))) {
+      item.why = popNeeds(row, status, typed);
       return item;
     }
     item.stays = true;
-    item.run = () => popForm({
-      mode: 'edit', row: row,
-      // The status first and then what it needs, which is the order the sentence
-      // over the boxes reads in. It is drawn rather than sent invisibly: this
-      // form's one job is that nothing is committed that the reader cannot see.
-      only: ['status', ...missing],
-      // Open, so the box asks rather than waiting to be clicked: somebody who
-      // chose a gated status has already said what they are doing.
-      opens: missing,
-      values: {status: status},
-      // `askFor`'s own opening clause, because it is the same question asked by
-      // the same rule about the same record — see `popNeeds` for what is shared
-      // and what is not.
-      label: `${popHuman(status)} needs ${missing.length === 1 ? 'this' : 'these'}`,
-      verb: 'Save',
+    item.run = () => answerTheGate(missing, () => popNoPr(row, null), gate => {
+      if (!gate) return;
+      const waiver = gate.waived ? {[WAIVERS[NO_PR_FIELD]]: true} : {};
+      if (!gate.rest.length) {
+        popWrite(row.id, {status: status, ...waiver},
+          `${popTitle(row)} is now ${popHuman(status)}`);
+        return;
+      }
+      popForm({
+        mode: 'edit', row: row,
+        // The status first and then what it needs, which is the order the
+        // sentence over the boxes reads in. It is drawn rather than sent
+        // invisibly: this form's one job is that nothing is committed that the
+        // reader cannot see. The waiver rides along unseen because the reader
+        // has just answered for it in words, and `popSave` drops it if the
+        // status on the form is moved off the one that asked.
+        only: ['status', ...gate.rest],
+        // Open, so the box asks rather than waiting to be clicked: somebody who
+        // chose a gated status has already said what they are doing.
+        opens: gate.rest,
+        values: {status: status, ...waiver},
+        // `askFor`'s own opening clause, because it is the same question asked
+        // by the same rule about the same record — see `popNeeds` for what is
+        // shared and what is not.
+        label: `${popHuman(status)} needs ${gate.rest.length === 1 ? 'this' : 'these'}`,
+        verb: 'Save',
+      });
     });
     return item;
   }
   item.run = () => popWrite(row.id, {status: status},
     `${popTitle(row)} is now ${popHuman(status)}`);
   return item;
-}
-
-// The status choice when the record has no PR: the question first, and then
-// either the write or the form on what else the status needs.
-//
-// The box stays up behind the question (`popOwns` counts the question as part of
-// it), so a form can open in it where the menu was. A promise, so `popRan`
-// leaves the closing to this. The form sends `prs_waived` without drawing it,
-// which is the one value a staged box here sends unseen, and the reader has just
-// answered for it in words.
-async function popWaive(row, status, rest) {
-  const yes = await askNoPr(POP);
-  if (!yes) {
-    announce('nothing was changed');
-    popDone();
-    return;
-  }
-  if (!rest.length)
-    return popWrite(row.id, {status: status, prs_waived: true},
-      `${popTitle(row)} is now ${popHuman(status)}`);
-  // A scroll or a resize under the question closes the menu, and the form has
-  // nowhere else to be drawn; it is put back where it was.
-  POP.hidden = false;
-  popForm({
-    mode: 'edit', row: row,
-    only: ['status', ...rest],
-    opens: rest,
-    values: {status: status, prs_waived: true},
-    label: `${popHuman(status)} needs ${rest.length === 1 ? 'this' : 'these'}`,
-    verb: 'Save',
-  });
 }
 
 // **Priority, directly below the status and built like it.** jcanton, 2026-09-18:
@@ -2963,17 +2940,19 @@ function popMarkRequired() {
   const box = form.controls.get('status');
   const status = box && !box.disabled ? box.value : popRawOf(row ? row.status : null);
   const gates = (POP_SCHEMA.required || {})[form.kind] || {};
-  const waived = form.controls.get('review_waived');
-  const off = waived ? waived.checked : !!(row && row.review_waived);
+  // Whether the field's gate is switched off: by its box when the box is open,
+  // and otherwise by the row, which carries what the form has staged — the
+  // gated-status form's waiver is in `popFormRow()`'s values.
+  const off = name => {
+    const switchName = WAIVERS[name];
+    if (!switchName) return false;
+    const control = form.controls.get(switchName);
+    return control ? control.checked : !!(row && row[switchName]);
+  };
   for (const name of form.names) {
-    const wanted = (gates[name] || []).includes(status)
-      // `review_waived` is the escape hatch from the reviewer rule, honoured
-      // here for the reason `missingFor` (`table.py`) honours it: asking for
-      // reviewers on a record that has waived them is a nag.
-      && !(name === 'reviewers' && off)
-      // And `prs_waived`, off the row because no box draws it: the waiver the
-      // gated-status form already carries is in `popFormRow()`'s values.
-      && !(name === 'prs' && row && row.prs_waived);
+    // A waived field is the escape hatch from its rule, honoured here for the
+    // reason `missingFor` (`table.py`) honours it.
+    const wanted = (gates[name] || []).includes(status) && !off(name);
     const control = form.controls.get(name);
     if (control) control.setAttribute('aria-required', String(wanted));
     // **The star goes in the `<dt>`, which is the only name this card has.** The
@@ -3060,19 +3039,31 @@ async function popSave() {
   const held = form.mode === 'new' ? null : popRawOf(popHeld('status'));
   const moving = form.mode === 'new' || status !== held;
   const gates = (POP_SCHEMA.required || {})[form.kind] || {};
-  // Whether this Save has to ask the done-without-a-PR question first. Asked
-  // after every other refusal has had its say, so the question is the last
-  // thing between the press and the write and not one step of several.
-  let asks = false;
+  // **A waiver goes out only with the status it was given for.** The gated-
+  // status form stages one beside `done`, and that form still shows the status
+  // chip: moved to In progress, the Save would otherwise write a record that is
+  // in progress and "closed without a PR".
+  const prsSwitch = WAIVERS[NO_PR_FIELD];
+  if (values[prsSwitch] && !(gates[NO_PR_FIELD] || []).includes(status)) delete values[prsSwitch];
+  const gated = [];
   for (const name of moving ? form.names : []) {
     const has = name in values ? values[name] : popStartOf(name);
     if (!popEmpty(has)) continue;
     if (!(gates[name] || []).includes(status)) continue;
-    if (name === 'reviewers' && (values.review_waived ?? popStartOf('review_waived'))) continue;
-    if (name === 'prs') {
-      if (!(values.prs_waived ?? popStartOf('prs_waived'))) asks = true;
-      continue;
-    }
+    const switchName = WAIVERS[name];
+    if (switchName && (values[switchName] ?? popStartOf(switchName))) continue;
+    gated.push(name);
+  }
+  // The question first, as at every door, and the refusal over what is left
+  // after it. What has been typed is put back into the form before the question
+  // replaces it, so the form it comes back to is the one that was left.
+  const gate = await new Promise(done => answerTheGate(gated, () => {
+    Object.assign(form.values, values);
+    return popNoPr(form.row, form);
+  }, done));
+  if (!gate) return;
+  if (gate.waived) values[prsSwitch] = true;
+  for (const name of gate.rest) {
     why.push(`${popHuman(status)} needs ${popLabel(name)}.`);
     offender = offender || form.controls.get(name);
     offending = offending || name;
@@ -3090,13 +3081,6 @@ async function popSave() {
     if (offender) offender.focus();
     else popOpenField(offending || form.names[0]);
     return;
-  }
-  // Cancel leaves the box open holding the edit, which is what Cancel on a
-  // question about one press means; the box's own Cancel is still beside Save.
-  if (asks) {
-    if (!(await askNoPr(form.save))) return;
-    if (POP_FORM !== form) return;
-    values.prs_waived = true;
   }
   // Held while the commit is in the air. `POP_WRITING`, taken in `popStart` for
   // both write doors, is the rule — a flag is a statement about the page, and
@@ -3257,6 +3241,91 @@ function popLanded(id, title) {
 // The sentence under the question, and it is the record page's own — this panel
 // and that one are the same question and may not use two vocabularies for it.
 const POP_REVERT = 'Commit deletion? Can only be undone with git revert.';
+
+// **The done-without-a-PR question, in this box's own confirmation face**, as
+// `Delete…` asks its question: the table and the record page put it in the
+// shell's dialog, and this box is already a dialog when it needs one. Answers
+// whether to go on, through `answerTheGate`.
+//
+// `form` is the form the question was put over, when it was — `popSave` asking
+// on `Edit…` — and the face gives the box back to it either way: yes goes on to
+// the write, no leaves the edit where it was. Without a form, no is Cancel on
+// the whole gesture and the box goes.
+//
+// Any other way off this face — Escape, a scroll, a press outside — is no, and
+// `popClose` says so through `settle`, or the door would wait for ever.
+function popNoPr(row, form) {
+  return new Promise(resolve => {
+    const asking = {id: row ? row.id : null, form: form,
+                    unsaid: 'nothing was changed', settled: false};
+    asking.settle = yes => {
+      if (asking.settled) return;
+      asking.settled = true;
+      resolve(yes);
+    };
+    const box = document.createElement('div');
+    box.className = 'popconfirm';
+    box.dataset.kind = 'confirm-nopr';
+    const heading = document.createElement('p');
+    heading.className = 'popheading';
+    heading.dataset.kind = 'confirm-heading';
+    heading.textContent = NO_PR.asked;
+    box.append(heading);
+    // Where a refusal of the write that follows a yes is drawn, as `popAsk`
+    // draws one: `popSay` puts it in whichever confirmation face is up.
+    asking.why = document.createElement('ul');
+    asking.why.className = 'popwhy';
+    asking.why.dataset.kind = 'confirm-why';
+    asking.why.hidden = true;
+    asking.why.tabIndex = -1;
+    box.append(asking.why);
+    const acts = document.createElement('div');
+    acts.className = 'popacts';
+    const yes = popPress('confirm-nopr-yes', NO_PR.yes, 'popsave');
+    const no = popPress('confirm-nopr-no', NO_PR.no, 'popcancel');
+    // The shell dialog's guard, for the same press: a click a key made counts
+    // only when that key went down in this face. See `NO_PR_KEYED` in the shell.
+    let keyed = false;
+    box.addEventListener('keydown', () => { keyed = true; });
+    const pressed = answer => event => {
+      if (event && event.detail === 0 && !keyed) return;
+      popNoPrAnswered(asking, answer);
+    };
+    yes.onclick = pressed(true);
+    no.onclick = pressed(false);
+    acts.append(yes, no);
+    box.append(acts);
+    POP_FORM = null;
+    POP_CONFIRM = asking;
+    POP.classList.remove('popforming');
+    POP.classList.add('popasking');
+    POP.setAttribute('role', 'dialog');
+    POP.setAttribute('aria-label', NO_PR.asked);
+    popCloseSub(false);
+    POP.replaceChildren(box);
+    POP.scrollTop = 0;
+    popPlace();
+    yes.focus();
+  });
+}
+
+function popNoPrAnswered(asking, yes) {
+  if (!popAsking(asking)) return;
+  if (asking.form) {
+    POP_CONFIRM = null;
+    POP.classList.remove('popasking');
+    POP_FORM = asking.form;
+    popDrawForm();
+    if (!yes) {
+      announce('not saved');
+      POP_FORM.save.focus();
+    }
+  } else if (!yes) {
+    announce(asking.unsaid);
+    popDone();
+  }
+  asking.settle(yes);
+}
 
 // Whether the panel an answer was asked for is still the panel on screen.
 //

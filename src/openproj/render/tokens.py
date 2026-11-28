@@ -492,6 +492,13 @@ REQUIRED_AT = required_at()
 # this; the shell hands the same string to the two the browser draws
 # (`NO_PR_SAID`), so the words are written once.
 NO_PR_SAID = "Done without a PR"
+# And the question every door that sets a status puts before it writes `done` on a
+# record with no PR, with the two answers by what each will do. Here beside the
+# words it leads to, so the page and the tests read one copy; the shell hands all
+# four to the browser (`NO_PR` there).
+NO_PR_ASKED = "No pull request is linked. Mark done anyway?"
+NO_PR_YES = "Mark done without a PR"
+NO_PR_NO = "Cancel"
 
 # The reader's name for a field. `appetite_weeks` and `effort_weeks` were two
 # storage fields holding one quantity, and calling it Effort here, Appetite on the

@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from pages import render_paths, render_source
 from test_injection import run_js
 from test_store import commit_directly
+from test_table import NO_PR_MODAL, NO_PR_OPENS, no_pr_answer
 from test_web import (
     ANN,
     DONE,
@@ -49,6 +50,7 @@ from test_web import (
 )
 
 from openproj.auth import sign_session
+from openproj.render.tokens import NO_PR_ASKED, NO_PR_NO, NO_PR_YES
 from openproj.store import StoreDiverged
 from openproj.web import SESSION_COOKIE, _refusal, create_app
 
@@ -900,31 +902,65 @@ FINISHING = """
 """
 
 
-def test_pressing_save_on_a_finished_record_offers_the_day_it_ended(pages):
+# A press of Save on a record moved to Done with no PR: the question first, then
+# the day it ended offered in its box. `{second}` is what the test does after.
+ASKED_ON_SAVE = """
+(async () => {{
+  {modal}
+  const status = FORM.querySelector('[name=status]');
+  status.value = 'done';
+  status.dataset.word = 'Done';
+  const first = save();
+  {opens}
+  const asked = {{open: !!NO_PR_BOX.open,
+                 said: document.getElementById('noprask-q').textContent,
+                 buttons: [document.getElementById('noprask-yes').textContent,
+                           document.getElementById('noprask-no').textContent],
+                 filled: FORM.querySelector('[name=end_date]').value}};
+  {answer}
+  await first;
+  const offered = {{filled: FORM.querySelector('[name=end_date]').value,
+                   {SAY}, unsaved: UNSAVED.textContent, open: !!NO_PR_BOX.open}};
+  {second}
+  return {{asked, offered, waived: FORM.dataset.waived}};
+}})()
+"""
+
+
+def asked_on_save(pages, *, yes: bool, second: str = "", replies=None) -> dict:
+    return drive(
+        pages["detail_plain"],
+        ASKED_ON_SAVE.format(
+            modal=NO_PR_MODAL, opens=NO_PR_OPENS, answer=no_pr_answer(yes), second=second, SAY=SAY
+        ),
+        replies=replies,
+    )
+
+
+def test_pressing_save_on_a_finished_record_asks_and_then_offers_the_day_it_ended(pages):
     """The ask, and the reason it stops the save rather than committing what it
     guessed.
 
-    Marking a record done demands the day it ended and that day is almost always
-    today, so the answer is written into the box it belongs in — and then nothing
-    is sent, because a value the page wrote is a value nobody has read yet. A
-    second press commits it, and somebody who finished on Friday changes four
-    characters instead of being told what they have not done.
-
-    The seeded task cites no pull request either, and that is not named here: a
-    missing PR is the done-without-a-PR question, which is asked once the date
-    has been read and not while it is still being offered — so this press offers
-    the date, names nothing else, asks nothing, and sends nothing.
+    The seeded task cites no pull request, so the first thing this press does is
+    put the done-without-a-PR question — before the date, at every door, because
+    whether this is done at all with nothing merged decides whether there is a
+    day it ended. Answered yes, the press goes on to the date: done demands the
+    day it ended and that day is almost always today, so the answer is written
+    into the box it belongs in — and then nothing is sent, because a value the
+    page wrote is a value nobody has read yet.
     """
-    answer = drive(
-        pages["detail_plain"],
-        FINISHING.format(extra="", SAY=SAY + ", asked: NO_PR_BOX !== null"),
-    )
+    answer = asked_on_save(pages, yes=True)
 
-    assert answer["value"]["filled"] == date.today().isoformat()
-    said = answer["value"]["state"]
+    asked, offered = answer["value"]["asked"], answer["value"]["offered"]
+    assert asked["open"], "the press went past the question without asking it"
+    assert asked["said"] == NO_PR_ASKED
+    assert asked["buttons"] == [NO_PR_YES, NO_PR_NO]
+    assert asked["filled"] == "", "the date was offered before the question was answered"
+    assert offered["open"] is False
+    assert offered["filled"] == date.today().isoformat()
+    said = offered["state"]
     assert "set to today — check it and press Save again" in said, said
     assert "still needed" not in said, said
-    assert answer["value"]["asked"] is False, "the question came before the date was read"
     # The FIELD name is `labelOf`'s job and this harness cannot answer it:
     # `drive.js` returns null from every `previousElementSibling`, so `labelOf`
     # falls back to `control.name` here where a browser answers "End date". What
@@ -934,7 +970,7 @@ def test_pressing_save_on_a_finished_record_offers_the_day_it_ended(pages):
     assert ">End date<" in pages["detail_plain"]
     # The counter has to move with it, or the bar claims one change over a form
     # holding two and Reset puts back a date nobody could see had been added.
-    assert answer["value"]["unsaved"] == "2 unsaved changes", answer["value"]["unsaved"]
+    assert offered["unsaved"] == "2 unsaved changes", offered["unsaved"]
     assert not answer["calls"], "nothing was sent"
 
 
@@ -962,64 +998,39 @@ def test_the_second_press_sends_the_date_the_page_offered(pages):
     assert sent["prs"] == ["kilnlab/kiln4py#1"]
 
 
-# The second press on a record that has no PR: the date has been read, so what is
-# left is whether this is done at all with nothing merged.
-ASKED_ON_SAVE = """
-(async () => {{
-  const settle = async () => {{ for (let i = 0; i < 50; i++) await Promise.resolve(); }};
-  const status = FORM.querySelector('[name=status]');
-  status.value = 'done';
-  status.dataset.word = 'Done';
-  await save();
-  const going = save();
-  await settle();
-  const asked = {{open: NO_PR_BOX.hasAttribute('open'),
-                 said: NO_PR_BOX.querySelector('p').textContent,
-                 buttons: [...NO_PR_BOX.querySelectorAll('button')].map(b => b.textContent)}};
-  {answer}
-  await going;
-  return {{asked, open: NO_PR_BOX.hasAttribute('open'), waived: FORM.dataset.prsWaived || '',
-          {SAY}}};
-}})()
-"""
-YES = "NO_PR_BOX.querySelector('button.primary').onclick();"
-NO = "[...NO_PR_BOX.querySelectorAll('button')].find(b => b.textContent === 'Cancel').onclick();"
-
-
-def test_saving_a_record_done_with_no_pr_asks_and_sends_the_waiver_with_it(pages):
-    """The record page's door, and the hill's with it: the hill only sets the
-    status in the form, and Save is what writes it.
-
-    One question in the app's words, with buttons that say what they do, and the
-    yes is one PATCH carrying the status, the date and the waiver together — a
-    done record that waits for its waiver in a second commit is, for the length
-    of the first, a record the validator refuses.
-    """
-    answer = drive(
-        pages["detail_plain"],
-        ASKED_ON_SAVE.format(answer=YES, SAY=SAY),
+def test_the_press_after_the_yes_sends_the_waiver_with_the_date(pages):
+    """The yes is remembered across the press that stopped to offer the date, so
+    the second press is not asked again, and it is one PATCH carrying the
+    status, the date and the waiver together — a done record that waits for its
+    waiver in a second commit is, for the length of the first, a record the
+    validator refuses."""
+    answer = asked_on_save(
+        pages,
+        yes=True,
+        second=(
+            f"const again = save(); {NO_PR_OPENS} offered.again = !!NO_PR_BOX.open; await again;"
+        ),
         replies=[{"status": 200, "json": {"outcome": "committed", "commit": "c" * 40}}],
     )
 
-    asked = answer["value"]["asked"]
-    assert asked["open"], "the press wrote without asking, or asked nothing"
-    assert asked["said"] == "No pull request is linked. Mark done anyway?"
-    assert asked["buttons"] == ["Mark done without a PR", "Cancel"]
-    assert answer["value"]["open"] is False, "the question stayed up after it was answered"
+    assert answer["value"]["offered"]["again"] is False, "the second press asked again"
     assert len(answer["calls"]) == 1, answer["calls"]
     sent = json.loads(answer["calls"][0]["body"])["fields"]
     assert sent == {"status": "done", "end_date": date.today().isoformat(), "prs_waived": True}
-    assert answer["value"]["waived"] == "true", "the next press would be asked again"
+    assert answer["value"]["waived"] == "prs_waived", "the next move to done would ask again"
 
 
 def test_cancelling_the_question_on_the_record_page_sends_nothing(pages):
-    """Cancel is the status left as it was in git: nothing goes out, and the
-    page says so in its live region rather than going quiet over a press."""
-    answer = drive(pages["detail_plain"], ASKED_ON_SAVE.format(answer=NO, SAY=SAY))
+    """Cancel is the status left as it was in git: nothing goes out, no date is
+    offered for a close that did not happen, and the page says so in its live
+    region rather than going quiet over a press."""
+    answer = asked_on_save(pages, yes=False)
 
+    offered = answer["value"]["offered"]
     assert answer["value"]["asked"]["open"]
     assert not answer["calls"], "a cancelled question wrote"
-    assert answer["value"]["state"] == "not saved", answer["value"]["state"]
+    assert offered["state"] == "not saved", offered["state"]
+    assert offered["filled"] == ""
     assert answer["value"]["waived"] == ""
 
 
@@ -1031,7 +1042,7 @@ def test_a_record_created_done_with_no_pr_is_asked_too(pages):
         pages["new_plain"],
         """
 (async () => {
-  const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+  MODAL
   // The shim reflects no `<select>`'s selection, so the kind is chosen the way
   // the page's own switch does it, which is what unhides the task's fields.
   KIND.value = 'task';
@@ -1040,13 +1051,16 @@ def test_a_record_created_done_with_no_pr_is_asked_too(pages):
   FORM.querySelector('[name=status]').value = 'done';
   FORM.querySelector('[name=end_date]').value = '2026-08-21';
   const going = save();
-  await settle();
-  const asked = NO_PR_BOX.hasAttribute('open');
-  NO_PR_BOX.querySelector('button.primary').onclick();
+  OPENS
+  const asked = !!NO_PR_BOX.open;
+  YES
   await going;
   return {asked};
 })()
-""",
+"""
+        .replace("MODAL", NO_PR_MODAL)
+        .replace("OPENS", NO_PR_OPENS)
+        .replace("YES", no_pr_answer(True)),
         replies=[{"status": 201, "json": {"id": "task-0a0a0a", "commit": "c" * 40}}],
     )
 
