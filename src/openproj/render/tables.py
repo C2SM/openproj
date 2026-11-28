@@ -627,6 +627,51 @@ function tableEdit(text, at, op) {
   };
 }
 
+// --- the page's half: the button, the menu, and the save -------------------
+
+// One of the four, on whatever surface is mounted, as a person's edit: one
+// splice over the table and nothing else, so it is one undo step and reaches a
+// room as typing. Asked of the text and the caret as they are NOW, at the
+// press, rather than when the menu opened — somebody in the room may have typed
+// in between.
+function editTable(surface, op) {
+  const edit = tableEdit(surface.text(), surface.caret().from, op);
+  if (!edit) {
+    announce('The caret is not in a table any more, so nothing was changed.');
+    return;
+  }
+  if (edit.refused) { announce(edit.refused); return; }
+  surface.splice(edit.run.from, edit.run.to, edit.run.put);
+  surface.setCaret(edit.caret);
+  announce(TABLE_EDITS[op].said);
+}
+
+// The `▤` button, which is two buttons in one: outside a top-level table it
+// inserts the starter table it always has, through `applyMark`; inside one it
+// opens the menu of four. No shortcut — the comment on its `FORMATS` entry says
+// why — so the keyboard path is the button itself: Tab to it, Enter, the arrows
+// in the menu, Escape back.
+//
+// `menuUnder` binds the button's click to open and close its menu, and this
+// binds it again, because here a press asks the caret first. mousedown and not
+// click for the pointer, for the reason every mark on the bar is: a click comes
+// after the box has lost the focus, and a press that moved the caret would be
+// asking about the wrong place. A click with `detail === 0` is Enter or Space.
+function attachTableButton(surface, button, mark) {
+  const menu = menuUnder(button, 'tablemenu', 'Table', () =>
+    Object.entries(TABLE_EDITS).map(([op, edit]) => ({
+      text: edit.label,
+      choose: () => editTable(surface, op),
+    })));
+  const press = () => {
+    if (menu.shown()) { menu.close(); return; }
+    if (tableAt(surface.text(), surface.caret().from)) menu.open();
+    else applyMark(surface, mark);
+  };
+  button.onmousedown = event => { event.preventDefault(); press(); };
+  button.onclick = event => { if (event.detail === 0) press(); };
+}
+
 // An explicit save — the Save button and Ctrl-S / ⌘S, which both call `save()`
 // — aligns every top-level table first, when this person has not switched it
 // off. Never the room's quiet commit: that is the server's, twenty seconds after

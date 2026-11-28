@@ -1196,7 +1196,12 @@ const FORMATS = [
   // for, and none of them is something anybody inserts twice a minute.
   // `chooses` is an offset and a length into the inserted text, so the word you
   // are about to replace is already selected.
-  {label: '▤', title: 'Table',
+  //
+  // `table`: two buttons in one since 2026-11-28 — outside a table it inserts
+  // this, inside one it opens a menu that edits the table (`attachTableButton`
+  // in `tables.py`). Still an `insert` mark, so `applyMark` is what writes the
+  // starter table and a mark sweep that presses it outside a table sees it write.
+  {label: '▤', title: 'Table', table: true,
    insert: '| Heading | Heading |\n| --- | --- |\n| Cell | Cell |', chooses: [2, 7]},
   {label: '—', title: 'Horizontal rule', insert: '---'},
 ];
@@ -2247,6 +2252,8 @@ function attachEditing(surface, bar, templates) {
         button.id = 'drawing';
         button.innerHTML = DRAW_ART;
         button.setAttribute('aria-label', mark.title);
+      } else if (mark.table) {
+        attachTableButton(surface, button, mark);
       } else if (mark.upload) {
         // Named as what it IS, beside `hist`, and not left to be told apart by
         // its copy. `test_the_toolbar_and_the_keymap_do_not_cancel_each_other`
@@ -3363,11 +3370,26 @@ function menuUnder(button, className, label, rows) {
     if (menu.hidden || event.target === button || menu.contains(event.target)) return;
     close();
   });
+  // The arrows walk the items, wrapping at either end, and Home and End go to
+  // the first and the last: the keys a `role="menu"` promises a screen reader,
+  // and the only way through a menu that Tab would leave.
   menu.addEventListener('keydown', event => {
-    if (event.key !== 'Escape') return;
-    close();
-    button.focus();
+    if (event.key === 'Escape') {
+      close();
+      button.focus();
+      return;
+    }
+    const items = [...menu.querySelectorAll('button')];
+    const at = items.indexOf(document.activeElement);
+    const to = {ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1}[event.key];
+    if (to === undefined || !items.length) return;
+    event.preventDefault();
+    items[(to + items.length) % items.length].focus();
   });
+
+  // For a button that decides for itself when its menu opens, which the Table
+  // button does: it opens one only when the caret is in a table.
+  return {open, close, shown: () => !menu.hidden};
 }
 
 function attachDrawing(surface, status) {

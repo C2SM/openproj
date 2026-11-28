@@ -737,3 +737,140 @@ def test_format_tables_on_save_can_be_switched_off(page: str):
 
     fresh = run_js(page, "document.getElementById('tablefmt').textContent", page=True)
     assert fresh["value"] == "Format tables on save: on", "the default is not on"
+
+
+# --------------------------------------------------------------------------- #
+# The Table button, which is two buttons in one
+# --------------------------------------------------------------------------- #
+
+_PRESSED = r"""
+const wait = ms => new Promise(go => setTimeout(go, ms));
+if (!document.querySelector('article.record.editing')) { flipEditing(); await wait(300); }
+const button = [...document.querySelectorAll('#marks .mark')].find(one => one.title === 'Table');
+const menu = () => document.querySelector('.tablemenu');
+const said = () => document.getElementById('state').textContent;
+const press = () => button.dispatchEvent(
+  new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+const put = (text, word) => {
+  SURFACE.apply(() => SURFACE.splice(0, SURFACE.text().length, text));
+  SURFACE.setCaret(text.indexOf(word));
+};
+
+// Outside a table it is the button it always was.
+SURFACE.setCaret(0);
+press();
+await wait(50);
+const outside = {text: SURFACE.text(), menu: !menu().hidden};
+
+// Inside one, from the keyboard: Enter on the focused button is a click with no
+// pointer behind it, and the menu takes the focus.
+put(TABLE, 'one');
+button.focus();
+button.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, detail: 0}));
+await wait(50);
+const key = name => document.activeElement.dispatchEvent(
+  new KeyboardEvent('keydown', {key: name, bubbles: true, cancelable: true}));
+const keyboard = {
+  items: [...menu().querySelectorAll('[role=menuitem]')].map(one => one.textContent),
+  expanded: button.getAttribute('aria-expanded'),
+  first: document.activeElement.textContent,
+};
+key('ArrowDown');
+keyboard.down = document.activeElement.textContent;
+key('ArrowUp');
+key('ArrowUp');
+keyboard.wrapped = document.activeElement.textContent;
+key('End');
+keyboard.end = document.activeElement.textContent;
+key('Home');
+keyboard.home = document.activeElement.textContent;
+key('Escape');
+keyboard.escaped = {hidden: menu().hidden, back: document.activeElement === button,
+                    expanded: button.getAttribute('aria-expanded')};
+keyboard.untouched = SURFACE.text() === TABLE;
+
+const edits = {};
+for (const label of LABELS) {
+  put(TABLE, 'one');
+  press();
+  await wait(30);
+  [...menu().querySelectorAll('button')].find(one => one.textContent === label).click();
+  await wait(30);
+  const at = SURFACE.caret().from;
+  edits[label] = {text: SURFACE.text(), after: SURFACE.text().slice(at).split('\n')[0],
+                  said: said(), hidden: menu().hidden};
+}
+historyOf(SURFACE).step('undo');
+await wait(50);
+const undone = SURFACE.text();
+
+put(TABLE, 'a|');
+press();
+await wait(30);
+[...menu().querySelectorAll('button')].find(one => one.textContent === 'Delete row').click();
+await wait(30);
+const refused = {text: SURFACE.text(), said: said()};
+return {outside, keyboard, edits, undone, refused};
+"""
+
+_LABELS = {
+    "row-below": "Add row below",
+    "column-right": "Add column right",
+    "delete-row": "Delete row",
+    "delete-column": "Delete column",
+}
+
+
+@pytest.mark.parametrize("editor", ["plain", "ace"])
+def test_the_table_button_inserts_outside_a_table_and_edits_inside_one(
+    client: TestClient, page: str, tmp_path: Path, editor: str
+):
+    """The `▤` button: with the caret outside a top-level table it inserts the
+    starter table it always has; inside one it opens a menu of exactly four
+    edits, reachable by Tab and Enter, walked with the arrows, closed by Escape
+    with the focus handed back. Each item edits as `tableEdit` does, as one undo
+    step, and says what it did in the live region."""
+    html = client.get(f"/detail/{TASK}?editor={editor}").text
+    got = measured_in(
+        chrome(),
+        html,
+        tmp_path / f"table-button-{editor}.html",
+        1400,
+        _PRESSED.replace("TABLE", json.dumps(_TABLE)).replace(
+            "LABELS", json.dumps(list(_LABELS.values()))
+        ),
+        query=f"?editor={editor}",
+        patience=5000,
+    )
+
+    assert "| Heading | Heading |\n| --- | --- |\n| Cell | Cell |" in got["outside"]["text"], (
+        "outside a table the button no longer inserts the starter table"
+    )
+    assert got["outside"]["menu"] is False, "and it opened the menu instead of only writing"
+
+    keyboard = got["keyboard"]
+    assert keyboard["items"] == list(_LABELS.values())
+    assert keyboard["expanded"] == "true" and keyboard["first"] == "Add row below", (
+        "the menu opened somewhere the keyboard was not taken to"
+    )
+    assert keyboard["down"] == "Add column right"
+    assert keyboard["wrapped"] == "Delete column", "ArrowUp from the first item did not wrap"
+    assert keyboard["end"] == "Delete column" and keyboard["home"] == "Add row below"
+    assert keyboard["escaped"] == {"hidden": True, "back": True, "expanded": "false"}
+    assert keyboard["untouched"], "opening and closing the menu wrote something"
+
+    said = {
+        "row-below": "A row is added below.",
+        "column-right": "A column is added to the right.",
+        "delete-row": "The row is deleted.",
+        "delete-column": "The column is deleted.",
+    }
+    for op, label in _LABELS.items():
+        want = edit(page, op)
+        assert got["edits"][label]["text"] == want["text"], f"{label} wrote something else"
+        assert got["edits"][label]["after"] == want["after"], f"{label} put the caret elsewhere"
+        assert said[op] in got["edits"][label]["said"], got["edits"][label]["said"]
+        assert got["edits"][label]["hidden"], f"{label} left the menu open"
+    assert got["undone"] == _TABLE, "one undo did not take the last edit back"
+    assert got["refused"]["text"] == _TABLE
+    assert "header row is what makes this a table" in got["refused"]["said"]
