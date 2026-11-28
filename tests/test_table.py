@@ -2754,7 +2754,8 @@ def test_a_title_somebody_typed_never_becomes_markup():
         "${esc(row.id)}",  # and the href it is a link to
         "return esc(stored(row, key));",  # owner, developers, reviewers, dates
         "${esc(human(row.status))}",  # the kind is no longer drawn in any cell
-        "${esc(ref)}",  # a PR reference, repo and number both
+        "${esc(named || ref)}",  # a PR reference, repo and number both, in the title
+        "${esc(text)}",  # and the number, or the reference as written, on the link
         "${esc(was)}",  # and the value the editor opens with
     ):
         assert interpolation in body, interpolation

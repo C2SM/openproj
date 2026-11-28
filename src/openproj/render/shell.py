@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from .. import __version__
 from ..index import Face, Index
 from ..model import (
+    PR_GITHUB_PAGE,
+    PR_PAGE_REF,
     RUNG,
     SWITCHES_FILE,
     VIEW_NEEDS,
@@ -133,6 +135,21 @@ class Links(BaseModel):
         return {
             repository_name(url).lower(): url + spelled[forge] if forge in spelled else ""
             for url, forge in self.repositories
+        }
+
+    def repository_urls(self) -> list[str]:
+        """Every listed repository's page, whatever its forge answered: what a URL is
+        read back into a reference against (`pr_reference`) is its shape."""
+        return [url for url, _ in self.repositories]
+
+    def pr_rule(self) -> dict:
+        """`pr_reference` as data, for the page's `prReference`: each listed
+        repository's page by its name, and the two pattern sources, so the page's
+        copy of the rule is built from the same text rather than retyped."""
+        return {
+            "pages": {repository_name(url): url for url in self.repository_urls()},
+            "page": PR_PAGE_REF,
+            "github": PR_GITHUB_PAGE,
         }
 
     def unread_repositories(self) -> list[tuple[str, str]]:
@@ -2666,6 +2683,9 @@ tr.nothing .hint { margin: 0 0 .75rem; }
 {#- Where `owner/repo#N` is linked, per repository: `Links.pr_bases`, so the
     table's script looks a reference up and never spells a forge's URL itself. -#}
 <script id="prbases" type="application/json">{{ links.pr_bases()|tojson }}</script>
+{#- And what a URL is read back into a reference against: `Links.pr_rule`, for
+    `prReference` below and the prs box. -#}
+<script id="prrule" type="application/json">{{ links.pr_rule()|tojson }}</script>
 {#- One list per field every picker on the page opens (`rung_picker`), and the
     picker itself in a template per field, for the editors a script builds: the
     table's cell and the edit card clone it rather than writing a second copy of
@@ -3354,6 +3374,29 @@ function prHref(ref) {
   const base = PR_BASES[found[1].toLowerCase()];
   if (base === undefined) return `https://github.com/${found[1]}/pull/${found[2]}`;
   return base ? base + found[2] : '';
+}
+
+// `pr_reference` in `model.py`, over `Links.pr_rule`: the `owner/repo#N` a pull
+// request or issue URL names, or '' for anything else. The patterns are the
+// server's own source text, so the reasons they are shaped the way they are live
+// beside them there and once.
+const PR_RULE = (() => {
+  try { return JSON.parse(document.getElementById('prrule').textContent); }
+  catch (error) { return {pages: {}, page: '(?!)', github: '(?!)'}; }
+})();
+const PR_PAGE_REF = new RegExp(`^(?:${PR_RULE.page})$`, 'i');
+const PR_GITHUB_PAGE = new RegExp(`^(?:${PR_RULE.github})`, 'i');
+function prReference(ref) {
+  const said = String(ref).trim();
+  const pages = Object.entries(PR_RULE.pages);
+  const github = PR_GITHUB_PAGE.exec(said);
+  if (github) pages.push([github[1], github[0]]);
+  for (const [name, page] of pages) {
+    if (!said.toLowerCase().startsWith(page.toLowerCase() + '/')) continue;
+    const found = PR_PAGE_REF.exec(said.slice(page.length));
+    if (found) return `${name}#${found[1]}`;
+  }
+  return '';
 }
 
 // `2026-07-14` as `14.07.2026`. The card's dates keep the century — it is the one

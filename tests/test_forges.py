@@ -32,6 +32,7 @@ def seed_index(seed_root: Path) -> Index:
 FORGEJO = "https://git.example.org/jacopo/watchface"
 GITLAB = "https://gitlab.com/someone/thing"
 GITHUB = "https://github.com/C2SM/icon4py"
+UNREACHABLE = "https://git.example.me/j/site"
 
 LISTED = ROUTES.model_copy(
     update={
@@ -39,6 +40,7 @@ LISTED = ROUTES.model_copy(
             (GITHUB, "github"),
             (FORGEJO, "forgejo"),
             (GITLAB, "unsupported"),
+            (UNREACHABLE, "unreachable"),
         )
     }
 )
@@ -106,6 +108,135 @@ def test_the_page_links_a_reference_where_the_server_does(seed_index):
     said = run_js(page, f"{json.dumps(list(REFERENCES))}.map(prHref)", page=True)
 
     assert said["value"] == list(REFERENCES.values())
+
+
+# Each URL, and the reference it is drawn as — jcanton, 2026-11-28: plan-d stored
+# its Forgejo pull requests as full URLs and the page drew them that way. A listed
+# repository's page with GitHub's or Forgejo's spelling, an issue, a trailing tab
+# or anchor, a host in capitals; GitHub's whether listed or not; and the near
+# misses that must stay as written: a dot segment that would send the link to
+# another pull request than the one drawn, a host that only LOOKS like github.com
+# (a dotless ı, which Python's case folding let through), a name that is not
+# ASCII, a repository whose name only STARTS like a listed one, a number with a
+# letter on it, GitLab's own spelling, and anything that is already a reference or
+# is not a link at all. A repository whose forge could not be asked is drawn short
+# too: the href is still the URL.
+SHORTENED = {
+    "https://git.example.org/jacopo/watchface/pulls/3": "jacopo/watchface#3",
+    "https://git.example.org/jacopo/watchface/issues/7": "jacopo/watchface#7",
+    "https://GIT.example.org/jacopo/watchface/pulls/3/files": "jacopo/watchface#3",
+    "https://github.com/C2SM/icon4py/pull/12#discussion_r1": "C2SM/icon4py#12",
+    "https://github.com/GridTools/gt4py/pull/5": "GridTools/gt4py#5",
+    "https://github.com/GridTools/gt4py/issues/6?x=1": "GridTools/gt4py#6",
+    "https://git.example.me/j/site/pulls/1": "j/site#1",
+    "https://github.com/a/b/pull/1/../../x/y/pull/9": "",
+    "https://github.com/a/b/pull/1/%2e%2e/9": "",
+    "https://gıthub.com/C2SM/icon4py/pull/1": "",
+    "https://github.com/ä/b/pull/1": "",
+    "https://git.example.org/jacopo/watchface-two/pulls/3": "",
+    "https://git.example.org/jacopo/watchface/pulls/3x": "",
+    "https://gitlab.com/someone/thing/-/merge_requests/4": "",
+    "C2SM/icon4py#12": "",
+    "see the meeting notes": "",
+}
+
+
+# The URL the tests below draw, paste and search for
+WATCHFACE_3 = "https://git.example.org/jacopo/watchface/pulls/3"
+
+
+@pytest.mark.parametrize(("url", "ref"), SHORTENED.items())
+def test_a_pull_request_url_is_drawn_as_the_reference_it_names(url: str, ref: str):
+    """And links to the URL as written: the file is not what changes."""
+    from openproj.model import pr_reference
+    from openproj.render.markdown import _pr_link, pr_href
+
+    assert pr_reference(url, LISTED.repository_urls()) == ref
+    href = pr_href(url, LISTED)
+    link = [(e.attrs["href"], e.text) for e in elements(str(_pr_link(url, LISTED))) if e.tag == "a"]
+    assert link == ([(href, ref or url)] if href else [])
+
+
+def test_the_page_reads_a_url_back_into_the_reference_the_server_does(seed_index):
+    """`prReference` is `pr_reference` built from the same pattern text, `Links.pr_rule`."""
+    from test_injection import run_js
+
+    from openproj.render import render_table
+
+    page = render_table(seed_index, LISTED)
+    said = run_js(page, f"{json.dumps(list(SHORTENED))}.map(prReference)", page=True)
+
+    assert said["value"] == list(SHORTENED.values())
+
+
+def test_the_table_draws_a_stored_url_as_its_number(seed_index):
+    """The cell keeps only the number, as it does for a reference, with the whole
+    reference in the title."""
+    from test_injection import run_js
+
+    from openproj.render import render_table
+
+    page = render_table(seed_index, LISTED)
+    drawn = run_js(page, f"prLink({json.dumps(WATCHFACE_3)})", page=True)["value"]
+
+    assert [(e.attrs["href"], e.attrs["title"], e.text) for e in elements(drawn)] == [
+        (WATCHFACE_3, "jacopo/watchface#3", "#3")
+    ]
+
+
+def test_a_paste_from_a_forge_that_cannot_be_linked_keeps_its_url(seed_index):
+    """The prs box tidies a pasted URL into the reference it names, except where
+    `owner/repo#N` would have nowhere to link: then the URL is the one spelling
+    that still opens something, and it is drawn short anyway."""
+    from test_injection import run_js
+
+    from openproj.render import render_detail
+
+    page = render_detail(
+        seed_index, LISTED, only=next(iter(seed_index.plan)), base_commit="deadbee", may_write=True
+    )
+    pasted = [WATCHFACE_3, f"{UNREACHABLE}/pulls/1"]
+    said = run_js(page, f"{json.dumps(pasted)}.map(asReference)", page=True)["value"]
+
+    assert said == ["jacopo/watchface#3", None]
+
+
+def test_a_stored_url_is_asked_about_and_found_as_the_reference_it_names():
+    """Drawn as `#3`, so it is looked up and searched for as `jacopo/watchface#3` too:
+    a cell that reads like a reference and has no state mark and no search hit is a
+    cell that lies about which of the two it is."""
+    from openproj.index import query_fields
+    from openproj.model import Record
+    from openproj.web import _cited, _readable
+
+    index = build_index(
+        [Record(id="task-000001", kind="task", title="t", prs=[WATCHFACE_3, "a branch"])],
+        Config(repositories=[FORGEJO]),
+        date(2026, 8, 17),
+    )
+
+    assert _cited(index.records["task-000001"], _readable([(FORGEJO, "forgejo")])) == [
+        "jacopo/watchface#3"
+    ]
+    assert "jacopo/watchface#3" in query_fields(index, "task-000001")["prs"]
+
+
+def test_a_bare_url_in_prose_reads_as_its_reference_and_written_words_are_kept():
+    from openproj.render.markdown import _markdown
+
+    forgejo = "https://git.example.org/jacopo/watchface/pulls"
+    body = (
+        f"landed in {forgejo}/3 and <https://github.com/a/b/pull/9>, "
+        f"see [the fix]({forgejo}/4), and `{forgejo}/5` is code"
+    )
+    links = [(e.attrs["href"], e.text) for e in elements(str(_markdown(body, LISTED)))
+             if e.tag == "a"]
+
+    assert links == [
+        (f"{forgejo}/3", "jacopo/watchface#3"),
+        ("https://github.com/a/b/pull/9", "a/b#9"),
+        (f"{forgejo}/4", "the fix"),
+    ]
 
 
 def _footer_warning(page: str) -> list:

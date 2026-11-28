@@ -25,7 +25,7 @@ from pygments.lexers import get_lexer_by_name
 from pygments.token import Name
 from pygments.util import ClassNotFound
 
-from ..model import ID_PATTERN, Record, without_comments
+from ..model import ID_PATTERN, Record, pr_reference, without_comments
 from .shell import ROUTES, STATIC, Links
 from .styles import CODE_FORMATTER
 
@@ -386,7 +386,8 @@ def _pr_link(ref: str, links: Links) -> Markup:
     href = pr_href(ref, links)
     if not href:
         return Markup("{}").format(ref)
-    return Markup('<a href="{}">{}</a>').format(href, ref)
+    short = pr_reference(ref, links.repository_urls())
+    return Markup('<a href="{}">{}</a>').format(href, short or ref)
 
 
 # What an asset is, and what a `data:` URI has to call it. One enumeration, with
@@ -501,6 +502,26 @@ def _pr_refs(state: StateCore) -> None:
             else:
                 children.append(child)
         token.children = children
+
+
+def _pr_autolinks(state: StateCore) -> None:
+    """A pull request's URL, pasted bare, reads as the reference it names.
+
+    Still linking to the URL as written (`pr_reference`). Only a link markdown-it
+    made by itself — `info == "auto"`, which linkify and `<…>` both stamp — because
+    those are the ones whose text IS the URL. A link somebody wrote words for keeps
+    the words.
+    """
+    repositories = state.env.get("links", STATIC).repository_urls()
+    for token in state.tokens:
+        if token.type != "inline" or "://" not in token.content:
+            continue
+        named = ""
+        for child in token.children or []:
+            if child.type == "link_open" and child.info == "auto":
+                named = pr_reference(str(child.attrGet("href") or ""), repositories)
+            elif child.type == "text" and named:
+                child.content, named = named, ""
 
 
 def _pr_tokens(token: Token, links: Links) -> list[Token]:
@@ -842,6 +863,7 @@ def _heading_ids(state: StateCore) -> None:
 _MD.linkify.set({"fuzzy_link": False, "fuzzy_email": False})
 _MD.core.ruler.push("openproj_source_lines", _source_lines)
 _MD.core.ruler.push("openproj_pr_refs", _pr_refs)
+_MD.core.ruler.push("openproj_pr_autolinks", _pr_autolinks)
 _MD.core.ruler.push("openproj_mentions", _mentions)
 _MD.core.ruler.push("openproj_heading_ids", _heading_ids)
 _MD.add_render_rule("image", _image)
