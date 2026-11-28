@@ -4991,7 +4991,10 @@ def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
     # The whole card is drawn — it is the card — and what the gate is about is the
     # part of it that can be touched: the fields it names are open, the status it
     # is asking for is on the chip, and every other value is a word nothing wires.
-    assert got["opened"]["open"] == got["missing"], (
+    # As sets: the open boxes are read in the card's order and the gate's names
+    # in `required_at`'s, and the two agree only when the fields happen to be
+    # drawn in the order the gate lists them.
+    assert sorted(got["opened"]["open"]) == sorted(got["missing"]), (
         f"the box opened on {got['opened']['open']} and the gate names {got['missing']} — "
         "somebody who chose a gated status has already said what they are doing"
     )
