@@ -119,6 +119,7 @@ from .model import (
     read_config,
     readable,
     record_paths_in,
+    reference_of,
     rekind_plan,
     rekind_references,
     repository_name,
@@ -189,10 +190,6 @@ _WHOLE_PLAN = (
 # that does configure logging can route `openproj.web` without this file knowing.
 _LOG = logging.getLogger(__name__)
 
-# A whole reference, `owner/repo#N`, which is what `/api/pr-states` looks up.
-# Anything else somebody put in `prs:` — a link, a branch, a note — is not a
-# pull request to ask GitHub about.
-_REF = re.compile(r"[\w.-]+/[\w.-]+#[0-9]+")
 # The budget `/api/pr-states` spends, against sixty calls an hour. At most this
 # many lookups per request; none while GitHub says fewer than the reserve are
 # left, which is the completion's; an open reference re-asked at this age, and
@@ -228,10 +225,15 @@ def _suggestable(record: Record) -> bool:
 
 
 def _cited(record: Record, lookable: dict[str, tuple[str, str]]) -> list[str]:
-    """The whole references in a record's `prs:` to repositories that can be read."""
-    return [
-        ref for ref in record.prs if _REF.fullmatch(ref) and ref.split("#")[0].lower() in lookable
-    ]
+    """The references in a record's `prs:` to repositories that can be read.
+
+    A URL to one of their pull requests is the reference it names (`reference_of`):
+    it is drawn as one, so it is asked about as one. Anything else somebody put in
+    `prs:` — a branch, a note — is not a pull request to ask a forge about.
+    """
+    urls = [url for url, _ in lookable.values()]
+    named = (reference_of(entry, urls) for entry in record.prs)
+    return [ref for ref in named if ref and ref.split("#")[0].lower() in lookable]
 
 
 def _origin(url: str) -> str:

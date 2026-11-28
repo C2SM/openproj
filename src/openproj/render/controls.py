@@ -3497,8 +3497,13 @@ function foldInPullRequests(live) {
 // A link pasted into a pull request or issue box is the reference it names, so
 // the file holds one spelling: `prReference` in the shell, which the table draws
 // stored URLs with too. `null` and not '' for "not a link", the callers' contract.
+//
+// Only a reference that can still be linked. On a forge openproj cannot read,
+// `owner/repo#N` has nowhere to go (`pr_href`), so tidying the paste threw away
+// the one spelling that could: the URL. Kept as pasted, it is drawn short anyway.
 function asReference(text) {
-  return prReference(text) || null;
+  const named = prReference(text);
+  return named && prHref(named) ? named : null;
 }
 
 // What a pull request or issue box offers for what has been typed in it.
@@ -4494,7 +4499,7 @@ def _suggestions(index: Index, linkable: bool = False, live: bool = False) -> di
     # `prs` is the bare `owner/repo#` of each, for the table's menu, which
     # completes through a native datalist and a prefix and has nothing to run a
     # search with. The field and the body read `repos` and the live list.
-    names = {repository_name(url): url for url in index.repositories}
+    names = [repository_name(url) for url in index.repositories]
     return {
         "prs": [{"value": f"{r}#", "label": "pull request or issue"} for r in names],
         "repos": list(names),

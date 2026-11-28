@@ -25,7 +25,7 @@ from pygments.lexers import get_lexer_by_name
 from pygments.token import Name
 from pygments.util import ClassNotFound
 
-from ..model import ID_PATTERN, Record, without_comments
+from ..model import ID_PATTERN, Record, pr_reference, without_comments
 from .shell import ROUTES, STATIC, Links
 from .styles import CODE_FORMATTER
 
@@ -373,40 +373,6 @@ def pr_href(ref: str, links: Links) -> str:
     return base + number if base else ""
 
 
-# A link to a pull request or an issue as the forge's own page spells it, after the
-# repository's page: Forgejo's `/pulls/`, GitHub's `/pull/`, `/issues/` on both, and
-# whatever trails the number — `/files`, a `#discussion_r…` — because a link is
-# copied from wherever somebody was reading
-_PAGE_REF = re.compile(r"/(?:pulls?|issues)/([0-9]+)(?:[/?#]\S*)?", re.IGNORECASE)
-# A github.com one names its repository whether or not the plan lists it, because
-# `owner/repo#N` for an unlisted name already means GitHub (`pr_href`)
-_GITHUB_REF = re.compile(
-    r"https?://(?:www\.)?github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/([0-9]+)"
-    r"(?:[/?#]\S*)?",
-    re.IGNORECASE,
-)
-
-
-def pr_reference(ref: str, links: Links) -> str:
-    """The `owner/repo#N` a pull request or issue URL names, or "" for anything else.
-
-    jcanton, 2026-11-28: plan-d's `prs:` held
-    `https://git.ciccia.synology.me/jacopo/strc-site/pulls/1` and the page drew
-    that, where a GitHub one reads `owner/repo#N`. So a URL is DRAWN as the
-    reference it names and still links to the URL as written; the file is not
-    rewritten, which is what a stored entry from before the prs box tidied pastes
-    needs. The box's `prReference` (`shell.py`) is this rule over the same map.
-    """
-    said = ref.strip()
-    for name, page in links.pr_pages().items():
-        if said.lower().startswith(page.lower() + "/"):
-            found = _PAGE_REF.fullmatch(said[len(page) :])
-            if found:
-                return f"{name}#{found[1]}"
-    found = _GITHUB_REF.fullmatch(said)
-    return f"{found[1]}#{found[2]}" if found else ""
-
-
 def _pr_link(ref: str, links: Links) -> Markup:
     """A dead PR reference teaches people the field is decorative.
 
@@ -420,7 +386,8 @@ def _pr_link(ref: str, links: Links) -> Markup:
     href = pr_href(ref, links)
     if not href:
         return Markup("{}").format(ref)
-    return Markup('<a href="{}">{}</a>').format(href, pr_reference(ref, links) or ref)
+    short = pr_reference(ref, links.repository_urls())
+    return Markup('<a href="{}">{}</a>').format(href, short or ref)
 
 
 # What an asset is, and what a `data:` URI has to call it. One enumeration, with
@@ -519,36 +486,42 @@ def _pr_refs(state: StateCore) -> None:
 
     Pushed last, after `text_join`, so the text tokens it walks are the final ones
     and a reference cannot be split across two of them.
-
-    **And the other way round: a pull request's URL, pasted bare, reads as the
-    reference it names** (`pr_reference`), still linking to the URL as written. Only
-    a link markdown-it made by itself — `info == "auto"`, which linkify and `<…>`
-    both stamp — because those are the ones whose text IS the URL. A link somebody
-    wrote words for keeps the words.
     """
-    links = state.env.get("links", STATIC)
     for token in state.tokens:
-        if token.type != "inline" or ("#" not in token.content and "://" not in token.content):
+        if token.type != "inline" or "#" not in token.content:
             continue
         depth = 0
-        # What the autolink just opened names, until its text has been renamed
-        named = ""
         children: list[Token] = []
         for child in token.children or []:
             if child.type == "link_open":
                 depth += 1
-                auto = child.info == "auto"
-                named = pr_reference(str(child.attrGet("href") or ""), links) if auto else ""
             elif child.type == "link_close":
                 depth -= 1
-                named = ""
-            if child.type == "text" and named:
-                child.content, named = named, ""
             if child.type == "text" and depth == 0 and _PR.search(child.content):
-                children.extend(_pr_tokens(child, links))
+                children.extend(_pr_tokens(child, state.env.get("links", STATIC)))
             else:
                 children.append(child)
         token.children = children
+
+
+def _pr_autolinks(state: StateCore) -> None:
+    """A pull request's URL, pasted bare, reads as the reference it names.
+
+    Still linking to the URL as written (`pr_reference`). Only a link markdown-it
+    made by itself — `info == "auto"`, which linkify and `<…>` both stamp — because
+    those are the ones whose text IS the URL. A link somebody wrote words for keeps
+    the words.
+    """
+    repositories = state.env.get("links", STATIC).repository_urls()
+    for token in state.tokens:
+        if token.type != "inline" or "://" not in token.content:
+            continue
+        named = ""
+        for child in token.children or []:
+            if child.type == "link_open" and child.info == "auto":
+                named = pr_reference(str(child.attrGet("href") or ""), repositories)
+            elif child.type == "text" and named:
+                child.content, named = named, ""
 
 
 def _pr_tokens(token: Token, links: Links) -> list[Token]:
@@ -890,6 +863,7 @@ def _heading_ids(state: StateCore) -> None:
 _MD.linkify.set({"fuzzy_link": False, "fuzzy_email": False})
 _MD.core.ruler.push("openproj_source_lines", _source_lines)
 _MD.core.ruler.push("openproj_pr_refs", _pr_refs)
+_MD.core.ruler.push("openproj_pr_autolinks", _pr_autolinks)
 _MD.core.ruler.push("openproj_mentions", _mentions)
 _MD.core.ruler.push("openproj_heading_ids", _heading_ids)
 _MD.add_render_rule("image", _image)

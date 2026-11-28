@@ -37,6 +37,7 @@ from .model import (
     ancestors,
     checklist,
     cycle_of,
+    reference_of,
     sections,
     size_weeks,
     under,
@@ -1400,7 +1401,9 @@ def query_fields(index: Index, record_id: str) -> dict[str, list[str]]:
             ]
     fields["id"] = [record.id.lower()]
     fields["title"] = [record.title.lower()]
-    fields["prs"] = [pr.lower() for pr in record.prs]
+    # And by the reference a URL entry names, which is what its cell draws
+    named = (reference_of(pr, index.repositories) for pr in record.prs)
+    fields["prs"] = [pr.lower() for pr in record.prs] + [ref.lower() for ref in named if ref]
     fields["predicate"] = predicates_of(index, record_id)
     return fields
 
