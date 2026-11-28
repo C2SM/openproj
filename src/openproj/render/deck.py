@@ -14,7 +14,6 @@ from ..model import (
     Slide,
     bet_of,
     checklist_items,
-    closed_without_a_pr,
     cycle_of,
     lead_text,
     only_sections,
@@ -29,11 +28,16 @@ from ..model import (
 )
 from .cycles import _proposed
 from .env import PHONE, _compiled
-from .markdown import _drop_repeated_title, _inlined_assets, _markdown, _markdown_line, _pr_link
+from .markdown import (
+    _drop_repeated_title,
+    _inlined_assets,
+    _markdown,
+    _markdown_line,
+    _prs_shown,
+)
 from .shell import ROUTES, Links, _page
 from .styles import _DETAIL_STYLE
 from .tokens import (
-    NO_PR_SAID,
     STATUS_GLYPH,
     TEMPLATES,
     _percent,
@@ -1678,16 +1682,7 @@ def slides_of(index: Index, record: Record, links: Links, assets: dict[str, str]
             ]
             if at == 0 and slide.progress
             else [],
-            # A record closed without a PR says so where its PRs would be, in
-            # the list's own place, rather than leaving the room to wonder
-            # whether somebody forgot to link one.
-            "prs": (
-                [Markup("{}").format(NO_PR_SAID)]
-                if closed_without_a_pr(record)
-                else [_pr_link(ref, links) for ref in record.prs]
-            )
-            if at == 0 and slide.prs
-            else [],
+            "prs": _prs_shown(record, links) if at == 0 and slide.prs else [],
             "body": body if at == 0 else Markup(""),
             "extra": _markdown(chunk, links, assets) if chunk else Markup(""),
             "note": note if at == 0 else "",

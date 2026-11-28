@@ -2277,6 +2277,20 @@ _WORK_FIELDS = (
 )
 
 
+# Which stored switch turns off which status gate, field by field: the reviewer
+# rule and the done rule's PR. One map, because each door that asks what a status
+# still needs has to skip a field its record has waived, and five doors each
+# writing out `field === 'reviewers' && row.review_waived` is how the sixth door
+# forgets the second waiver. `_status_problems` reads it through `waived`, and the
+# pages are handed the same map beside `required_at` (`WAIVERS` in the shell).
+WAIVERS = {"reviewers": "review_waived", "prs": "prs_waived"}
+
+
+def waived(record: Record, field: str) -> bool:
+    """Whether this record has switched off the gate on `field`."""
+    return field in WAIVERS and bool(getattr(record, WAIVERS[field], False))
+
+
 def closed_without_a_pr(record: Record) -> bool:
     """Whether the PRs this record would draw are instead the waiver's words.
 
@@ -2286,7 +2300,7 @@ def closed_without_a_pr(record: Record) -> bool:
     shell, which the table and the card ask of a row this page may have just
     written without a reload.
     """
-    return record.status == "done" and record.prs_waived and not record.prs
+    return record.status == "done" and waived(record, "prs") and not record.prs
 
 
 def unread_fields(kind: str) -> tuple[str, ...]:
@@ -4207,7 +4221,7 @@ def _status_problems(
         # jcanton, 2026-08-22.
         if staffed and not record.developers:
             yield "blocker", "developers", "a ready record needs somebody on it", 2
-        if staffed and not (record.review_waived or reviews):
+        if staffed and not (waived(record, "reviewers") or reviews):
             yield "blocker", "reviewers", "a ready record needs a reviewer, or review waived", 1
         yield from _appetite_problem(record, f"a ready {record.kind} needs an appetite")
         # No shaped_by gate any more: a pitch's owner IS who shaped it, and the
@@ -4227,7 +4241,7 @@ def _status_problems(
         yield from _appetite_problem(record, "work in progress needs an appetite")
         if staffed and not record.developers:
             yield "blocker", "developers", "work in progress needs somebody on it", 2
-        if staffed and not record.review_waived and not (set(reviews) - {record.owner}):
+        if staffed and not waived(record, "reviewers") and not (set(reviews) - {record.owner}):
             yield (
                 "blocker",
                 "reviewers",
@@ -4238,7 +4252,7 @@ def _status_problems(
         # `prs_waived` answers this rule the way `review_waived` answers the
         # reviewer one. No version of its own: a waiver only relaxes the rule, so
         # nothing written before it is newly invalid.
-        if not record.prs and not record.prs_waived:
+        if not record.prs and not waived(record, "prs"):
             yield "blocker", "prs", "a done record needs at least one PR", 1
         # And the day it ended, which is the one fact a finished record holds
         # that nothing can work out for itself. Without it a done record's span

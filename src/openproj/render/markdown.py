@@ -25,9 +25,10 @@ from pygments.lexers import get_lexer_by_name
 from pygments.token import Name
 from pygments.util import ClassNotFound
 
-from ..model import ID_PATTERN, Record, pr_reference, without_comments
+from ..model import ID_PATTERN, Record, closed_without_a_pr, pr_reference, without_comments
 from .shell import ROUTES, STATIC, Links
 from .styles import CODE_FORMATTER
+from .tokens import NO_PR_SAID
 
 # Commonmark, plus the two things people were already typing and getting back as
 # punctuation. `~~dropped~~` rendered as four literal tildes and `- [ ] a task`
@@ -388,6 +389,16 @@ def _pr_link(ref: str, links: Links) -> Markup:
         return Markup("{}").format(ref)
     short = pr_reference(ref, links.repository_urls())
     return Markup('<a href="{}">{}</a>').format(href, short or ref)
+
+
+def _prs_shown(record: Record, links: Links) -> list[Markup]:
+    """What a record's PRs read as wherever the server draws them: the record
+    page's facts and the slide. A link per reference, or the waiver's words for a
+    done record closed with nothing merged — not nothing, which says a PR is
+    missing from a record that is not short of one."""
+    if closed_without_a_pr(record):
+        return [Markup("{}").format(NO_PR_SAID)]
+    return [_pr_link(ref, links) for ref in record.prs]
 
 
 # What an asset is, and what a `data:` URI has to call it. One enumeration, with
