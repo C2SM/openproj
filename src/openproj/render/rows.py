@@ -14,6 +14,7 @@ from ..model import RUNG, out_to, size_weeks, staffing_of, unread_fields
 # graph stays acyclic; the day something else needs this number as well, the
 # function moves down here and the record page imports it back.
 from .detail import _tasks_add_up_to, _tasks_under
+from .preview import PLANNED_FACTS, card_fields, card_head
 from .tokens import _SIZE_FIELD_NAME
 
 
@@ -232,15 +233,20 @@ def _rollup(index: Index, record_id: str) -> dict | None:
 
 
 def _row(index: Index, record_id: str) -> dict:
+    """One plan record as the table, the graph and the timeline see it: the card's
+    preview (`preview.py`) and then the table's own columns.
+
+    The card's keys come from `card_head` and `card_fields`, the same two the
+    card a link in a body is drawn from, so the card these three views draw and
+    that one are one card. Every planned kind's card fields are on every row,
+    filled or not, because the columns read them by key whatever the kind: a
+    product's row says `owner: null`, which is how its Owner cell draws nothing.
+    `titles` is not here: this page's own payload names every plan record.
+    """
     record = index.plan[record_id]
     span = index.spans.get(record_id)
-    size = size_weeks(record)
-    counted = index.progress.get(record_id)
-    # What this rung does not read is not on its row. The model defaults `status`
-    # to `shaping` and `priority` to `medium` for every record, so a product —
-    # which has neither — arrived at the table as a shaping, medium-priority
-    # record and was drawn with both chips. `unread_fields` is the same list the
-    # validator reports from and the editors decline to offer.
+    row = card_head(index, record) | card_fields(index, record, PLANNED_FACTS)
+    # What this rung does not read is not on its row (`card_head` says why)
     unread = unread_fields(record.kind)
     # Whether this rung is work at all, as against a grouping something is filed
     # under. `unread_fields` answers per FIELD and neither of the two things this
@@ -252,35 +258,6 @@ def _row(index: Index, record_id: str) -> dict:
     def read(name, value):
         return None if name in unread else value
 
-    # The two dates this record's own file holds, through `read` like every other
-    # stored value: a rung that does not schedule reads neither, and a
-    # hand-written `start_date` on a product must no more reach the Start column
-    # than it reaches the Owner one.
-    stated_start = read("start_date", record.start_date)
-    stated_end = read("end_date", record.end_date)
-    # **Each date column falls back to the stated date where the scheduler gave
-    # this record no span**, because each of them is the editor for that field
-    # (`_COLUMN_FIELD`, `table.py`) and a cell that edits a field must show what
-    # the field holds. Otherwise you type a date into it, watch the PATCH commit,
-    # and watch the cell stay blank — the one failure a derived column is closed
-    # to editing to avoid, in the columns that were opened.
-    #
-    # Both halves are reachable and neither is exotic. With no default appetite
-    # (§2 of `design/time-model.md`) a `thinking` or `shaping` record gets no span
-    # at all, so a shaping task carrying `start_date: 2026-09-07` drew nothing
-    # while the record page's own Start date row printed it. And `done` does not
-    # demand a start date — deliberately, because migrated history often cannot
-    # name one — so a finished record with a recorded `end_date` and no start
-    # never reaches the scheduler's historical branch and drew nothing either.
-    #
-    # §2 argued for a blank Start on unsized work and it was right about the
-    # forecast: there is none, and inventing one is what that section refuses. It
-    # was written before the column became the editor for the field, and §1b
-    # makes a future `start_date` on a shaping record the legitimate case rather
-    # than the corner. A stated date is not a forecast — `stated` below is what
-    # keeps the two apart on screen.
-    start = span.start if span else stated_start
-    end = span.end if span else stated_end
     # Which of the two date cells is drawing the date the FILE states, as against
     # one the scheduler worked out. This was `"derived": span is not None`, a
     # row-level boolean whose comment said it was here so that "the column can
@@ -296,55 +273,20 @@ def _row(index: Index, record_id: str) -> dict:
     # says it started, and a `ready` date that clears the floor survives too.
     # What a reader needs to know is whether the date in front of them is one
     # somebody chose, and that is what this compares.
+    # Every rung the scheduler dates reads both dates, so the stated date on the
+    # row is the one `read` would have passed.
     stated = [
         column
-        for column, drawn, typed in (("start", start, stated_start), ("end", end, stated_end))
-        if drawn is not None and drawn == typed
+        for column in ("start", "end")
+        if row[column] is not None and row[column] == row[f"{column}_date"]
     ]
 
-    return {
-        "id": record.id,
-        "title": record.title,
-        "kind": record.kind,
-        # Not a column — the tree is drawn by the graph and the project facet —
-        # and the row needs it anyway, because a row is now something you can
-        # drop another one onto. Without it the page cannot tell a move from a
-        # gesture that changes nothing, and cannot offer to take a row out of
-        # something it is not in.
-        #
-        # Only when the plan can resolve it, exactly as `depends_on` below:
-        # a hand-written `parent: issue-…` carried the inbox id into every
-        # payload this row feeds — /table, /graph, /timeline, /api/table.json —
-        # and the move bar drew "Take task-… out of issue-…" over a record no
-        # plan page can show. A parent this page cannot resolve (unplanned, or
-        # dangling) is nulled here and flagged below, and the flag is a boolean
-        # and never the id, because the exclusion sweep forbids an inbox id in
-        # these pages' bytes.
-        "parent": record.parent if record.parent in index.plan else None,
-        # Whether the stored field holds a parent the line above could not
-        # carry — `off_plan_deps`' twin, and read the same way: it is what lets
-        # the table refuse the move gesture that would overwrite a line it
-        # never drew (see `movable`/`moveTip` in the table script).
-        "off_plan_parent": bool(record.parent) and record.parent not in index.plan,
+    return row | {
         # Where every way out of `parent` files this record — the right-click
         # menu's `Take out of "X"`, the table's move bar and its `+` row — so
         # that three gestures cannot disagree about it. Worked out here because
         # the walk needs rows a page may not be drawing; see `out_to` (`model.py`).
         "out_to": out_to(record, index.plan),
-        "status": read("status", record.status),
-        "owner": read("owner", record.owner),
-        "developers": read("developers", record.developers),
-        "reviewers": read("reviewers", record.reviewers),
-        "review_waived": read("review_waived", record.review_waived),
-        "priority": read("priority", record.priority),
-        "cycle": read("cycle", record.cycle),
-        # The size somebody stated, and None where nobody has. It used to be
-        # `None if defaulted else size` — the same value, reached by throwing
-        # away an invented half-week the line above had just made up, and the
-        # hover card in `shell.py` read `row.weeks ?? row.size` so the timeline's
-        # copy of this row showed 0.5 for a bet nobody had sized while the
-        # table's showed nothing. One question, one answer, on every page.
-        "size": size,
         # How the work under this record reads against the box its bet bought,
         # on every row that has work under it — including the one where nothing
         # underneath has a length yet, which carries the reading and no number.
@@ -356,69 +298,13 @@ def _row(index: Index, record_id: str) -> dict:
         # own page, and on the betting table, which is where a pitch's tasks are
         # argued about. See `_rollup`.
         "rollup": _rollup(index, record_id),
-        "start": start.isoformat() if start else None,
-        "end": end.isoformat() if end else None,
-        # The columns above whose value came out of the file rather than out of
+        # The date columns whose value came out of the file rather than out of
         # the scheduler, so that a cell drawing a forecast can be drawn as one and
         # a cell drawing somebody's own answer is left alone. See `stated` above,
         # which is where the whole argument is.
         "stated": stated,
         "unowned": bool(span and span.unowned),
         "overruns": span.overruns_cycle_weeks if span else None,
-        # What is still in the way, not what was ever in the way — jcanton,
-        # 2026-08-20: "make sure the counter gets updated if blocking tasks are
-        # marked as done". A record whose one dependency finished last week is
-        # not blocked by anything, and a column headed "Blockers" that says 1
-        # about it is a column people learn to ignore.
-        #
-        # `done` and `shelved` both stop counting, for the same reason by two
-        # routes: one is finished and the other is parked, and neither is work
-        # anybody is waiting on. `depends_on` itself is untouched — the fact that
-        # this waited for that is history worth keeping, and it is what the graph
-        # draws.
-        # Looked up in `records`, never `plan`: `blocked_by` is total over
-        # records, so a planned task whose hand-written `depends_on` names an
-        # unplanned record keeps that edge — and the plan-only lookup was a
-        # KeyError that 500ed /table over one hand-edited file.
-        #
-        # And `None` — not `0` — on a rung that cannot depend on anything. The
-        # count is of `depends_on`, which is one of the fields `unread` already
-        # names for a product, so a `0` here was the table drawing a field the
-        # rest of this function had just refused to draw: jcanton, 2026-08-25,
-        # of the product row, "nor should any of the other cells contain
-        # anything (currently I see blockers and progress)". `stored()` in the
-        # table's script renders `null` as the empty cell and `0` as a nought,
-        # which is the whole of the difference on screen.
-        "blocked_by": read(
-            "depends_on",
-            sum(
-                1
-                for blocker in index.blocked_by[record_id]
-                if index.records[blocker].status not in ("done", "shelved")
-            ),
-        ),
-        # Two keys for one fact: the ratio is what a column sorts by, the text is
-        # what it prints. Sorting on "7/12" as a string puts 10/12 before 7/12.
-        #
-        # Counted only for a rung that is work. `index.progress` rolls a
-        # container's children up in weeks, and it does that for a product too —
-        # correctly, since 2026-08-20, when a product holding a five-week project
-        # reported `0/0.5 wk` against a denominator nobody typed. Correct and
-        # still not this row's to draw: a product groups the codebases a plan
-        # spans, and "42% done" beside a codebase is a sentence about the plan
-        # wearing the name of the thing it is filed under. `Rung.schedules` is
-        # the ladder's own word for "the scheduler gives it dates", which is the
-        # same question as "is this work"; a seventh rung needs no edit here.
-        # The rollup itself is untouched — the deck, the record page and the
-        # column's own existence still read `index.progress`.
-        "progress": round(counted.fraction, 4) if counted and works else None,
-        "progress_text": counted.text if counted and works else "",
-        "prs": read("prs", record.prs),
-        # The switch for the done rule's PR gate, which the status doors ask
-        # before they put the question, and the PRs cell and the card read to
-        # say "Done without a PR" rather than nothing (`closedWithoutPr`).
-        "prs_waived": read("prs_waived", record.prs_waived),
-        "tags": record.tags,
         # Who is on the work filed under this record, and who reviews it, when it
         # names nobody itself. A pitch with reviewed tasks under it IS reviewed —
         # the rule in `model.py` says so and stops asking — and this is the same
@@ -472,23 +358,15 @@ def _row(index: Index, record_id: str) -> dict:
             if works and not read("reviewers", record.reviewers)
             else []
         ),
-        # Three fields that are not columns and are not drawn anywhere on this
-        # page. They are here because the gate names them: a status the table can
-        # set demands them, and a row has to be able to answer whether it already
-        # holds one. The two dates are on no column at all, and `person_weeks` is
-        # answered under its own name because that is the name the gate's message
-        # carries — `size` above holds the same number now that there is no
-        # default standing in for it, but the field a blocker names and the
-        # column a page draws are two vocabularies, and the row answers in both
-        # rather than making the script translate between them.
-        "start_date": record.start_date.isoformat() if record.start_date else None,
-        # And the end, for the same reason and one more: `done` is a status the
-        # table can set, the gate demands this field at it, and unlike the two
-        # beside it this one is empty on EVERY row somebody is about to mark
-        # done. Without it here `missingFor` cannot tell a row that has already
-        # been answered from one that has not, so the panel would ask again for
-        # a date the file already holds.
-        "end_date": record.end_date.isoformat() if record.end_date else None,
+        # Not a column and not drawn anywhere on this page. It is here because
+        # the gate names it: a status the table can set demands it, and a row has
+        # to be able to answer whether it already holds one. Answered under its
+        # own name because that is the name the gate's message carries. `size`
+        # holds the same number, but the field a blocker names and the column a
+        # page draws are two vocabularies, and the row answers in both rather
+        # than making the script translate between them. The stated dates the
+        # gate asks about the same way are `start_date` and `end_date`, which
+        # `card_fields` carries.
         "person_weeks": getattr(record, "person_weeks", None),
         # Not a column, but the control bar offers it: a dropdown whose value the
         # client cannot see is a filter that changes the URL and does nothing.

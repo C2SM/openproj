@@ -628,6 +628,10 @@ async function askPreview() {
   // What does move the pane is text getting SHORTER than the offset, and no
   // amount of saving fixes that — there is nowhere to put it back to.
   VIEW_PANE.innerHTML = html;
+  // The link a card was opened from may be gone or point somewhere else now, and
+  // a redraw is not a pointer leaving it, so nothing else would say so. The
+  // table's redraw does the same.
+  hideCardNow();
   previewPoints = null;
   // After the content, because the room is padding on the same box and a
   // `scrollHeight` measured before it is the old document's.
@@ -3374,6 +3378,37 @@ function show() {
 }
 addEventListener('hashchange', show);
 show();
+</script>{% endif %}
+{#- A link in a body to a record opens that record's card, after the delay a row
+    of the table waits. Only where there is a server to ask for the card, so the
+    static export carries none of it. In the reading view and the preview pane,
+    which is the create form's pane too, and not in a card's own body: a card in
+    a card is a box over the box being read. -#}
+{% if links.body %}<script>
+// `data-record` is `_link`'s (`markdown.py`), on every link whose target is an id
+function bodyLinkAt(target) {
+  const link = target && target.closest ? target.closest('a[data-record]') : null;
+  return link && link.closest('.doc.read, #body-preview') ? link : null;
+}
+// On the document and not on the two boxes, because the preview pane's links are
+// replaced on every keystroke that reaches the server.
+document.addEventListener('pointerover', event => {
+  const link = bodyLinkAt(event.target);
+  if (link) queueCardFor(link.dataset.record, event.clientX, event.clientY);
+});
+document.addEventListener('pointerout', event => {
+  const link = bodyLinkAt(event.target);
+  if (!link) return;
+  // Into something inside the same link, a `code` span say, is not leaving it
+  const into = event.relatedTarget;
+  if (into && into.closest && into.closest('a[data-record]') === link) return;
+  hideCard();
+});
+// The browser's own menu, which this page is never told has closed. The card goes
+// now, and one still waiting on its delay goes with it.
+document.addEventListener('contextmenu', event => {
+  if (bodyLinkAt(event.target)) hideCardNow();
+});
 </script>{% endif %}
 """
 

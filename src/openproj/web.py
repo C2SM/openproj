@@ -3223,12 +3223,25 @@ def create_app(
         card that draws nothing for a typo and nothing for a record with no
         document is a card that cannot say which it is. An empty document is a
         200 with an empty string, and the card says so in words.
+
+        `card` is the fields the card draws (`card_preview`), for any record and
+        not only a planned one. The table, the graph and the timeline have them
+        already in their rows; a link in a body is drawn on a page that has no
+        row for what it names, so it is asked for here, beside the document. Asked
+        rather than embedded in the record page, because the preview
+        pane's links change as somebody types. Built for every request, the
+        table's hover included, so the route has one answer shape.
         """
         _, index, links = plan_now()
         record = index.records.get(record_id)
         if record is None:
             raise HTTPException(status_code=404, detail="no such record")
-        return JSONResponse({"html": str(render._body_html(record, links))})
+        return JSONResponse(
+            {
+                "html": str(render._body_html(record, links)),
+                "card": render.card_preview(index, record_id),
+            }
+        )
 
     # What GitHub last said about each repository the plan names:
     # `owner/repo -> (when it was asked, entries, whether the last attempt failed)`.

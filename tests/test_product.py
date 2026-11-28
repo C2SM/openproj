@@ -272,13 +272,12 @@ def test_a_product_adds_no_indent_to_the_work_beneath_it(seed_root: Path):
     assert not {"prod-6d1a70", "prod-7c2b81"} & set(depth), "no product is a row"
 
 
-def test_a_product_is_drawn_differently_and_shows_no_card(plan: Path):
-    """jcanton asked for both: a shape of its own, and no hover card.
+def test_a_product_is_drawn_differently(plan: Path):
+    """jcanton asked for a shape of its own.
 
-    The card would be a box of dashes — a product has no owner, no dates, no
-    appetite and no shaping document — and a card of dashes teaches a reader that
-    cards are not worth hovering for. `carded` is on the ladder because the same
-    question gets asked on more than one page.
+    It asked for no hover card too, and that went on 2026-11-28: the graph opens
+    its card on a click, so a product is no longer a box the pointer opens a card
+    over on its way somewhere else (`design/body-tables-links-selection.md`).
     """
     from openproj.render import ROUTES, render_graph
 
@@ -288,9 +287,6 @@ def test_a_product_is_drawn_differently_and_shows_no_card(plan: Path):
 
     assert 'node[kind = "product"]' in page, "a product is drawn like everything else"
     assert "'border-style': 'dashed'" in page
-    assert "const CARDED" in page and '"product": false' in page.replace(", ", ", ")
-    assert RUNG["product"].carded is False
-    assert RUNG["project"].carded is True
 
 
 def test_a_container_has_no_work_state_to_gate():

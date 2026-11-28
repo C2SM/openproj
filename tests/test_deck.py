@@ -420,13 +420,12 @@ def test_the_sections_a_slide_leaves_out_are_read_off_the_templates():
     assert {"problem", "appetite", "solution", "rabbit holes", "no-gos", "for later"} == found
     assert "progress" not in found
     # Skipping the kinds that carry no shaping document at all: a product is a
-    # container — `RUNG["product"].carded is False`, which is also why it shows no
-    # hover card — and it never reaches a slide, so its template is a sentence
-    # about the codebase rather than an argument under headings. Read off the
-    # ladder and not spelled `!= "product"`, so a later rung of the same sort is
-    # covered on the commit that adds it.
+    # container the scheduler never dates, and it never reaches a slide, so its
+    # template is a sentence about the codebase rather than an argument under
+    # headings. Read off the ladder and not spelled `!= "product"`, so a later
+    # rung of the same sort is covered on the commit that adds it.
     for name, body in TEMPLATES.items():
-        if name in RUNG and not RUNG[name].carded:
+        if name in RUNG and not RUNG[name].schedules:
             continue
         assert not without_sections(body, found | {"progress"}).strip("# \n"), body[:40]
 
