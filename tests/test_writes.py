@@ -109,6 +109,10 @@ def pages(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
             "graph": "/graph",
             "cycles": "/cycles",
             "new": "/new?kind=task",
+            # And the create form on the plain textarea, for `detail_plain`'s
+            # reason: a claim about what Save on it SENDS is asked of the surface
+            # the shim can run.
+            "new_plain": "/new?kind=task&editor=plain",
             # ann owns a task in this corpus, so she has a row on the People
             # page and the row has her picker on it. A person who holds
             # nothing gets no row and no picker, which is the page's rule
@@ -1024,10 +1028,14 @@ def test_a_record_created_done_with_no_pr_is_asked_too(pages):
     done with nothing merged, if somebody says so, and the waiver goes in the
     one POST that makes it."""
     answer = drive(
-        pages["new"],
+        pages["new_plain"],
         """
 (async () => {
   const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+  // The shim reflects no `<select>`'s selection, so the kind is chosen the way
+  // the page's own switch does it, which is what unhides the task's fields.
+  KIND.value = 'task';
+  KIND.onchange();
   TITLED.value = 'Settled by a decision';
   FORM.querySelector('[name=status]').value = 'done';
   FORM.querySelector('[name=end_date]').value = '2026-08-21';

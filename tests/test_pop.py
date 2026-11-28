@@ -4869,6 +4869,28 @@ def test_assign_parent_offers_a_select_of_the_records_that_may_hold_this_one(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def index_with_an_unstaffed_task(demo_root: Path) -> Index:
+    """The demo, plus one task nobody has picked up: no owner, nobody on it, no
+    reviewer and no appetite, so `ready` is short of four fields that are all
+    boxes on the form.
+
+    Added because the demo's only gate short of two was `done` — its PRs and the
+    day it ended — and a missing PR is a question now (`askNoPr`) before it is
+    anything a form opens on, which leaves `done` one box. The two tests on it
+    are about a form of several fields, and this is the record that has one.
+    """
+    records, config, _ = load_repo(demo_root)
+    records.append(
+        parse_text(
+            "---\nid: task-0ff0a1\nkind: task\ntitle: Nobody has picked this up\n"
+            "status: shaping\n---\n\nUnclaimed.\n",
+            "tasks/task-0ff0a1.md",
+        )
+    )
+    return build_index(records, config, date(2026, 8, 17))
+
+
 _THE_GATE = """
 const found = shortOf(2);
 if (!found) return {error: 'the corpus holds no task short of two fields at any status'};
@@ -4919,7 +4941,7 @@ return {id: row.id, title: row.title, was: row.status, gate, missing, answers, s
 
 
 def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
-    index: Index, tmp_path: Path
+    index_with_an_unstaffed_task: Index, tmp_path: Path
 ):
     """**The gate is answered rather than fought, and this is where cut 3's
     behaviour changed.**
@@ -4944,7 +4966,9 @@ def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
     `_reject_a_start_date_this_write_puts_in_the_past` was rewritten to stop
     making — on the server, about exactly this shape of question.
     """
-    got = _at_a_form(index, tmp_path / "gateform.html", _THE_GATE, patience=5000)
+    got = _at_a_form(
+        index_with_an_unstaffed_task, tmp_path / "gateform.html", _THE_GATE, patience=5000
+    )
 
     assert not got.get("error"), got
     assert len(got["missing"]) >= 2, (
@@ -5273,7 +5297,9 @@ return {id: row.id, gate, missing, before,
 """
 
 
-def test_the_form_re_places_itself_when_a_refusal_grows_it(index: Index, tmp_path: Path):
+def test_the_form_re_places_itself_when_a_refusal_grows_it(
+    index_with_an_unstaffed_task: Index, tmp_path: Path
+):
     """**The form is the exception to "the menu never moves once placed; it only
     dies", and the reason is concrete rather than aesthetic.**
 
@@ -5298,7 +5324,13 @@ def test_the_form_re_places_itself_when_a_refusal_grows_it(index: Index, tmp_pat
     box caps at `70vh` and scrolls, so a window tall enough makes this form fit
     with its refusals and there is nothing to move.
     """
-    got = _at_a_form(index, tmp_path / "replacing.html", _REPLACING, patience=4000, tall=600)
+    got = _at_a_form(
+        index_with_an_unstaffed_task,
+        tmp_path / "replacing.html",
+        _REPLACING,
+        patience=4000,
+        tall=600,
+    )
 
     assert not got.get("error"), got
     assert got["why"] == [
