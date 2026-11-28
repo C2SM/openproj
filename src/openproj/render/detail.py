@@ -2735,9 +2735,9 @@ for (const article of document.querySelectorAll('article.record')) {
 //
 // **And the done-without-a-PR question is put first**, through the doors' one
 // seam (`answerHere`), before any date is offered: a waiver it answers yes to
-// goes into `fields`, and Cancel stops the save. Returns a promise for that
-// reason.
-async function stillNeeded(fields) {
+// goes into `fields`, and Cancel stops the save. A promise only while that
+// question is up; otherwise the answer, in the same turn as the press.
+function stillNeeded(fields) {
   if (!('status' in fields)) return false;
   const status = FORM.querySelector('[name=status]')?.value || OPENS;
   const gated = [];
@@ -2753,7 +2753,16 @@ async function stillNeeded(fields) {
     if (!(value === null || (Array.isArray(value) && !value.length))) continue;
     gated.push(control);
   }
-  const gate = await answerHere(gated.map(control => control.name), status);
+  const gate = answerHere(gated.map(control => control.name), status);
+  return gate instanceof Promise
+    ? gate.then(answer => offerTheRest(fields, gated, answer, status))
+    : offerTheRest(fields, gated, gate, status);
+}
+
+// What `stillNeeded` does once the question, if there was one, is answered:
+// offer today in a gated date box, name what no box can be prefilled with, and
+// say whether the save stops here.
+function offerTheRest(fields, gated, gate, status) {
   if (!gate) {
     announce('not saved');
     return true;
@@ -2804,16 +2813,18 @@ let WAIVING = null;
 addEventListener('openproj:reverted', () => { WAIVING = null; });
 addEventListener('openproj:session', event => { if (!event.detail) WAIVING = null; });
 
-// The doors' one seam (`answerTheGate`, the shell), for this page's two: Save and
+// The doors' one seam (`gateAnswered`, the shell), for this page's two: Save and
 // Create. A yes already given for this status answers without asking.
 function answerHere(names, status) {
   const ask = () => WAIVING === status
     ? Promise.resolve(true)
     : askNoPr(document.getElementById('save'));
-  return new Promise(done => answerTheGate(names, ask, gate => {
+  const kept = gate => {
     WAIVING = gate && gate.waived ? status : null;
-    done(gate);
-  }));
+    return gate;
+  };
+  const gate = gateAnswered(names, ask);
+  return gate instanceof Promise ? gate.then(kept) : kept(gate);
 }
 
 // What both save paths do with the fields a commit took, and the flag that says
@@ -2861,7 +2872,8 @@ async function save() {
   // the ordinary case — so a check written after that branch would be a check on
   // the surface nobody uses, which is exactly how a start date typed into the
   // past came to be refused by one door and committed by the other.
-  if (await stillNeeded(fields)) return;
+  const stops = stillNeeded(fields);
+  if (stops instanceof Promise ? await stops : stops) return;
   // While a room is live the body is not this tab's to send: it is the room's,
   // and Save is one commit made over the socket against the room's base, with
   // the fields from this form. Sending both down this path would be two commits
@@ -2990,7 +3002,8 @@ async function createRecord() {
   }
   // The question first, as at Save: a record can be created done with nothing
   // merged, if somebody says so, and the rest is refused by name after it.
-  const gate = await answerHere(gated.map(control => control.name), status);
+  let gate = answerHere(gated.map(control => control.name), status);
+  if (gate instanceof Promise) gate = await gate;
   if (!gate) {
     announce('not created');
     return;

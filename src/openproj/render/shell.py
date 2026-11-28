@@ -3389,6 +3389,18 @@ function answerTheGate(missing, ask, then) {
     : null));
 }
 
+// The same, for a door that awaits: the answer itself when nothing needs asking,
+// and a promise of it only while the question is up. An `await` on the plain
+// answer would still give up the turn, and the doors that await — `popSave`, the
+// record page's Save — disable their button and send their request in that same
+// turn, which is what stops a second press in the gap from writing twice.
+function gateAnswered(missing, ask) {
+  let now = null;
+  let later = null;
+  answerTheGate(missing, ask, answer => { if (later) later(answer); else now = {answer}; });
+  return now ? now.answer : new Promise(done => { later = done; });
+}
+
 // --- the hover card ---------------------------------------------------------
 //
 // One card, three views: the timeline's bars, the graph's nodes and the table's

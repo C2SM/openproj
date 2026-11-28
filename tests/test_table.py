@@ -3378,7 +3378,9 @@ def test_the_editor_discards_on_escape_and_commits_on_tab(page: str):
     body = script(page)
     editor = re.search(r"input\.onkeydown = e => \{.*?\n  \};", body, re.S).group(0)
 
-    assert "if (e.key === 'Enter') { RETURN = true; input.blur(); }" in editor
+    # `preventDefault`, or the rest of the press activates whatever the save it
+    # runs has just put the focus on — see the trusted-Enter test.
+    assert "if (e.key === 'Enter') { e.preventDefault(); RETURN = true; input.blur(); }" in editor
     assert "abandoned = true;" in editor, "Escape discards rather than saving the partial value"
     assert "if (e.key === 'Tab')" in editor and "e.preventDefault();" in editor
     assert "e.shiftKey ? -1 : 1" in editor, "and backwards"

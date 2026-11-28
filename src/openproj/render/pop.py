@@ -3057,10 +3057,11 @@ async function popSave() {
   // The question first, as at every door, and the refusal over what is left
   // after it. What has been typed is put back into the form before the question
   // replaces it, so the form it comes back to is the one that was left.
-  const gate = await new Promise(done => answerTheGate(gated, () => {
+  let gate = gateAnswered(gated, () => {
     Object.assign(form.values, values);
     return popNoPr(form.row, form);
-  }, done));
+  });
+  if (gate instanceof Promise) gate = await gate;
   if (!gate) return;
   if (gate.waived) values[prsSwitch] = true;
   for (const name of gate.rest) {
