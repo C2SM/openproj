@@ -390,6 +390,170 @@ def test_a_card_drawn_from_a_preview_shows_what_the_kind_has(seed_root: Path):
 
 
 # --------------------------------------------------------------------------- #
+# A link in a body opens the card of what it names
+# --------------------------------------------------------------------------- #
+
+
+def _linked(demo_root: Path) -> tuple[Index, str, str]:
+    """The demo plan with one pitch whose document links to an issue: the kind
+    the table's row could never have drawn a card of."""
+    records, config, _ = load_repo(demo_root)
+    plain = build_index(records, config, date(2026, 8, 17))
+    pitch = min(i for i, r in plain.plan.items() if r.kind == "pitch")
+    issue = min(i for i, r in plain.records.items() if r.kind == "issue")
+    linked = [
+        r.model_copy(update={"body": f"See [the issue]({issue}) first.\n"}) if r.id == pitch else r
+        for r in records
+    ]
+    return build_index(linked, config, date(2026, 8, 17)), pitch, issue
+
+
+# Hover, wait out the fetch, then the delay. `drive.js` queues timers rather than
+# running them, so `__tick()` is the 600ms passing and nothing before it is.
+_HOVERED = """(async () => {
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  const link = %s;
+  document.dispatchEvent(new Event('pointerover', {target: link, clientX: 50, clientY: 50}));
+  await settle();
+  const early = CARD.hidden;
+  %s
+  __tick();
+  await settle();
+  const later = CARD.hidden;
+  const title = (CARD.innerHTML.match(/card-title[^>]*>([^<]*)/) || [])[1] || '';
+  const click = new Event('click', {target: link});
+  document.dispatchEvent(click);
+  %s
+  return {early, later, title, followed: !click.defaultPrevented, after: CARD.hidden};
+})()"""
+
+_IN_THE_DOCUMENT = "document.querySelector('.doc.read a')"
+
+
+def _hover(
+    page: str, link: str, between: str = "", after: str = "", replies: list[dict] | None = None
+) -> dict:
+    answer = run_js(page, _HOVERED % (link, between, after), page=True, replies=replies or [])
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+    return answer
+
+
+def _answered(index: Index, record_id: str) -> list[dict]:
+    return [{"status": 200, "json": {"html": "<p>its document</p>",
+                                     "card": card_preview(index, record_id)}}]
+
+
+def test_a_link_in_the_document_opens_its_records_card_after_the_delay(demo_root: Path):
+    """The reading view: the card of what the link names, after the delay a row
+    waits and not before, drawn from the preview `/api/body` answers. A click
+    still follows the link."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    answer = _hover(page, _IN_THE_DOCUMENT, replies=_answered(index, issue))
+
+    assert [call["url"] for call in answer["calls"]] == [f"/api/body/{issue}"]
+    assert answer["value"]["early"] is True, "the card opened before the delay"
+    assert answer["value"]["later"] is False, "no card came up for a link to a record"
+    assert answer["value"]["title"] == index.records[issue].title
+    assert answer["value"]["followed"], "the card took the link's click"
+
+
+def test_a_link_typed_into_the_preview_pane_opens_its_card(demo_root: Path):
+    """The split view's preview pane, with a link that was not on the page when it
+    loaded: the pane is redrawn on every keystroke that reaches the server, so
+    the hover is heard on the document and not on the links."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(
+        index, ROUTES, only=pitch, base_commit=HEAD, may_write=True, editor="plain"
+    )
+    typed = (
+        "(() => { const pane = document.getElementById('body-preview');"
+        f" pane.innerHTML = '<p>Typed: <a href=\"/detail/{issue}\">it</a></p>';"
+        " return pane.querySelector('a'); })()"
+    )
+    answer = _hover(page, typed, replies=_answered(index, issue))
+
+    assert answer["value"]["later"] is False, "a link in the preview pane opened no card"
+    assert answer["value"]["title"] == index.records[issue].title
+
+
+def test_a_link_inside_a_cards_own_body_opens_no_card(demo_root: Path):
+    """No card in a card: the box the pointer is reading in would be covered by
+    another one."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    inside = (
+        "(() => { CARD.innerHTML ="
+        f" '<div class=\"card-body\"><a href=\"/detail/{issue}\">it</a></div>';"
+        " return CARD.querySelector('a'); })()"
+    )
+    answer = _hover(page, inside, replies=_answered(index, issue))
+
+    assert answer["calls"] == [], "a link in a card asked for a card of its own"
+    assert answer["value"]["later"] is True
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [{"status": 404, "text": '{"detail": "no such record"}'}, {"reject": "offline"}],
+    ids=["missing", "offline"],
+)
+def test_a_link_to_a_record_nobody_can_fetch_opens_nothing(demo_root: Path, reply: dict):
+    """A link to a record the plan has not got stays a broken link, as `_link`'s
+    docstring decided: no card, nothing thrown, and the link still followed."""
+    index, pitch, _ = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    missing = (
+        "(() => { const link = document.querySelector('.doc.read a');"
+        " link.setAttribute('href', '/detail/issue-ffffff'); return link; })()"
+    )
+    answer = _hover(page, missing, replies=[reply])
+
+    assert [call["url"] for call in answer["calls"]] == ["/api/body/issue-ffffff"]
+    assert answer["value"]["later"] is True, "a card came up for a record nobody could fetch"
+    assert answer["value"]["followed"]
+    assert answer["errors"] == [], answer["errors"]
+
+
+def test_the_static_export_draws_no_card_for_a_link(demo_root: Path):
+    """A rendered file has no server to ask for a card, so it carries none of
+    this, and a hover over a link asks nothing and throws nothing."""
+    index, pitch, _ = _linked(demo_root)
+    page = render_detail(index, only=pitch)
+    answer = _hover(page, _IN_THE_DOCUMENT)
+
+    assert answer["calls"] == [], "a rendered file asked a server for a card"
+    assert answer["value"]["later"] is True
+    assert "bodyLinkAt" not in page
+
+
+def test_the_right_click_menu_kills_a_links_card(demo_root: Path):
+    """`design/context-menus.md`: opening a menu kills the card. Here the menu is
+    the browser's own, which says nothing when it closes, so the card goes on
+    `contextmenu` and one still waiting on its delay goes with it."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    menu = "document.dispatchEvent(new Event('contextmenu', {target: link}));"
+    waiting = _hover(page, _IN_THE_DOCUMENT, between=menu, replies=_answered(index, issue))
+    assert waiting["value"]["later"] is True, "a card queued before the menu came up after it"
+
+    shown = _hover(page, _IN_THE_DOCUMENT, after=menu, replies=_answered(index, issue))
+    assert shown["value"]["later"] is False, "the card never came up, so the menu is untested"
+    assert shown["value"]["after"] is True, "the card stayed over the menu"
+
+
+def test_a_card_that_lands_after_the_pointer_left_is_not_drawn(demo_root: Path):
+    """The card needs the preview before it can draw anything, and the pointer
+    may be gone by the time it arrives."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    left = "document.dispatchEvent(new Event('pointerout', {target: link}));"
+    answer = _hover(page, _IN_THE_DOCUMENT, between=left, replies=_answered(index, issue))
+
+    assert answer["value"]["later"] is True, "a card came up under a pointer that had left"
+
+
+# --------------------------------------------------------------------------- #
 # What a browser has to answer
 # --------------------------------------------------------------------------- #
 

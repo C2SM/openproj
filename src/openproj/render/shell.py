@@ -3963,6 +3963,28 @@ function queueCard(row, x, y, extra) {
   cardTimer = setTimeout(() => showCard(row, x, y, extra), CARD_DELAY);
 }
 
+// A card for a record this page holds no row of: a link in a body. The card's
+// fields come with the document (`/api/body` answers `card_preview` beside it),
+// so the wait and the fetch run side by side, and the card is drawn when both are
+// done and only if the pointer is still on the link. A record the server has not
+// got answers 404, which leaves no preview and opens nothing.
+const CARD_PREVIEWS = new Map();
+// The record a link asked for a card of, until something hides the card: a
+// preview that lands after the pointer has left is then a preview nobody wants.
+let cardWanted = null;
+function queueCardFor(id, x, y) {
+  if (!CARD || !CARD_BODY_URL || cardStandsDown) return;
+  clearTimeout(cardTimer);
+  clearTimeout(cardLeaving);
+  const asked = warmCardBody(id);
+  if (!CARD.hidden && cardShowing === id) return;
+  cardWanted = id;
+  cardTimer = setTimeout(() => asked.then(() => {
+    const preview = CARD_PREVIEWS.get(id);
+    if (preview && cardWanted === id && !cardStandsDown) showCard(preview, x, y);
+  }), CARD_DELAY);
+}
+
 // The fetch on its own, with nothing drawn from it. Two callers: the hover, which
 // wants the answer before it needs it, and `fillCardBody`, which needs it now.
 // One in-flight request per id, because a pointer that leaves a row and comes
@@ -3975,11 +3997,15 @@ function warmCardBody(id) {
     // A refusal is not a document. `ok` and not a `catch` alone: a 404 is a
     // resolved promise with an error page in it, and `.json()` on that throws
     // somewhere far away from the request that caused it.
-    .then(response => response.ok ? response.json().then(said => said.html || '') : '')
+    .then(response => response.ok ? response.json() : null)
     // Offline, or a policy that refuses the request. The card keeps what it
     // already drew; the row's own fields are the part that was never in doubt.
-    .catch(() => '')
-    .then(html => { CARD_BODIES.set(id, html); CARD_ASKED.delete(id); });
+    .catch(() => null)
+    .then(said => {
+      CARD_BODIES.set(id, said && typeof said.html === 'string' ? said.html : '');
+      if (said && said.card && typeof said.card === 'object') CARD_PREVIEWS.set(id, said.card);
+      CARD_ASKED.delete(id);
+    });
   CARD_ASKED.set(id, asking);
   return asking;
 }
@@ -4178,6 +4204,7 @@ function pinCard(row, x, y, extra) {
 // the row and the card is a place the pointer has to be allowed to cross.
 function hideCard() {
   if (!CARD || cardResizing || cardPinned) return;
+  cardWanted = null;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardLeaving = setTimeout(hideCardNow, CARD_GRACE);
@@ -4187,6 +4214,7 @@ function hideCard() {
 // out from under the card, a canvas panned, a filter redrawing the rows.
 function hideCardNow() {
   if (!CARD || cardResizing) return;
+  cardWanted = null;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardPinned = false;
@@ -4225,6 +4253,7 @@ addEventListener('keydown', event => {
 function cardYields(yielding) {
   cardStandsDown = yielding;
   if (!yielding) return;
+  cardWanted = null;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardPinned = false;
