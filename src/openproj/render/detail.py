@@ -36,6 +36,7 @@ from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
 from .markdown import _body_html, _pr_link
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SUGGEST_STYLE
+from .tables import _TABLES
 from .tokens import (
     _KIND_MODELS,
     _SIZE_FIELD_NAME,
@@ -2061,7 +2062,8 @@ grip.ondblclick = () => {
     reader at 4.19x their page for a keymap whose every save is a 403. -#}
 {% if ace %}<script>{{ ace }}</script>
 {{ acesurface }}{% endif %}
-{% if editable %}{{ combobox }}{% endif %}
+{#- The table formatter, beside the toolbar that reaches it: see `tables.py`. -#}
+{% if editable %}{{ tables }}{{ combobox }}{% endif %}
 {% if editable %}<script>{{ required }}</script><script>{{ hill }}</script>{% endif %}
 {#- Empty unless this page drew a date box — the gate is at `calendar=` below,
     where the reason is, the way `{{ pop }}` on the table is gated at `pop=`. -#}
@@ -4454,6 +4456,7 @@ def render_detail(
         # `linkable=True`: this is a page with a document being written in it, so
         # the blob carries the list `attachBodyCompletion` completes records from.
         combobox=_combobox_html(index, linkable=True, live=base_commit is not None),
+        tables=_TABLES if base_commit is not None else Markup(""),
         required=_REQUIRED_JS,
         hill=_HILL_JS,
         # The popup every date box here opens, and only where there is a box to
