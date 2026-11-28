@@ -1103,8 +1103,9 @@ def _reject_bad_types(fields: dict) -> None:
     for name in _LISTS:
         if name in fields and not isinstance(fields[name], list):
             raise HTTPException(422, f"{name} must be a list, not {fields[name]!r}")
-    if "review_waived" in fields and not isinstance(fields["review_waived"], bool):
-        raise HTTPException(422, "review_waived must be true or false")
+    for name in ("review_waived", "prs_waived"):
+        if name in fields and not isinstance(fields[name], bool):
+            raise HTTPException(422, f"{name} must be true or false")
     if "slide" in fields:
         fields["slide"] = _as_slide(fields["slide"])
 
@@ -3222,12 +3223,25 @@ def create_app(
         card that draws nothing for a typo and nothing for a record with no
         document is a card that cannot say which it is. An empty document is a
         200 with an empty string, and the card says so in words.
+
+        `card` is the fields the card draws (`card_preview`), for any record and
+        not only a planned one. The table, the graph and the timeline have them
+        already in their rows; a link in a body is drawn on a page that has no
+        row for what it names, so it is asked for here, beside the document. Asked
+        rather than embedded in the record page, because the preview
+        pane's links change as somebody types. Built for every request, the
+        table's hover included, so the route has one answer shape.
         """
         _, index, links = plan_now()
         record = index.records.get(record_id)
         if record is None:
             raise HTTPException(status_code=404, detail="no such record")
-        return JSONResponse({"html": str(render._body_html(record, links))})
+        return JSONResponse(
+            {
+                "html": str(render._body_html(record, links)),
+                "card": render.card_preview(index, record_id),
+            }
+        )
 
     # What GitHub last said about each repository the plan names:
     # `owner/repo -> (when it was asked, entries, whether the last attempt failed)`.
@@ -4124,9 +4138,23 @@ def create_app(
                 )
             _reject_a_new_kind(record_id, fields)
             _reject_bad_status(_kind_for(record_id), fields)
-            content = _patched(store.read(base, path), fields, None, path)
+            original = store.read(base, path)
+            content = _patched(original, fields, None, path)
             try:
-                candidates.append(parse_text(content, path))
+                candidate = parse_text(content, path)
+                # **The waiver lands only where it waives something.** Marking a
+                # selection done without a PR is one decision about the batch,
+                # and the rows in it that cite a PR were never short of one — a
+                # waiver written there is a line in their files claiming they
+                # were closed with nothing merged. Dropped per record here rather
+                # than sent per record by the page, because this route takes one
+                # field map for every id, and two maps would be the two PATCHes
+                # it exists to refuse.
+                if fields.get("prs_waived") is True and candidate.prs:
+                    unwaived = {k: v for k, v in fields.items() if k != "prs_waived"}
+                    content = _patched(original, unwaived, None, path)
+                    candidate = parse_text(content, path)
+                candidates.append(candidate)
             except ValueError as error:
                 raise HTTPException(
                     422,

@@ -17,6 +17,7 @@ from ..model import (
     SWITCHES_FILE,
     VIEW_NEEDS,
     VIEWS,
+    WAIVERS,
     Unreadable,
     Unusable,
     repository_name,
@@ -34,6 +35,10 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
+    NO_PR_ASKED,
+    NO_PR_NO,
+    NO_PR_SAID,
+    NO_PR_YES,
     PRIORITY_LEVEL,
     RUNG_CHEVRON,
     RUNG_LIST_ID,
@@ -1323,6 +1328,21 @@ body:has([data-fills]) { padding-bottom: 0; }
    `position: fixed` so a card on the graph survives the canvas being panned and
    zoomed under it: the anchor moves, the card is placed again from the pointer,
    and neither is inside the transformed layer. */
+{% if live %}
+/* The done-without-a-PR question (`askNoPr`), which the table and the record
+   page open — the right-click box asks in its own face. Placed by `placeFloat`
+   beside what was pressed, like the card, so the UA's centring of a modal
+   dialog is undone here: `inset: auto` and `margin: 0`. The backdrop is clear
+   because the question is about one row on a page the reader still needs to
+   see. */
+#noprask { position: fixed; inset: auto; margin: 0; max-width: 22rem;
+           padding: .5rem .6rem; background: var(--surface); color: var(--fg);
+           font-size: 13px; border: 1px solid var(--line-strong); border-radius: 3px; }
+#noprask::backdrop { background: transparent; }
+#noprask p { margin: 0 0 .45rem; }
+#noprask .acts { display: flex; gap: .4rem; }
+#noprask button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+{% endif %}
 /* No `pointer-events: none`. The card holds a shaping document that is capped
    and scrollable, and a box the pointer passes straight through is a scrollbar
    nobody can grab — which is exactly what shipped. It does not follow the
@@ -3318,6 +3338,69 @@ function placeFloat(box, x, y) {
   box.style.top = Math.max(8, top) + 'px';
 }
 
+// --- done without a pull request -------------------------------------------
+//
+// **One question, put by every door that sets a status before it writes `done`
+// on a record with no PR**: the table's status cell and its selection, `Status ▸`
+// and `Edit…` in the right-click box, and Save on the record page and the create
+// form. The door then sends `status: done` and `prs_waived: true` in the same
+// write as anything else the status needs, so the plan never holds a done record
+// waiting for its waiver in a second commit.
+//
+// The words are `NO_PR_*` in `tokens.py`, handed here once: what the question
+// says, what its two buttons say, and what a record closed that way reads where
+// its PRs would be drawn.
+const NO_PR = {{ no_pr|tojson }};
+// The field the question answers instead of a box. A missing PR is the one gate a
+// form cannot type an answer to for work that finished with nothing merged.
+const NO_PR_FIELD = 'prs';
+// Which stored switch turns off which gate — `WAIVERS` in `model.py`, the map the
+// validator reads. Every filter that skips a field its record has waived reads
+// this, rather than spelling out the reviewer and the PR clauses one more time.
+const WAIVERS = {{ waivers|tojson }};
+
+// Whether a row's PRs are drawn as `NO_PR.said`: done, waived and empty, all
+// three. `closed_without_a_pr` (`model.py`) is the server's copy, for the record
+// page and the slide; this one is asked of a row the page may have just written
+// itself, where a reload is the thing that has not happened.
+function closedWithoutPr(row) {
+  return !!row && row.status === 'done' && !!row[WAIVERS[NO_PR_FIELD]]
+    && !(row[NO_PR_FIELD] || []).length;
+}
+
+// **The doors' one call.** `missing` is what the status about to be written needs
+// and the record has not got; `ask` puts the question in the door's own box and
+// answers whether to go on. `then` gets `{rest, waived}` — the fields still to be
+// answered, and whether the PR was waived — or `null` when the question was
+// cancelled.
+//
+// The question comes FIRST and the rest after it, at every door: whether this is
+// done at all with nothing merged is what decides whether there is a day it
+// ended, and a date panel in front of the question would be asking when somebody
+// finished work they may yet decide not to close.
+//
+// A callback and not a promise, so a door with nothing to ask carries on in the
+// same turn: the table's panel and the right-click form open under the press
+// that asked for them, as they did before there was a question.
+function answerTheGate(missing, ask, then) {
+  if (!missing.includes(NO_PR_FIELD)) { then({rest: missing, waived: false}); return; }
+  ask().then(yes => then(yes
+    ? {rest: missing.filter(name => name !== NO_PR_FIELD), waived: true}
+    : null));
+}
+
+// The same, for a door that awaits: the answer itself when nothing needs asking,
+// and a promise of it only while the question is up. An `await` on the plain
+// answer would still give up the turn, and the doors that await — `popSave`, the
+// record page's Save — disable their button and send their request in that same
+// turn, which is what stops a second press in the gap from writing twice.
+function gateAnswered(missing, ask) {
+  let now = null;
+  let later = null;
+  answerTheGate(missing, ask, answer => { if (later) later(answer); else now = {answer}; });
+  return now ? now.answer : new Promise(done => { later = done; });
+}
+
 // --- the hover card ---------------------------------------------------------
 //
 // One card, three views: the timeline's bars, the graph's nodes and the table's
@@ -3421,7 +3504,7 @@ function cardMark(ladder, value) {
 // A word that is not a rung picks nothing.
 function priBars(priority) {
   const bars = CARD_MARKS.bars || {};
-  return Object.prototype.hasOwnProperty.call(bars, priority) ? bars[priority] : '';
+  return Object.hasOwn(bars, priority) ? bars[priority] : '';
 }
 
 // **A PRIORITY OR A STATUS, PICKED** (`rung_picker` in `tokens.py`). One controller
@@ -3685,9 +3768,14 @@ const HILL = JSON.parse(document.getElementById('hill')?.textContent || 'null');
 // and with no stops on it. A card is a look and not a control — every gesture it
 // could offer would commit a status change from a box that disappears when the
 // pointer moves.
-function hillHtml(status) {
+function hillHtml(status, kind) {
   if (!HILL) return '';
-  const ladder = HILL.ladders.record;
+  // The kind's own ladder, by `_LADDER_OF` (`hill.py`) as `_hill_html` reads it:
+  // an issue and a note stand on theirs and every planned kind on the record's.
+  // Looked up here rather than carried on the row, which would be one more key on
+  // every row of three pages for a word that is `record` on all of them.
+  const ladder = HILL.ladders[
+    Object.hasOwn(HILL.ladder_of, kind) ? HILL.ladder_of[kind] : 'record'];
   const place = word => `left: ${100 * HILL.stops[word][0] / HILL.box[0]}%; `
     + `top: ${100 * HILL.stops[word][1] / HILL.box[1]}%; `
     + `--nx: ${HILL.normals[word][0]}; --ny: ${HILL.normals[word][1]}`;
@@ -3697,14 +3785,19 @@ function hillHtml(status) {
   // A word this ladder does not have gets no ball, exactly as the server does it:
   // `status` holds whatever a hand-edited file holds, and the alternative — the
   // chip's `st-ready` fallback — would put an unrecognised status on the summit.
-  // It is also what makes `hill-${status}` safe to write into a class at all.
+  // It is also what makes `hill-${status}` safe to write into a class at all: the
+  // word is either a stop of this ladder or a key of the server's `handed` map.
+  // `promoted` is the one of those: derived, no stop of its own, and standing
+  // where the record it was handed to starts.
   const known = ladder.includes(status);
-  const ball = known
+  const at = known ? status : Object.hasOwn(HILL.handed, status) ? HILL.handed[status] : null;
+  const ball = at
     ? `<span class="hill-ball hill-${status}" data-word="${esc(cardWord(status))}"`
-      + ` style="${place(status)}"></span>`
+      + ` style="${place(at)}"></span>`
     : '';
-  const said = `${cardWord(status)} — ${known ? HILL.where[status] : 'not on the hill'}`;
-  const dim = !known || HILL.off.includes(status);
+  const said = `${cardWord(status)} — `
+    + (at && Object.hasOwn(HILL.where, status) ? HILL.where[status] : 'not on the hill');
+  const dim = !at || HILL.off.includes(status);
   return `<span class="card-hill"><span class="hill${dim ? ' hill-off' : ''}"`
     + ` role="img" aria-label="${esc(said)}">`
     + `<svg viewBox="0 0 ${HILL.box[0]} ${HILL.box[1]}" aria-hidden="true" focusable="false">`
@@ -3723,12 +3816,16 @@ const CARD_FACTS = JSON.parse(document.getElementById('cardfacts')?.textContent 
 // the parent of a task it does not draw.
 const CARD_TITLES = JSON.parse(document.getElementById('cardtitles')?.textContent || 'null');
 
-// A record's title, where this page can name one. `popTitleOf` asks the host's
-// own `rows(id)`, which is the one question all three views answer; guarded
-// because a page could carry a card and no menu, and an id is a worse answer
-// than a title but is not a wrong one.
-function cardTitleOf(id) {
-  if (CARD_TITLES && CARD_TITLES[id]) return CARD_TITLES[id];
+// A record's title, where this card or this page can name one. The preview's own
+// `titles` first: a link in a body is drawn on a page whose payload names no
+// record at all (`card_preview`, `preview.py`). `popTitleOf` asks the host's own
+// `rows(id)`, which is the one question all three views answer; guarded because a
+// page could carry a card and no menu, and an id is a worse answer than a title
+// but is not a wrong one. `Object.hasOwn`, because a hand-written id of
+// `constructor` would otherwise find Object's own and draw a function's source.
+function cardTitleOf(id, row) {
+  if (row && row.titles && Object.hasOwn(row.titles, id)) return row.titles[id];
+  if (CARD_TITLES && Object.hasOwn(CARD_TITLES, id)) return CARD_TITLES[id];
   return typeof popTitleOf === 'function' ? popTitleOf(id) : id;
 }
 
@@ -3778,9 +3875,14 @@ function cardFact(row, name) {
   // anybody reads: nobody remembers `pitch-b4102f`.
   if (name === 'parent') {
     if (row.off_plan_parent) return esc('filed off this plan');
-    return value ? esc(cardTitleOf(value)) : null;
+    return value ? esc(cardTitleOf(value, row)) : null;
   }
+  // And the records an issue was pitched into or a note became, the same way.
+  if (name === 'pitched_into' || name === 'became')
+    return Array.isArray(value) && value.length
+      ? esc(value.map(id => cardTitleOf(id, row)).join(', ')) : null;
   if (name === 'review_waived') return value ? 'Yes' : null;
+  if (name === NO_PR_FIELD && closedWithoutPr(row)) return esc(NO_PR.said);
   if (Array.isArray(value)) return value.length ? esc(value.join(', ')) : null;
   if (value == null || value === '') return null;
   return esc(String(value));
@@ -3859,7 +3961,7 @@ function cardHtml(row, extra) {
   ];
   return `<p class="card-title" data-field="title">${esc(row.title)}</p>` +
     `<p class="card-chips">${marks.join(' ')}` +
-    (row.status ? hillHtml(row.status) : '') + '</p>' +
+    (row.status ? hillHtml(row.status, row.kind) : '') + '</p>' +
     '<dl class="card-facts">' + facts.map(([name, value, field]) =>
       `<div class="card-fact"${field ? ` data-field="${esc(field)}"` : ''}>` +
       `<dt>${esc(name)}</dt><dd>${value}</dd></div>`).join('') +
@@ -3931,8 +4033,14 @@ let cardPinned = false;
 // no question about a `let` that `queueCard`'s body reads being declared after it.
 let cardStandsDown = false;
 
-function queueCard(row, x, y, extra) {
-  if (!CARD || !row || cardStandsDown) return;
+// The record a card was asked for, until something hides the card: a preview
+// that lands after the pointer has left is then a preview nobody wants.
+let cardWanted = null;
+
+// The hover-intent rules, once, for both ways a card is asked for. `draw` runs
+// after the delay and is handed the fetch, which may not have answered yet.
+function queueWith(id, draw) {
+  if (!CARD || cardStandsDown) return;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   // Ask for the document NOW, and draw it in 600ms. The wait before a card
@@ -3941,12 +4049,31 @@ function queueCard(row, x, y, extra) {
   // so the fields and the body arrive in one paint. Nothing is drawn from this —
   // `warmCardBody` only fills the cache — so a pointer crossing a table still
   // opens no card, it just leaves a few bodies behind it.
-  if (CARD_BODY_URL) warmCardBody(row.id);
+  const asked = CARD_BODY_URL ? warmCardBody(id) : Promise.resolve();
   // Already showing this one: the pointer moved inside the same row, which is
   // not a new question. Notably it does NOT move the card — a box that follows
   // the pointer is a box you cannot put the pointer into.
-  if (!CARD.hidden && cardShowing === row.id) return;
-  cardTimer = setTimeout(() => showCard(row, x, y, extra), CARD_DELAY);
+  if (!CARD.hidden && cardShowing === id) return;
+  cardWanted = id;
+  cardTimer = setTimeout(() => draw(asked), CARD_DELAY);
+}
+
+function queueCard(row, x, y, extra) {
+  if (row) queueWith(row.id, () => showCard(row, x, y, extra));
+}
+
+// A card for a record this page holds no row of: a link in a body. The card's
+// fields come with the document (`/api/body` answers `card_preview` beside it),
+// so the card is drawn when both the wait and the answer are done, and only if
+// the pointer is still on the link. A record the server has not got answers 404,
+// which leaves no preview and opens nothing.
+const CARD_PREVIEWS = new Map();
+function queueCardFor(id, x, y) {
+  if (!CARD_BODY_URL) return;
+  queueWith(id, asked => asked.then(() => {
+    const preview = CARD_PREVIEWS.get(id);
+    if (preview && cardWanted === id && !cardStandsDown) showCard(preview, x, y);
+  }));
 }
 
 // The fetch on its own, with nothing drawn from it. Two callers: the hover, which
@@ -3960,12 +4087,21 @@ function warmCardBody(id) {
   const asking = fetch(CARD_BODY_URL + encodeURIComponent(id))
     // A refusal is not a document. `ok` and not a `catch` alone: a 404 is a
     // resolved promise with an error page in it, and `.json()` on that throws
-    // somewhere far away from the request that caused it.
-    .then(response => response.ok ? response.json().then(said => said.html || '') : '')
+    // somewhere far away from the request that caused it. A 404 is an answer,
+    // though: no such record, and asking again will not change that.
+    .then(response => response.ok ? response.json()
+                      : response.status === 404 ? {html: ''} : null)
     // Offline, or a policy that refuses the request. The card keeps what it
     // already drew; the row's own fields are the part that was never in doubt.
-    .catch(() => '')
-    .then(html => { CARD_BODIES.set(id, html); CARD_ASKED.delete(id); });
+    .catch(() => null)
+    .then(said => {
+      CARD_ASKED.delete(id);
+      // Nothing kept for a failure or a 5xx, so the next hover asks again rather
+      // than a link that once met a dropped connection never opening a card
+      if (!said) return;
+      CARD_BODIES.set(id, typeof said.html === 'string' ? said.html : '');
+      if (said.card && typeof said.card === 'object') CARD_PREVIEWS.set(id, said.card);
+    });
   CARD_ASKED.set(id, asking);
   return asking;
 }
@@ -4164,6 +4300,7 @@ function pinCard(row, x, y, extra) {
 // the row and the card is a place the pointer has to be allowed to cross.
 function hideCard() {
   if (!CARD || cardResizing || cardPinned) return;
+  cardWanted = null;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardLeaving = setTimeout(hideCardNow, CARD_GRACE);
@@ -4173,6 +4310,7 @@ function hideCard() {
 // out from under the card, a canvas panned, a filter redrawing the rows.
 function hideCardNow() {
   if (!CARD || cardResizing) return;
+  cardWanted = null;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardPinned = false;
@@ -4211,6 +4349,7 @@ addEventListener('keydown', event => {
 function cardYields(yielding) {
   cardStandsDown = yielding;
   if (!yielding) return;
+  cardWanted = null;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   cardPinned = false;
@@ -5406,6 +5545,85 @@ if (!ORIGIN) {
 }
 </script>
 {% if live %}
+{#- The done-without-a-PR question, for the doors with no box of their own to put
+    it in: the table and the record page. The right-click box asks it in its own
+    confirmation face. Only on a page that is served, because nothing else can
+    write a status. -#}
+<dialog id="noprask" aria-labelledby="noprask-q">
+  <p id="noprask-q">{{ no_pr.asked }}</p>
+  <span class="acts"><button type="button" id="noprask-yes" class="primary">{{ no_pr.yes }}</button>
+    <button type="button" id="noprask-no">{{ no_pr.no }}</button></span>
+</dialog>
+<script>
+// Modal, so the page behind it is inert and Tab stays on the two buttons, and
+// `covered()` counts an open dialog, so the single-key shortcuts stand down while
+// it is up. The door says what happened afterwards; this says nothing itself.
+const NO_PR_BOX = document.getElementById('noprask');
+let NO_PR_ANSWER = null;
+let NO_PR_TURN = 0;
+// **Whether a key has gone down inside the question since it opened.** A key
+// pressed somewhere else can finish inside it: Enter committing a table cell runs
+// the save, and so this, inside its own keydown, and Chrome delivers the rest of
+// that press to whatever has the focus by then — the yes button, which it
+// activates. The question was answered before anybody saw it, and the waiver
+// committed. So a click a key made (`detail === 0`) counts only if that key went
+// down in here, and a pointer's click always counts.
+let NO_PR_KEYED = false;
+NO_PR_BOX.addEventListener('keydown', event => {
+  NO_PR_KEYED = true;
+  if (event.key !== 'Escape') return;
+  // Stopped here, because the table's selection listens for Escape on the
+  // document and an Escape that cancelled this question must not also drop the
+  // rows it was asked about.
+  event.preventDefault();
+  event.stopPropagation();
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+});
+// The browser's own Escape on a modal dialog, which would close it unanswered.
+NO_PR_BOX.addEventListener('cancel', event => {
+  event.preventDefault();
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+});
+const noPrPressed = yes => event => {
+  if (!NO_PR_ANSWER) return;
+  if (event && event.detail === 0 && !NO_PR_KEYED) return;
+  NO_PR_ANSWER(yes);
+};
+document.getElementById('noprask-yes').onclick = noPrPressed(true);
+document.getElementById('noprask-no').onclick = noPrPressed(false);
+
+// Put the question beside `near` and answer whether to go on.
+function askNoPr(near) {
+  // A second question replaces the first, and the first is answered no: two
+  // writes waiting on one box is two doors each believing it was asked.
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+  const back = document.activeElement;
+  const turn = ++NO_PR_TURN;
+  return new Promise(resolve => {
+    NO_PR_ANSWER = yes => {
+      NO_PR_ANSWER = null;
+      if (NO_PR_BOX.open) NO_PR_BOX.close();
+      if (back && back.isConnected && back !== document.body) back.focus();
+      resolve(yes);
+    };
+    // Opened after the event that asked has finished, which is the other half of
+    // `NO_PR_KEYED`: the press that asked is over before the yes button exists
+    // under the keyboard at all.
+    setTimeout(() => {
+      if (turn !== NO_PR_TURN || !NO_PR_ANSWER) return;
+      NO_PR_KEYED = false;
+      NO_PR_BOX.showModal();
+      // Beside what the status was chosen on, so the question reads as being
+      // about that record and not about the page.
+      const at = near && near.getBoundingClientRect ? near.getBoundingClientRect() : null;
+      placeFloat(NO_PR_BOX, at ? at.left : innerWidth / 3, at ? at.bottom : innerHeight / 3);
+      document.getElementById('noprask-yes').focus();
+    }, 0);
+  });
+}
+</script>
+{% endif %}
+{% if live %}
 {#- role="status" and not a bare div: news that somebody else moved the plan
     under you is the one thing on screen that must reach a reader who is not
     looking at that corner. Polite, because it is not an emergency — the banner
@@ -6016,6 +6234,11 @@ def _page(
         # because five pages inventing their own capitalisation is how one status
         # came to be spelled three ways on one screen; a card is the fourth page.
         words=HUMAN,
+        # What a done record closed without a PR reads in the two places the
+        # browser draws its PRs — the card and the table's cell — off the same
+        # string the record page and the slide draw on the server.
+        no_pr={"said": NO_PR_SAID, "asked": NO_PR_ASKED, "yes": NO_PR_YES, "no": NO_PR_NO},
+        waivers=WAIVERS,
         # The marks that go with those words, for the hover card: one map per
         # ladder, so a card says the rung the same way on all three views.
         # The priority meter as the server draws it, so a row the table draws

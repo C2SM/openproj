@@ -420,13 +420,12 @@ def test_the_sections_a_slide_leaves_out_are_read_off_the_templates():
     assert {"problem", "appetite", "solution", "rabbit holes", "no-gos", "for later"} == found
     assert "progress" not in found
     # Skipping the kinds that carry no shaping document at all: a product is a
-    # container — `RUNG["product"].carded is False`, which is also why it shows no
-    # hover card — and it never reaches a slide, so its template is a sentence
-    # about the codebase rather than an argument under headings. Read off the
-    # ladder and not spelled `!= "product"`, so a later rung of the same sort is
-    # covered on the commit that adds it.
+    # container the scheduler never dates, and it never reaches a slide, so its
+    # template is a sentence about the codebase rather than an argument under
+    # headings. Read off the ladder and not spelled `!= "product"`, so a later
+    # rung of the same sort is covered on the commit that adds it.
     for name, body in TEMPLATES.items():
-        if name in RUNG and not RUNG[name].carded:
+        if name in RUNG and not RUNG[name].schedules:
             continue
         assert not without_sections(body, found | {"progress"}).strip("# \n"), body[:40]
 
@@ -531,6 +530,28 @@ def test_a_heading_the_bet_emptied_is_not_printed_over_blank_paper():
     # the heading that stops the room mistaking it for a report.
     assert slide["doc"].startswith("Solution")
     assert "The plan lives here." in slide["doc"]
+
+
+def test_a_slide_closed_without_a_pr_says_so_where_its_prs_go():
+    """The room reads the slide's PR list as what the work produced, and an
+    empty one beside a done record reads as a PR nobody linked. A record closed
+    with nothing merged on purpose says so in that list's place; one that has
+    gained a PR since draws the PR."""
+    waived = _one(status="done", end_date=date(2026, 8, 14), prs_waived=True)
+    linked = _one(
+        id="task-d00002",
+        title="Another leaf",
+        status="done",
+        end_date=date(2026, 8, 14),
+        prs_waived=True,
+        prs=["kilnlab/kiln4py#1"],
+    )
+    slides = {slide["heading"]: slide for slide in _slides_on(_index_of(waived, linked))}
+
+    assert "Done without a PR" in slides["A leaf"]["said"], slides["A leaf"]["said"]
+    assert slides["A leaf"]["prs"] == [], "the words are not a link to anything"
+    assert "Done without a PR" not in slides["Another leaf"]["said"]
+    assert len(slides["Another leaf"]["prs"]) == 1, slides["Another leaf"]["prs"]
 
 
 def test_a_pull_request_on_a_slide_is_a_link_to_the_pull_request(deck: str):

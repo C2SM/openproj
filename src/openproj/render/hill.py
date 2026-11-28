@@ -298,6 +298,11 @@ def hill_geometry() -> dict:
         # the same way the server does rather than working the curve out again.
         "normals": {word: list(up) for word, up in _HILL_NORMALS.items()},
         "ladders": {kind: list(words) for kind, words in HILL_LADDERS.items()},
+        # Which ladder an issue or a note stands on, and where a state that is no
+        # stop stands anyway: a card is drawn for every kind now, and a promoted
+        # note on the record ladder was a dimmed hill with no ball.
+        "ladder_of": dict(_LADDER_OF),
+        "handed": dict(_HILL_HANDED_ON),
         # Position is the channel this control is made of and the one channel a
         # screen reader never gets, so the sentence each coordinate draws travels
         # with the coordinates rather than being written a second time in JS.

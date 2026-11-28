@@ -28,7 +28,13 @@ from ..model import (
 )
 from .cycles import _proposed
 from .env import PHONE, _compiled
-from .markdown import _drop_repeated_title, _inlined_assets, _markdown, _markdown_line, _pr_link
+from .markdown import (
+    _drop_repeated_title,
+    _inlined_assets,
+    _markdown,
+    _markdown_line,
+    _prs_shown,
+)
 from .shell import ROUTES, Links, _page
 from .styles import _DETAIL_STYLE
 from .tokens import (
@@ -1676,7 +1682,7 @@ def slides_of(index: Index, record: Record, links: Links, assets: dict[str, str]
             ]
             if at == 0 and slide.progress
             else [],
-            "prs": [_pr_link(ref, links) for ref in record.prs] if at == 0 and slide.prs else [],
+            "prs": _prs_shown(record, links) if at == 0 and slide.prs else [],
             "body": body if at == 0 else Markup(""),
             "extra": _markdown(chunk, links, assets) if chunk else Markup(""),
             "note": note if at == 0 else "",

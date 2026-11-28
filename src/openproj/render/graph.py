@@ -5,7 +5,6 @@ from __future__ import annotations
 from markupsafe import Markup
 
 from ..index import Index
-from ..model import KINDS as KIND_LADDER
 from ..vendor import _library, _meter_font_uri
 from .controls import _FILTER_JS, _facets_html, _summary_html
 from .env import _compiled
@@ -1494,12 +1493,6 @@ function onLabel(node, at) {
 // back out — not on every `mousemove` in between.
 let onLabelOf = null;
 
-// Which kinds a card has anything to say about. Off the ladder in `model.py`,
-// where a product declares `carded: false` — jcanton asked for no card on one,
-// and the reason it is a property rather than a check written here is that the
-// same question is asked on the table and the timeline.
-const CARDED = {{ carded|tojson }};
-
 // What pointing at a node lights: its own edges, with every other edge faded —
 // jcanton, 2026-10-12, "highlight edges connected to a node when hovering over a
 // node", and fading the rest was his pick over leaving them alone. In a plan of
@@ -1527,16 +1520,14 @@ function unlightEdges() {
 
 // What pointing at a node does, for the two handlers that decide the pointer has
 // arrived — `mouseover` on a card or a box's label, and `mousemove` onto a box's
-// label from inside the box. One function, because the second of those used to
-// carry its own copy of what the first did and not the product check, so a
-// product's label reached from inside the product opened a card of dashes.
+// label from inside the box. One function, so the two cannot drift apart.
 //
 // Lights its edges, and asks for its document without drawing anything: the card
 // opens on a click now (below), and a hover that has already fetched the body is
 // what lets the click draw the fields and the document in one paint.
 function pointedAt(node) {
   lightEdges(node);
-  if (CARD_BODY_URL && CARDED[node.data('kind')] !== false) warmCardBody(node.id());
+  if (CARD_BODY_URL) warmCardBody(node.id());
 }
 
 cy.on('mouseover', 'node', evt => {
@@ -1587,9 +1578,12 @@ cy.on('mouseout', 'node', evt => {
 // A function the one `tap` handler further down calls outside edit mode, rather
 // than a second tap listener on nodes beside it: one gesture, one listener, so
 // what a click does in each mode is read in one place.
+//
+// Every kind, a product included. A product had no card while one opened on
+// hover, because the pointer crossed it on the way to another node; a click is
+// not crossing anything.
 function cardOnTap(node, evt) {
   if (node.isParent() && !onLabel(node, evt.position)) return;
-  if (CARDED[node.data('kind')] === false) return;
   // `data()` and not a lookup: a node's data IS the row — `_elements` builds it
   // from the same `_row` the table is drawn from — and this page has no `DATA` of
   // its own to look anything up in. The first version of this read `DATA.rows`
@@ -2314,7 +2308,6 @@ def render_graph(
         # colour nothing in it.
         bars=PRIORITY_BARS,
         levels=PRIORITY_LEVEL,
-        carded={rung.name: rung.carded for rung in KIND_LADDER},
         total=len(index.plan),
         links=links,
         elements=_elements(index),

@@ -501,8 +501,10 @@ def test_the_status_a_row_is_set_to_says_what_it_will_be_refused_without(page: s
     assert 'data-required-at="ready in_progress"' in control(page, "reviewers")
     assert "function markRequired(form)" in page
     assert "form.addEventListener('change', () => markRequired(form));" in page
-    # The waiver is a rule being let off, not a rule being broken.
-    assert "control.name === 'reviewers' && waived" in page
+    # The waiver is a rule being let off, not a rule being broken — read through
+    # the one map of which switch turns off which gate, for every field.
+    assert "&& !waivedOn(form, control.name);" in page
+    assert 'const WAIVERS = {"reviewers": "review_waived", "prs": "prs_waived"};' in page
 
 
 def test_a_date_box_is_the_only_copy_of_the_day_it_holds(page: str):
