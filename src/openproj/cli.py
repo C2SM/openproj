@@ -1404,8 +1404,8 @@ def _schedule(repo: Path, as_json: bool, today: date | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-    except SystemExit as exit_code:  # argparse exits 2 on a bad command line
-        return int(exit_code.code or 2)
+    except SystemExit as exit_code:  # 2 on a bad command line, 0 after --help
+        return 2 if exit_code.code is None else int(exit_code.code)
     if args.command == "init":
         return _init(args)
     if args.command == "check":
