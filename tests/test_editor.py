@@ -2974,8 +2974,15 @@ def test_a_link_to_the_split_view_opens_in_the_split_view(client: TestClient, tm
 
 # The view the page opened in, then Preview pressed, then what was written down.
 _LANDED_THEN_READ = (
-    _DEEP_LINK.replace("return {", "const opened = {", 1)
+    _STUB_PREVIEW
     + """
+const article = document.querySelector('article.record');
+const opened = {
+  classes: [...article.classList].filter(c => c.startsWith('view-')).sort(),
+  editing: article.classList.contains('editing'),
+  pressed: ['view-edit', 'view-both', 'preview'].filter(
+    id => document.getElementById(id).getAttribute('aria-pressed') === 'true'),
+};
 document.getElementById('preview').click();
 let stored = null;
 try { stored = JSON.parse(localStorage.getItem('openproj:editor:1')).lands; } catch (e) {}
@@ -3936,8 +3943,7 @@ const article = document.querySelector('article.record');
 const handle = article.querySelector('#splitter');
 const box = article.querySelector('.bodywrap');
 const pane = article.querySelector('#body-preview');
-flipEditing();
-await new Promise(go => setTimeout(go, 80));
+// No press: the split was the last view chosen, so the page opens in it.
 return {box: box.getBoundingClientRect().width, pane: pane.getBoundingClientRect().width,
         held: EDITOR.split, view: VIEW};
 """
