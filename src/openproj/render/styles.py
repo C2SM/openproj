@@ -705,9 +705,11 @@ button.stat.pick:hover { color: var(--accent); }
    keyboard for, and its picker was the item that wrapped the strip onto a second
    line under the box. The marks' separators are a gap between groups, and the
    gaps were what pushed sixteen 30px buttons onto a third row at 350px — a row
-   holding one `—`, 27px of the height Ace has least of with the keyboard up. */
+   holding one `—`, 27px of the height Ace has least of with the keyboard up.
+   "Format tables on save" goes for the same reason: it is a setting somebody
+   changes once, and on a phone it is the item that wraps the strip. */
 @media """ + PHONE + """ {
-  .statusbar .keymap { display: none; }
+  .statusbar .keymap, .statusbar .tablefmt { display: none; }
   .marks .sep { display: none; }
 }
 .bodywrap { position: relative; }

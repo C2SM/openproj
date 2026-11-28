@@ -1747,7 +1747,7 @@ _DETAIL = """
       <p class="field bodybar statusbar" id="statusbar">
         {% if not creating %}<button type="button" id="draftevery"></button>{% endif %}
         {#- On the create form too: its Save aligns the tables it creates with. -#}
-        <button type="button" id="tablefmt"></button>
+        <button type="button" id="tablefmt" class="tablefmt"></button>
       </p>
       {#- No draft and no 409-with-a-report on a create; a refused create lands
           in `#problems` above. -#}

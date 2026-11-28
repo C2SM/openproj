@@ -5956,7 +5956,7 @@ def test_the_status_bar_says_where_the_caret_is_how_long_it_is_and_what_tab_type
     )
 
     assert got["drawn"], "the status bar is not drawn in an editing session"
-    assert got["order"] == ["span", "button", "draftevery", "span"], (
+    assert got["order"] == ["span", "button", "draftevery", "tablefmt", "span"], (
         "the strip is caret, the indent picker, whatever the page put in it, and "
         f"the length — in that order: {got['order']}"
     )
