@@ -5024,6 +5024,132 @@ def test_a_gated_status_opens_the_form_on_what_it_needs_and_saves_both(
 
 
 # --------------------------------------------------------------------------- #
+# Done without a pull request: the question `Status ▸` asks first
+# --------------------------------------------------------------------------- #
+
+
+# A task that `done` would refuse for its PR and for something else, so the yes
+# has a form left to open. Searched rather than named, for `shortOf`'s reason.
+_NO_PR_ROW = """
+const row = rowWhere(one => one.kind === 'task' && one.status !== 'done'
+                            && popMissing(one, 'done').includes('prs')
+                            && popMissing(one, 'done').length >= 2);
+if (!row) return {error: 'the corpus holds no task short of a PR and more at done'};
+const missing = popMissing(row, 'done');
+openOn(row.id);
+itemIn('status').click();
+itemIn('status-done').click();
+await rest(300);
+const asked = {open: NO_PR_BOX.open, modal: NO_PR_BOX.matches(':modal'),
+               said: NO_PR_BOX.querySelector('p').textContent,
+               buttons: [...NO_PR_BOX.querySelectorAll('button')].map(b => b.textContent),
+               focused: document.activeElement.textContent, form: formUp(),
+               sent: patches().length};
+"""
+
+
+def test_done_from_the_menu_asks_about_the_pr_and_then_opens_the_form_on_the_rest(
+    index: Index, tmp_path: Path
+):
+    """`Status ▸ Done` on a record with no PR used to open the form with a PRs
+    box in it, which is the one answer some finished work does not have.
+
+    It asks first, in a modal question whose buttons say what they will do, with
+    the keyboard on the yes and the menu still behind it. Yes turns the box into
+    the gated-status form on what is left — the day it ended — and that form's
+    one Save carries the waiver with the status and the date, so there is never
+    a done record in git waiting for its waiver.
+    """
+    got = _at_a_form(
+        index,
+        tmp_path / "noprform.html",
+        _NO_PR_ROW
+        + """
+NO_PR_BOX.querySelector('button.primary').click();
+await rest(400);
+const opened = {form: formUp(), open: opensNow(), status: valueIn('status')};
+typeInto('end_date', '2026-09-01');
+pressSave();
+await rest(1200);
+return {id: row.id, missing, asked, opened, sent: patches(), closed: !popIsOpen()};
+""",
+        patience=6000,
+    )
+
+    assert not got.get("error"), got
+    asked = got["asked"]
+    assert asked["open"] and asked["modal"], f"Done wrote or opened a form unasked: {asked}"
+    assert asked["said"] == "No pull request is linked. Mark done anyway?"
+    assert asked["buttons"] == ["Mark done without a PR", "Cancel"]
+    assert asked["focused"] == "Mark done without a PR", "the keyboard is not in the question"
+    assert asked["form"] is False and asked["sent"] == 0
+    rest = [name for name in got["missing"] if name != "prs"]
+    assert got["opened"]["form"], "the yes did not open the form on what done still needs"
+    assert got["opened"]["open"] == rest, got["opened"]
+    assert got["opened"]["status"] == HUMAN["done"]
+    assert len(got["sent"]) == 1, got["sent"]
+    sent = got["sent"][0]["body"]["fields"]
+    assert sent == {"status": "done", "prs_waived": True, "end_date": "2026-09-01"}, sent
+    assert got["closed"] is True
+
+
+def test_saving_done_from_the_edit_box_asks_the_same_question(index: Index, tmp_path: Path):
+    """`Edit…` is the other door in this box: the status changed on the card and
+    Save pressed. Its gate is `popSave`'s, and a missing PR there is the same
+    question rather than "Done needs PRs." — which the box could never answer for
+    work that has none."""
+    got = _at_a_form(
+        index,
+        tmp_path / "nopredit.html",
+        """
+const row = rowWhere(one => one.kind === 'task' && one.status !== 'done'
+                            && popMissing(one, 'done').includes('prs'));
+if (!row) return {error: 'the corpus holds no task short of a PR at done'};
+openOn(row.id);
+popForm({mode: 'edit', row: row, values: {status: 'done', end_date: '2026-09-01'},
+         label: 'Edit', verb: 'Save'});
+pressSave();
+await rest(300);
+const asked = {open: NO_PR_BOX.open, why: whyLines(), sent: patches().length};
+NO_PR_BOX.querySelector('button.primary').click();
+await rest(1200);
+return {asked, sent: patches()};
+""",
+        patience=5000,
+    )
+
+    assert not got.get("error"), got
+    assert got["asked"] == {"open": True, "why": [], "sent": 0}, got["asked"]
+    assert len(got["sent"]) == 1, got["sent"]
+    sent = got["sent"][0]["body"]["fields"]
+    assert sent["status"] == "done" and sent["prs_waived"] is True, sent
+
+
+def test_escape_on_the_question_from_the_menu_sends_nothing(index: Index, tmp_path: Path):
+    """Escape is Cancel: nothing goes out, the question and the menu both go, and
+    the record keeps the status it had."""
+    got = _at_a_form(
+        index,
+        tmp_path / "noprescape.html",
+        _NO_PR_ROW
+        + """
+NO_PR_BOX.querySelector('button.primary').dispatchEvent(
+  new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+await rest(300);
+return {asked, open: NO_PR_BOX.open, menu: popIsOpen(), sent: patches(), said: said(),
+        now: DATA.rows[row.id].status, was: row.status};
+""",
+    )
+
+    assert not got.get("error"), got
+    assert got["asked"]["open"], got["asked"]
+    assert got["open"] is False and got["menu"] is False, got
+    assert got["sent"] == []
+    assert got["said"] == "nothing was changed"
+    assert got["now"] == got["was"]
+
+
+# --------------------------------------------------------------------------- #
 # Where the new record went, when the answer is "nowhere you can see"
 # --------------------------------------------------------------------------- #
 

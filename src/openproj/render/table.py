@@ -1766,12 +1766,15 @@ async function refreshProblems() {
 //
 // `review_waived` is honoured here for the reason it is honoured there: it is the
 // escape hatch from the reviewer rule, and asking for reviewers on a row that has
-// waived them is a nag rather than a question.
+// waived them is a nag rather than a question. `prs_waived` is the same switch on
+// the done rule, and a row that has said it was closed without a PR once is not
+// asked again.
 function missingFor(row, status) {
   return Object.entries((DATA.required || {})[row.kind] || {})
     .filter(([field, statuses]) => statuses.includes(status))
     .map(([field]) => field)
-    .filter(field => EDITABLE[field] && !(field === 'reviewers' && row.review_waived))
+    .filter(field => EDITABLE[field] && !(field === 'reviewers' && row.review_waived)
+                     && !(field === 'prs' && row.prs_waived))
     .filter(field => !holds(row, field));
 }
 
@@ -1963,7 +1966,7 @@ function sayPicked() {
 // a loop over the singular route: the second call in a loop is written against
 // the commit the first one made, so a conflict halfway leaves half the selection
 // written on a protected branch with no way to say which half.
-async function saveCells(cell, value, extra) {
+async function saveCells(cell, value, extra, waived) {
   const field = cell.dataset.field;
   const ids = pickableRows().filter(id => PICKED.has(id));
   const box = document.getElementById('row-conflict');
@@ -1976,6 +1979,7 @@ async function saveCells(cell, value, extra) {
     sending = {[field]: coerced};
     for (const [name, raw] of Object.entries(extra || {}))
       sending[name] = coerce(EDITABLE[name], raw);
+    if (waived) sending.prs_waived = true;
   } catch (error) {
     announce(`${field} ${error.message}`);
     return;
@@ -2035,11 +2039,20 @@ async function saveCells(cell, value, extra) {
   // between somebody and the overwrite; it is now true rather than load-bearing,
   // because every row it reaches is a row that was missing the field.
   if (field === 'status' && !extra) {
-    const wanted = [...new Set(ids.flatMap(id => missingFor(DATA.rows[id] || {}, coerced)))];
+    // **A missing PR is not a field to answer but a question to ask**, and it is
+    // asked once for the batch: "these were finished with nothing merged" is one
+    // decision, like "these all finished today". So `prs` is taken out of what
+    // the two refusals below weigh — it is never something this panel types —
+    // and put to `askNoPr` once both have passed, just before the write or the
+    // date panel. The server writes the waiver only to the rows that have no PR
+    // (`save_many`), which is what lets it travel in this one field map.
+    const owed = id => missingFor(DATA.rows[id] || {}, coerced).filter(name => name !== 'prs');
+    const asks = !waived
+      && ids.some(id => missingFor(DATA.rows[id] || {}, coerced).includes('prs'));
+    const wanted = [...new Set(ids.flatMap(owed))];
     const cannot = wanted.filter(name => EDITABLE[name] !== 'date');
     if (cannot.length) {
-      const short = ids.filter(id =>
-        missingFor(DATA.rows[id] || {}, coerced).some(name => cannot.includes(name)));
+      const short = ids.filter(id => owed(id).some(name => cannot.includes(name)));
       box.hidden = false;
       // By title. Every row this names is selected and on the screen behind the
       // banner, and both remedies — fix it, or take it out of the selection —
@@ -2071,8 +2084,16 @@ async function saveCells(cell, value, extra) {
         + `${held.length === 1 ? 'it' : 'them'} on ${held.length === 1 ? 'its' : 'their'} own.`;
       return;
     }
+    if (asks) {
+      askNoPr(cell).then(yes => {
+        if (yes) { saveCells(cell, value, undefined, true); return; }
+        rove(cell, true);
+        announce('nothing was changed');
+      });
+      return;
+    }
     if (wanted.length) {
-      askFor(cell, value, wanted, answers => saveCells(cell, value, answers),
+      askFor(cell, value, wanted, answers => saveCells(cell, value, answers, waived),
         `${human(coerced)} needs ${wanted.length === 1 ? 'this' : 'these'} `
         + `for all ${ids.length} selected record${ids.length === 1 ? '' : 's'}`);
       return;
@@ -2108,7 +2129,10 @@ async function saveCells(cell, value, extra) {
     BASE.value = answer.commit;
     for (const id of ids) {
       markSaved(answer, id);
-      Object.assign(DATA.rows[id], sending);
+      // The waiver as the server wrote it: only onto a row with no PR.
+      const own = {...sending};
+      if (holds(DATA.rows[id], 'prs')) delete own.prs_waived;
+      Object.assign(DATA.rows[id], own);
     }
     announce(`${ids.length} ${(FIELD_LABELS[field] || field).toLowerCase()} `
       + `cell${ids.length === 1 ? '' : 's'} saved in one commit`);
@@ -2161,7 +2185,7 @@ async function saveCells(cell, value, extra) {
   }
 }
 
-async function saveCell(cell, value, extra) {
+async function saveCell(cell, value, extra, waived) {
   const field = cell.dataset.field;
   const box = document.getElementById('row-conflict');
   // Cleared here and nowhere else. This page redraws instead of reloading, so
@@ -2184,9 +2208,21 @@ async function saveCell(cell, value, extra) {
   // write. Asked once — `extra` is what came back from asking, and a second pass
   // through here with it must not ask again.
   if (field === 'status' && !extra) {
-    const wanted = missingFor(DATA.rows[cell.dataset.record] || {}, coerced);
+    const missing = missingFor(DATA.rows[cell.dataset.record] || {}, coerced);
+    // A missing PR is asked about rather than typed in, and first: whether this
+    // is done at all without one is the question, and a date panel in front of
+    // it would be asking when somebody finished work they may not mean to close.
+    if (missing.includes('prs') && !waived) {
+      askNoPr(cell).then(yes => {
+        if (yes) { saveCell(cell, value, undefined, true); return; }
+        rove(cell, true);
+        announce('nothing was changed');
+      });
+      return;
+    }
+    const wanted = missing.filter(name => name !== 'prs');
     if (wanted.length) {
-      askFor(cell, value, wanted, answers => saveCell(cell, value, answers));
+      askFor(cell, value, wanted, answers => saveCell(cell, value, answers, waived));
       return;
     }
   }
@@ -2195,6 +2231,7 @@ async function saveCell(cell, value, extra) {
     sending = {[field]: coerced};
     for (const [name, raw] of Object.entries(extra || {}))
       sending[name] = coerce(EDITABLE[name], raw);
+    if (waived) sending.prs_waived = true;
   } catch (error) {
     announce(`${field} ${error.message}`);
     return;

@@ -1254,7 +1254,7 @@ function popFocusIn(box, at) {
 // The priority list (`#pripop`) counts as inside: it hangs off the body so the card
 // cannot clip it, and a press on one of its rows is a press on the card's field.
 const popOwns = target => POP.contains(target)
-  || !!(target && target.closest && target.closest('.pripop'));
+  || !!(target && target.closest && target.closest('.pripop, #noprask'));
 document.addEventListener('pointerdown', event => {
   if (POP.hidden || popOwns(event.target)) return;
   popClose();
@@ -1726,6 +1726,9 @@ function popMissing(row, status) {
     // the escape hatch from the reviewer rule, and asking for reviewers on a row
     // that has waived them is a nag rather than a question.
     .filter(field => !(field === 'reviewers' && row.review_waived))
+    // And `prs_waived` for the same reason on the done rule: a row that has once
+    // said it was closed without a PR is not asked again.
+    .filter(field => !(field === 'prs' && row.prs_waived))
     .filter(field => !popHolds(row, field));
 }
 
@@ -1788,12 +1791,21 @@ function popStatusChoice(row, status) {
   // first one, a record the validator refuses; that is `askFor`'s argument
   // (`table.py`) and it is why the question is asked BEFORE the write there too.
   const missing = popMissing(row, status);
+  // **A missing PR is asked about rather than typed in.** `askNoPr` (`shell.py`)
+  // puts the question every status door asks, and the rest of the gate — the
+  // day it ended — is answered by the form below as before, with the waiver
+  // already in what that form will send.
+  const rest = missing.filter(field => field !== 'prs');
   if (missing.length) {
     // Every missing field has to be one the form can draw, or the form opens on
     // a gate it cannot answer. See `popNeeds`.
     const boxes = (POP_SCHEMA.fields || {})[row.kind] || [];
-    if (!missing.every(field => boxes.includes(field))) {
-      item.why = popNeeds(row, status, missing);
+    if (!rest.every(field => boxes.includes(field))) {
+      item.why = popNeeds(row, status, rest);
+      return item;
+    }
+    if (rest.length < missing.length) {
+      item.run = () => popWaive(row, status, rest);
       return item;
     }
     item.stays = true;
@@ -1818,6 +1830,37 @@ function popStatusChoice(row, status) {
   item.run = () => popWrite(row.id, {status: status},
     `${popTitle(row)} is now ${popHuman(status)}`);
   return item;
+}
+
+// The status choice when the record has no PR: the question first, and then
+// either the write or the form on what else the status needs.
+//
+// The box stays up behind the question (`popOwns` counts the question as part of
+// it), so a form can open in it where the menu was. A promise, so `popRan`
+// leaves the closing to this. The form sends `prs_waived` without drawing it,
+// which is the one value a staged box here sends unseen, and the reader has just
+// answered for it in words.
+async function popWaive(row, status, rest) {
+  const yes = await askNoPr(POP);
+  if (!yes) {
+    announce('nothing was changed');
+    popDone();
+    return;
+  }
+  if (!rest.length)
+    return popWrite(row.id, {status: status, prs_waived: true},
+      `${popTitle(row)} is now ${popHuman(status)}`);
+  // A scroll or a resize under the question closes the menu, and the form has
+  // nowhere else to be drawn; it is put back where it was.
+  POP.hidden = false;
+  popForm({
+    mode: 'edit', row: row,
+    only: ['status', ...rest],
+    opens: rest,
+    values: {status: status, prs_waived: true},
+    label: `${popHuman(status)} needs ${rest.length === 1 ? 'this' : 'these'}`,
+    verb: 'Save',
+  });
 }
 
 // **Priority, directly below the status and built like it.** jcanton, 2026-09-18:
@@ -2927,7 +2970,10 @@ function popMarkRequired() {
       // `review_waived` is the escape hatch from the reviewer rule, honoured
       // here for the reason `missingFor` (`table.py`) honours it: asking for
       // reviewers on a record that has waived them is a nag.
-      && !(name === 'reviewers' && off);
+      && !(name === 'reviewers' && off)
+      // And `prs_waived`, off the row because no box draws it: the waiver the
+      // gated-status form already carries is in `popFormRow()`'s values.
+      && !(name === 'prs' && row && row.prs_waived);
     const control = form.controls.get(name);
     if (control) control.setAttribute('aria-required', String(wanted));
     // **The star goes in the `<dt>`, which is the only name this card has.** The
@@ -3014,11 +3060,19 @@ async function popSave() {
   const held = form.mode === 'new' ? null : popRawOf(popHeld('status'));
   const moving = form.mode === 'new' || status !== held;
   const gates = (POP_SCHEMA.required || {})[form.kind] || {};
+  // Whether this Save has to ask the done-without-a-PR question first. Asked
+  // after every other refusal has had its say, so the question is the last
+  // thing between the press and the write and not one step of several.
+  let asks = false;
   for (const name of moving ? form.names : []) {
     const has = name in values ? values[name] : popStartOf(name);
     if (!popEmpty(has)) continue;
     if (!(gates[name] || []).includes(status)) continue;
     if (name === 'reviewers' && (values.review_waived ?? popStartOf('review_waived'))) continue;
+    if (name === 'prs') {
+      if (!(values.prs_waived ?? popStartOf('prs_waived'))) asks = true;
+      continue;
+    }
     why.push(`${popHuman(status)} needs ${popLabel(name)}.`);
     offender = offender || form.controls.get(name);
     offending = offending || name;
@@ -3036,6 +3090,13 @@ async function popSave() {
     if (offender) offender.focus();
     else popOpenField(offending || form.names[0]);
     return;
+  }
+  // Cancel leaves the box open holding the edit, which is what Cancel on a
+  // question about one press means; the box's own Cancel is still beside Save.
+  if (asks) {
+    if (!(await askNoPr(form.save))) return;
+    if (POP_FORM !== form) return;
+    values.prs_waived = true;
   }
   // Held while the commit is in the air. `POP_WRITING`, taken in `popStart` for
   // both write doors, is the rule — a flag is a statement about the page, and

@@ -1807,6 +1807,26 @@ def test_done_without_a_pr_is_one_write_that_reads_back(client: TestClient, repo
     assert not [p for p in problems if p["field"] == "prs"], problems
 
 
+def test_a_bulk_waiver_lands_only_on_the_records_with_no_pr(
+    client: TestClient, repo_path: Path
+):
+    """One question covers a selection, so one field map carries the waiver to
+    every id in it — and a row that cites a PR was never short of one. Written
+    there, the waiver would be a line in its file claiming it was closed with
+    nothing merged. The route drops it per record, in the same single commit.
+    """
+    linked = save(client, TASK, {"prs": ["kilnlab/kiln4py#7"]}).json()["commit"]
+    written = save_many(client, [TASK, OTHER], {"status": "done", "prs_waived": True}, base=linked)
+
+    assert written.status_code == 200, written.text
+    commit = written.json()["commit"]
+    assert str(commit_at(repo_path, commit).parents[0].id) == linked, "one commit"
+    cited = file_at(repo_path, commit, PATH)
+    bare = file_at(repo_path, commit, f"tasks/{OTHER}.md")
+    assert "status: done" in cited and "prs_waived" not in cited, cited
+    assert "status: done" in bare and "prs_waived: true" in bare, bare
+
+
 def test_a_waiver_that_is_not_true_or_false_is_refused(client: TestClient, repo_path: Path):
     """The same door `review_waived` has: `prs_waived: "yes"` is valid YAML that
     the model would read as a string, and a string is not a switch."""

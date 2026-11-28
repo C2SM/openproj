@@ -906,28 +906,28 @@ def test_pressing_save_on_a_finished_record_offers_the_day_it_ended(pages):
     second press commits it, and somebody who finished on Friday changes four
     characters instead of being told what they have not done.
 
-    The seeded task cites no pull request either, which `done` also demands and
-    which no form may invent — so this asserts both halves at once: the date is
-    offered, the PR is named, and the write does not go.
+    The seeded task cites no pull request either, and that is not named here: a
+    missing PR is the done-without-a-PR question, which is asked once the date
+    has been read and not while it is still being offered — so this press offers
+    the date, names nothing else, asks nothing, and sends nothing.
     """
-    answer = drive(pages["detail_plain"], FINISHING.format(extra="", SAY=SAY))
+    answer = drive(
+        pages["detail_plain"],
+        FINISHING.format(extra="", SAY=SAY + ", asked: NO_PR_BOX !== null"),
+    )
 
     assert answer["value"]["filled"] == date.today().isoformat()
     said = answer["value"]["state"]
     assert "set to today — check it and press Save again" in said, said
-    assert "still needed at Done: " in said, said
-    # "Done" and not `done`: the word comes off `data-word`, which the hill keeps
-    # current on the hidden input precisely so a refusal says what the reader is
-    # looking at rather than what git holds.
-    assert "at Done:" in said, said
-    # The FIELD names are `labelOf`'s job and this harness cannot answer it:
+    assert "still needed" not in said, said
+    assert answer["value"]["asked"] is False, "the question came before the date was read"
+    # The FIELD name is `labelOf`'s job and this harness cannot answer it:
     # `drive.js` returns null from every `previousElementSibling`, so `labelOf`
-    # falls back to `control.name` here where a browser answers "End date" and
-    # "PRs". What is asserted instead is that the page really does draw those two
-    # words beside those two controls, which is the half that lives in markup.
-    assert "end_date" in said and "prs" in said, said
-    drawn = pages["detail_plain"]
-    assert ">End date<" in drawn and ">PRs<" in drawn
+    # falls back to `control.name` here where a browser answers "End date". What
+    # is asserted instead is that the page really does draw that word beside that
+    # control, which is the half that lives in markup.
+    assert "end_date" in said, said
+    assert ">End date<" in pages["detail_plain"]
     # The counter has to move with it, or the bar claims one change over a form
     # holding two and Reset puts back a date nobody could see had been added.
     assert answer["value"]["unsaved"] == "2 unsaved changes", answer["value"]["unsaved"]
@@ -956,6 +956,97 @@ def test_the_second_press_sends_the_date_the_page_offered(pages):
     assert sent["status"] == "done"
     assert sent["end_date"] == date.today().isoformat()
     assert sent["prs"] == ["kilnlab/kiln4py#1"]
+
+
+# The second press on a record that has no PR: the date has been read, so what is
+# left is whether this is done at all with nothing merged.
+ASKED_ON_SAVE = """
+(async () => {{
+  const settle = async () => {{ for (let i = 0; i < 50; i++) await Promise.resolve(); }};
+  const status = FORM.querySelector('[name=status]');
+  status.value = 'done';
+  status.dataset.word = 'Done';
+  await save();
+  const going = save();
+  await settle();
+  const asked = {{open: NO_PR_BOX.hasAttribute('open'),
+                 said: NO_PR_BOX.querySelector('p').textContent,
+                 buttons: [...NO_PR_BOX.querySelectorAll('button')].map(b => b.textContent)}};
+  {answer}
+  await going;
+  return {{asked, open: NO_PR_BOX.hasAttribute('open'), waived: FORM.dataset.prsWaived || '',
+          {SAY}}};
+}})()
+"""
+YES = "NO_PR_BOX.querySelector('button.primary').onclick();"
+NO = "[...NO_PR_BOX.querySelectorAll('button')].find(b => b.textContent === 'Cancel').onclick();"
+
+
+def test_saving_a_record_done_with_no_pr_asks_and_sends_the_waiver_with_it(pages):
+    """The record page's door, and the hill's with it: the hill only sets the
+    status in the form, and Save is what writes it.
+
+    One question in the app's words, with buttons that say what they do, and the
+    yes is one PATCH carrying the status, the date and the waiver together — a
+    done record that waits for its waiver in a second commit is, for the length
+    of the first, a record the validator refuses.
+    """
+    answer = drive(
+        pages["detail_plain"],
+        ASKED_ON_SAVE.format(answer=YES, SAY=SAY),
+        replies=[{"status": 200, "json": {"outcome": "committed", "commit": "c" * 40}}],
+    )
+
+    asked = answer["value"]["asked"]
+    assert asked["open"], "the press wrote without asking, or asked nothing"
+    assert asked["said"] == "No pull request is linked. Mark done anyway?"
+    assert asked["buttons"] == ["Mark done without a PR", "Cancel"]
+    assert answer["value"]["open"] is False, "the question stayed up after it was answered"
+    assert len(answer["calls"]) == 1, answer["calls"]
+    sent = json.loads(answer["calls"][0]["body"])["fields"]
+    assert sent == {"status": "done", "end_date": date.today().isoformat(), "prs_waived": True}
+    assert answer["value"]["waived"] == "true", "the next press would be asked again"
+
+
+def test_cancelling_the_question_on_the_record_page_sends_nothing(pages):
+    """Cancel is the status left as it was in git: nothing goes out, and the
+    page says so in its live region rather than going quiet over a press."""
+    answer = drive(pages["detail_plain"], ASKED_ON_SAVE.format(answer=NO, SAY=SAY))
+
+    assert answer["value"]["asked"]["open"]
+    assert not answer["calls"], "a cancelled question wrote"
+    assert answer["value"]["state"] == "not saved", answer["value"]["state"]
+    assert answer["value"]["waived"] == ""
+
+
+def test_a_record_created_done_with_no_pr_is_asked_too(pages):
+    """The create form is the same page and the same Save: a record may be born
+    done with nothing merged, if somebody says so, and the waiver goes in the
+    one POST that makes it."""
+    answer = drive(
+        pages["new"],
+        """
+(async () => {
+  const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+  TITLED.value = 'Settled by a decision';
+  FORM.querySelector('[name=status]').value = 'done';
+  FORM.querySelector('[name=end_date]').value = '2026-08-21';
+  const going = save();
+  await settle();
+  const asked = NO_PR_BOX.hasAttribute('open');
+  NO_PR_BOX.querySelector('button.primary').onclick();
+  await going;
+  return {asked};
+})()
+""",
+        replies=[{"status": 201, "json": {"id": "task-0a0a0a", "commit": "c" * 40}}],
+    )
+
+    assert answer["value"]["asked"] is True
+    posts = [call for call in answer["calls"] if call["method"] == "POST"]
+    assert len(posts) == 1, answer["calls"]
+    fields = json.loads(posts[0]["body"])["fields"]
+    assert fields["status"] == "done" and fields["prs_waived"] is True, fields
 
 
 def test_a_save_that_does_not_move_the_status_is_not_asked_anything(pages):

@@ -8049,23 +8049,215 @@ def test_the_bulk_panel_still_refuses_what_it_cannot_ask_for(page: str):
     An owner, an appetite and a reviewer are one fact PER record, so prefilling
     nine rows with one of them would commit a number nobody meant, in one commit,
     on a protected branch. The refusal names the rows, which is what lets somebody
-    fix them and try again; it is the shared corpus here, whose two ready tasks
-    cite no pull request.
+    fix them and try again; it is the shared corpus here, where nobody is on
+    either task, and `in_progress` needs somebody on it.
+
+    It was `done` over two tasks that cite no pull request until a missing PR
+    became a question rather than a field (`askNoPr`), and the question is one
+    fact about the batch: see the test below this one.
     """
     answer = drive_table(
         page,
-        "(async () => {" + PICK_BOTH + "  await saveCells(cell, 'done');" + f"  {SETTLE}"
+        "(async () => {" + PICK_BOTH + "  await saveCells(cell, 'in_progress');" + f"  {SETTLE}"
         "  return {shown: !document.getElementById('askfor').hidden,"
         "          said: document.getElementById('row-conflict').textContent};"
         "})()",
     )
 
     assert answer["value"]["shown"] is False, "it asked for a field nobody can answer in bulk"
-    assert (
-        "can be Done yet" in answer["value"]["said"]
-        or "cannot be Done yet" in (answer["value"]["said"])
-    ), answer["value"]["said"]
+    assert "can be In progress yet" in answer["value"]["said"], answer["value"]["said"]
     assert not [call for call in answer["calls"] if call["method"] == "PATCH"]
+
+
+# The question every status door asks before `done` on a record with no PR, and
+# what answering it is driven with. The box is the shell's `NO_PR_BOX`, built the
+# first time it is asked, so `null` is how a page says it never asked.
+NO_PR_ASKED = "No pull request is linked. Mark done anyway?"
+NO_PR_STATE = (
+    "{open: NO_PR_BOX.hasAttribute('open'), said: NO_PR_BOX.querySelector('p').textContent,"
+    " buttons: [...NO_PR_BOX.querySelectorAll('button')].map(b => b.textContent),"
+    " panel: !document.getElementById('askfor').hidden}"
+)
+NO_PR_YES = "NO_PR_BOX.querySelector('button.primary').onclick();"
+NO_PR_NO = (
+    "[...NO_PR_BOX.querySelectorAll('button')].find(b => b.textContent === 'Cancel').onclick();"
+)
+LANDS = [
+    {"status": 200, "json": {"outcome": "committed", "commit": "b" * 40, "conflict": None,
+                             "pushed": True}},
+    {"status": 200, "json": {"rows": {}, "problems": []}},
+    {"status": 200, "json": {"problems": []}},
+]
+ON_OTHER = (
+    f"  const cell = tbody.querySelector('td[data-record=\"{OTHER}\"][data-field=\"status\"]');"
+)
+
+
+def test_done_on_a_row_with_no_pr_asks_before_it_asks_for_the_date(page: str):
+    """The table's status cell, on a ready task that cites nothing.
+
+    The question comes first and alone — the date panel is not up behind it —
+    because whether this is done at all with nothing merged is what decides
+    whether there is a day it ended. Yes opens the panel on what is left, and
+    the one PATCH that panel sends carries the waiver with the status and the
+    date, so the plan never holds a done record waiting for its waiver.
+    """
+    answer = drive_table(
+        page,
+        "(async () => {" + ON_OTHER + "  saveCell(cell, 'done');" + f"  {SETTLE}"
+        f"  const asked = {NO_PR_STATE};"
+        f"  {NO_PR_YES} {SETTLE}"
+        "  const panel = document.getElementById('askfor');"
+        "  const fields = [...panel.querySelectorAll('input')].map(i => i.dataset.field);"
+        "  panel.querySelector('input').value = '2026-08-21';"
+        f"  panel.querySelector('#asked').onclick(); {SETTLE}"
+        "  return {asked, fields, open: NO_PR_BOX.hasAttribute('open')};"
+        "})()",
+        replies=LANDS,
+    )
+
+    asked = answer["value"]["asked"]
+    assert asked["open"], "Done on a row with no PR wrote, or opened the date panel, unasked"
+    assert asked["said"] == NO_PR_ASKED
+    assert asked["buttons"] == ["Mark done without a PR", "Cancel"]
+    assert asked["panel"] is False, "the date was asked for before the question was answered"
+    assert answer["value"]["open"] is False
+    assert answer["value"]["fields"] == ["end_date"], "the PR is not a box any more"
+    wrote = [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert len(wrote) == 1, "one answer, one commit"
+    assert json.loads(wrote[0]["body"])["fields"] == {
+        "status": "done",
+        "end_date": "2026-08-21",
+        "prs_waived": True,
+    }
+
+
+def test_cancelling_the_question_in_the_table_writes_nothing(page: str):
+    """Cancel leaves the status where git has it, and says so out loud: a cell
+    that silently went back to Ready is a cell nobody can tell from a save that
+    did not take."""
+    answer = drive_table(
+        page,
+        "(async () => {" + ON_OTHER + "  saveCell(cell, 'done');" + f"  {SETTLE}"
+        f"  {NO_PR_NO} {SETTLE}"
+        f"  return {{open: NO_PR_BOX.hasAttribute('open'), status: DATA.rows['{OTHER}'].status,"
+        "          panel: !document.getElementById('askfor').hidden,"
+        "          said: document.getElementById('state').textContent};"
+        "})()",
+    )
+
+    assert not [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert answer["value"] == {
+        "open": False,
+        "status": "ready",
+        "panel": False,
+        "said": "nothing was changed",
+    }
+
+
+def test_a_row_that_cites_a_pr_is_not_asked(finishing_page: str):
+    """The control: a row with a PR goes straight to the date, as it did before
+    there was a question at all."""
+    answer = drive_table(
+        finishing_page,
+        "(async () => {"
+        f'  const cell = tbody.querySelector(\'td[data-record="{TASK}"][data-field="status"]\');'
+        f"  saveCell(cell, 'done'); {SETTLE}"
+        "  return {built: NO_PR_BOX !== null, panel: !document.getElementById('askfor').hidden};"
+        "})()",
+    )
+
+    assert answer["value"] == {"built": False, "panel": True}
+
+
+@pytest.fixture
+def half_linked_page() -> str:
+    """Two in-progress tasks, one citing a pull request and one citing none: the
+    selection a bulk Done is asked about, and the one whose waiver must reach
+    only the row that needs it."""
+    from openproj.render import render_table
+
+    common = dict(
+        kind="task",
+        parent=PITCH,
+        status="in_progress",
+        owner="ann",
+        developers=["ann"],
+        reviewers=["bo"],
+        person_weeks=1.0,
+        start_date=date(2026, 8, 3),
+    )
+    records = [
+        Pitch(
+            id=PITCH,
+            kind="pitch",
+            title="Verify the aroma transport port",
+            status="ready",
+            owner="ann",
+            developers=["ann"],
+            reviewers=["bo"],
+            person_weeks=3.0,
+        ),
+        Task(id=TASK, title="Reproduce the seam artefact", prs=["kilnlab/kiln4py#1"], **common),
+        Task(id=OTHER, title="Downgrade numpy for global sums", **common),
+    ]
+    return render_table(
+        build_index(records, Config(), date(2026, 8, 17)),
+        base_commit="0" * 40,
+        may_write=True,
+    )
+
+
+def test_one_question_covers_a_selection_and_the_waiver_travels_in_its_one_write(
+    half_linked_page: str,
+):
+    """A bulk Done over rows some of which cite no PR used to be refused outright,
+    naming them — a PR is one fact per record and no box can type one for nine.
+    Whether they were finished with nothing merged is one decision about the
+    batch, though, so it is asked once, before the date panel, and the waiver
+    goes in the same field map as the status. Which rows it lands on is the
+    server's to decide (`save_many`), because one field map is the whole point
+    of that route.
+    """
+    answer = drive_table(
+        half_linked_page,
+        "(async () => {" + PICK_BOTH + "  saveCells(cell, 'done');" + f"  {SETTLE}"
+        f"  const asked = {NO_PR_STATE};"
+        "  const refused = document.getElementById('row-conflict').textContent;"
+        f"  {NO_PR_YES} {SETTLE}"
+        "  const panel = document.getElementById('askfor');"
+        "  const about = panel.querySelector('.asking').textContent;"
+        "  panel.querySelector('input').value = '2026-08-21';"
+        f"  panel.querySelector('#asked').onclick(); {SETTLE}"
+        "  return {asked, refused, about};"
+        "})()",
+        replies=LANDS,
+    )
+
+    asked = answer["value"]["asked"]
+    assert asked["open"] and asked["said"] == NO_PR_ASKED, asked
+    assert answer["value"]["refused"] == "", "the selection was refused instead of asked"
+    assert "all 2 selected records" in answer["value"]["about"]
+    wrote = [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert len(wrote) == 1, "one gesture, one commit"
+    sent = json.loads(wrote[0]["body"])
+    assert sorted(sent["ids"]) == sorted([TASK, OTHER])
+    assert sent["fields"] == {"status": "done", "end_date": "2026-08-21", "prs_waived": True}
+
+
+def test_cancelling_the_batch_question_writes_nothing_and_keeps_the_selection(
+    half_linked_page: str,
+):
+    answer = drive_table(
+        half_linked_page,
+        "(async () => {" + PICK_BOTH + "  saveCells(cell, 'done');" + f"  {SETTLE}"
+        f"  {NO_PR_NO} {SETTLE}"
+        "  return {picked: PICKED.size, panel: !document.getElementById('askfor').hidden};"
+        "})()",
+    )
+
+    assert not [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert answer["value"] == {"picked": 2, "panel": False}
 
 
 @pytest.fixture

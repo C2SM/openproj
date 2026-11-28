@@ -4350,7 +4350,10 @@ function markRequired(form) {
     // review_waived is the escape hatch from the reviewer rule, so honouring it
     // here is the difference between a mark and a nag.
     const demanded = control.dataset.requiredAt.split(' ').includes(status)
-      && !(control.name === 'reviewers' && waived);
+      && !(control.name === 'reviewers' && waived)
+      // `prs_waived` has no control to read; the record page carries it on the
+      // form, and a record closed without a PR is not short of one.
+      && !(control.name === 'prs' && form.dataset.prsWaived === 'true');
     if (demanded) control.setAttribute('aria-required', 'true');
     else control.removeAttribute('aria-required');
     const mark = control.closest('dd')?.previousElementSibling?.querySelector('.req');

@@ -508,6 +508,9 @@ LABELS = {
     "depends_on": "Blocked by",
     "tags": "Tags",
     "prs": "PRs",
+    # No control carries it — the status doors set it by asking — but a receipt
+    # names what a save wrote, and `prs_waived` is not a word on any screen.
+    "prs_waived": "PRs waived",
     # No unit in this one, and it carried "(person-weeks)" until 2026-08-28. The
     # row it names is two different readings depending on what is filed under the
     # record: a leaf draws its own stored appetite, which IS in person-weeks, and

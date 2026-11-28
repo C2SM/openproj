@@ -1317,6 +1317,18 @@ body:has([data-fills]) { padding-bottom: 0; }
    `position: fixed` so a card on the graph survives the canvas being panned and
    zoomed under it: the anchor moves, the card is placed again from the pointer,
    and neither is inside the transformed layer. */
+/* The done-without-a-PR question (`askNoPr`), which every status door opens.
+   Placed by `placeFloat` beside what was pressed, like the card, so the UA's
+   centring of a modal dialog is undone here: `inset: auto` and `margin: 0`. The
+   backdrop is clear because the question is about one row on a page the reader
+   still needs to see. */
+#noprask { position: fixed; inset: auto; margin: 0; max-width: 22rem;
+           padding: .5rem .6rem; background: var(--surface); color: var(--fg);
+           font-size: 13px; border: 1px solid var(--line-strong); border-radius: 3px; }
+#noprask::backdrop { background: transparent; }
+#noprask p { margin: 0 0 .45rem; }
+#noprask .acts { display: flex; gap: .4rem; }
+#noprask button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 /* No `pointer-events: none`. The card holds a shaping document that is capped
    and scrollable, and a box the pointer passes straight through is a scrollbar
    nobody can grab — which is exactly what shipped. It does not follow the
@@ -3310,6 +3322,89 @@ function placeFloat(box, x, y) {
   const top = y + 14 + size.height > innerHeight - 8 ? y - 14 - size.height : y + 14;
   box.style.left = Math.max(8, left) + 'px';
   box.style.top = Math.max(8, top) + 'px';
+}
+
+// --- done without a pull request -------------------------------------------
+//
+// **The one question every door that sets a status asks before it writes `done`
+// on a record with no PR**: the table's status cell and its selection, `Status ▸`
+// and `Edit…` in the right-click box, and Save on the record page and the create
+// form. Answers whether to go on; the door then sends `status: done` and
+// `prs_waived: true` in the same write, so the plan never holds a done record the
+// validator refuses for the length of a second commit.
+//
+// One box and one sentence rather than a face per door. The doors already ask
+// their own questions in four different boxes, and the next one would have been
+// a fifth copy of the sentence and of the keyboard handling under it. Why not
+// `confirm()`: it cannot name its buttons, and "OK" is not a word that says
+// what will be written.
+//
+// A modal `<dialog>`, so the page behind it is inert and Tab stays on the two
+// buttons, and `covered()` already counts it, so the single-key shortcuts stand
+// down while it is up. The door says what happened afterwards; this says nothing
+// itself, because "nothing was changed" is true of a cell and false of a form
+// that is still open holding the edit.
+const NO_PR_ASKED = 'No pull request is linked. Mark done anyway?';
+let NO_PR_BOX = null;
+let NO_PR_ANSWER = null;
+
+function askNoPr(near) {
+  // A second question replaces the first, and the first is answered no: two
+  // writes waiting on one box is two doors each believing it was asked.
+  if (NO_PR_ANSWER) NO_PR_ANSWER(false);
+  if (!NO_PR_BOX) {
+    const box = document.createElement('dialog');
+    box.id = 'noprask';
+    box.setAttribute('aria-labelledby', 'noprask-q');
+    const asked = document.createElement('p');
+    asked.id = 'noprask-q';
+    asked.textContent = NO_PR_ASKED;
+    const acts = document.createElement('span');
+    acts.className = 'acts';
+    const yes = document.createElement('button');
+    yes.type = 'button';
+    yes.className = 'primary';
+    yes.textContent = 'Mark done without a PR';
+    yes.onclick = () => { if (NO_PR_ANSWER) NO_PR_ANSWER(true); };
+    const no = document.createElement('button');
+    no.type = 'button';
+    no.textContent = 'Cancel';
+    no.onclick = () => { if (NO_PR_ANSWER) NO_PR_ANSWER(false); };
+    acts.append(yes, no);
+    box.append(asked, acts);
+    // Stopped here, because the table's selection listens for Escape on the
+    // document and an Escape that cancelled this question must not also drop the
+    // rows it was asked about. `cancel` is the browser's own Escape on a modal
+    // dialog, which would close it without an answer.
+    box.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      no.onclick();
+    });
+    box.addEventListener('cancel', event => { event.preventDefault(); no.onclick(); });
+    document.body.append(box);
+    NO_PR_BOX = box;
+  }
+  const box = NO_PR_BOX;
+  // Where the keyboard goes back to: the control the status was chosen with.
+  const back = document.activeElement;
+  return new Promise(resolve => {
+    NO_PR_ANSWER = yes => {
+      NO_PR_ANSWER = null;
+      if (typeof box.close === 'function' && box.open) box.close();
+      box.removeAttribute('open');
+      if (back && back.isConnected && back !== document.body) back.focus();
+      resolve(yes);
+    };
+    if (typeof box.showModal === 'function') box.showModal();
+    else box.setAttribute('open', '');
+    // Beside what the status was chosen on, so the question is read as being
+    // about that record and not about the page.
+    const at = near && near.getBoundingClientRect ? near.getBoundingClientRect() : null;
+    placeFloat(box, at ? at.left : innerWidth / 3, at ? at.bottom : innerHeight / 3);
+    box.querySelector('button.primary').focus();
+  });
 }
 
 // --- the hover card ---------------------------------------------------------
