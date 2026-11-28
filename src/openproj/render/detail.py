@@ -11,6 +11,7 @@ from ..index import Index, cascade_of
 from ..model import KINDS as KIND_LADDER
 from ..model import (
     NOTE_STATES,
+    PARENT_KINDS,
     RUNG,
     Record,
     a_number,
@@ -27,6 +28,7 @@ from .controls import _REQUIRED_JS, _combobox_html, _control_html, _offered_temp
 from .editor import (
     _ACE_SURFACE,
     _COEDIT,
+    _SELECTION_JS,
     _SPLIT_HANDLE,
     _ace_wanted,
     _editing_possible,
@@ -34,6 +36,7 @@ from .editor import (
 from .env import PHONE, _compiled, _fragment
 from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
 from .markdown import _body_html, _pr_link
+from .pop import _POP_STYLE, _pop_js
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SUGGEST_STYLE
 from .tokens import (
@@ -1432,7 +1435,7 @@ _DETAIL = """
       still be one of `FORM`'s own controls — `CONTROLS` is a `querySelectorAll`
       over the form's subtree, and a title outside it is a title no save sends. -#}
   <form id="edit" data-id="{{ e.id }}" onsubmit="return false">
-    <input type="hidden" name="base_commit" value="{{ base_commit }}">
+    <input type="hidden" name="base_commit" id="base" value="{{ base_commit }}">
   {% endif %}
   {#- The header, BELOW the two bars of controls — jcanton, 2026-08-24: the
       title "should always be below" the view buttons, in every view. It used to
@@ -2066,6 +2069,10 @@ grip.ondblclick = () => {
 {#- Empty unless this page drew a date box — the gate is at `calendar=` below,
     where the reason is, the way `{{ pop }}` on the table is gated at `pop=`. -#}
 {{ calendar }}
+{#- The right-click menu and the one thing it offers here, a record made from
+    the editor's selection — empty unless a writer is on one stored record's own
+    page; the gate is at `selection=` below. -#}
+{{ pop }}{{ selecting }}
 {% if editable %}<script>
 // Only what changed travels. Serialising the whole form would send back every
 // field as this tab last saw it, overwriting whatever somebody else changed while
@@ -2135,6 +2142,8 @@ attachDrawing(SURFACE, document.getElementById('state'));
 // drawing anything on the plain box, which has no caret to report — see
 // `attachBodyCompletion`.
 attachBodyCompletion(SURFACE);
+{% if selection %}attachSelectionMenu(SURFACE, {{ selection|tojson }},
+  () => document.querySelector('article.record').classList.contains('editing'));{% endif %}
 attachGutter(SURFACE, document.getElementById('gutter-note'));
 attachStatus(SURFACE, document.getElementById('statusbar'));
 // The commit this page was rendered at, and what every save is compared against.
@@ -4424,6 +4433,13 @@ def render_detail(
                 if base_commit is not None and may_write and record.kind in PROMOTABLE
                 else Markup("")
             )
+    # The right-click menu, and only where it has something to be about: one
+    # stored record's own page, served to somebody who may write. Not the static
+    # export (no `base_commit`), not a reader, and not the create form, which has
+    # no record to link a selection to yet.
+    selecting = (
+        base_commit is not None and may_write and creating is None and only in index.records
+    )
     body = _compiled(_DETAIL).render(
         records=rows,
         groups=[] if creating else _by_status(rows),
@@ -4500,6 +4516,11 @@ def render_detail(
         #
         # And never when creating: a record with no id has no room to join,
         # exactly as the old create page never carried these bytes.
+        # The menu with its write half, because this host's one item creates a
+        # record — `_pop_js` without the index draws "Editing is unavailable".
+        pop=_pop_js(links, index) if selecting else Markup(""),
+        selecting=_SELECTION_JS if selecting else Markup(""),
+        selection=_selection_about(index, index.records[only]) if selecting else None,
         yjs=_yjs() if base_commit is not None and may_write and creating is None else Markup(""),
         coedit=(
             _COEDIT if base_commit is not None and may_write and creating is None else Markup("")
@@ -4512,6 +4533,8 @@ def render_detail(
     # `str + Markup` would take markupsafe's `__radd__` and escape every `>` in
     # the two sheets in front of it.
     style = _DETAIL_STYLE + _SUGGEST_STYLE
+    if selecting:
+        style += _POP_STYLE
     if base_commit is not None:
         style += _CALENDAR_STYLE
     if creating is not None:
@@ -4550,6 +4573,33 @@ def render_detail(
         fills=True,
         face=index.face,
     )
+
+
+# Every kind a record can be filed under, read off the ladder: a picker offers
+# these and nothing else, so nothing else is baked into the page.
+_HOLDING = frozenset(kind for kinds in PARENT_KINDS.values() for kind in kinds)
+
+
+def _selection_about(index: Index, record: Record) -> dict:
+    """What `attachSelectionMenu` (`editor.py`) is told about this page.
+
+    The edited record, which a new one defaults to being filed under; the kinds
+    this plan has, which is `Config.allows` and the only kinds the create route
+    takes; and every planned record that can hold another, which is what the
+    form's parent picker offers. Only the holders and not the plan: a task holds
+    nothing, and on a plan of four hundred records most of them are tasks.
+    """
+    return {
+        "id": record.id,
+        "kind": record.kind,
+        "title": record.title or record.id,
+        "kinds": [kind for kind in KINDS if kind in index.kinds],
+        "holders": [
+            {"id": record_id, "kind": held.kind, "title": held.title or record_id}
+            for record_id, held in sorted(index.plan.items())
+            if held.kind in _HOLDING
+        ],
+    }
 
 
 _PROMOTE = """

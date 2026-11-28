@@ -2271,3 +2271,73 @@ const COEDIT = (() => {
   }};
 })();
 """)
+
+
+# --- a record from a selection -------------------------------------------------
+#
+# `design/body-tables-links-selection.md` §3. Its own block rather than a part of
+# `_COMBOBOX`, for `_ACE_SURFACE`'s reason: it is wanted by one page, the record
+# page with an edit open, and the table and the cycle page carry `_COMBOBOX` with
+# no editor at all. Emitted after `_pop_js` (the menu it hosts) and before the
+# page script that calls `attachSelectionMenu`, because classic scripts share one
+# scope and a function in a later block is not hoisted into an earlier one.
+_SELECTION_JS = Markup(r"""
+<script>
+// --- a record from a selection ----------------------------------------------
+//
+// Writing a pitch, you name a piece of work that deserves its own record. This
+// is the one gesture from the words on the page to that record: right-click
+// them, pick a kind, Save, and the words become a link to what was made.
+//
+// The record page is the menu's fourth host (`popServes`, `pop.py`), and it is
+// one only while an edit is open: what the menu is about is the editor's
+// selection, which is the document's source and so has an exact range to wrap.
+// A selection in the reading view is rendered text, and `bold word` selected out
+// of `**bold** word` has no source range at all.
+//
+// `about` is the server's: the record being edited, the kinds this plan has
+// (`Config.allows`, the only kinds the create route takes) and every record a
+// new one could be filed under. `editing` answers whether a session is open now.
+function attachSelectionMenu(surface, about, editing) {
+  // `rows` answers about the edited record and the records the parent picker
+  // offers, and that is every id this host is ever asked about: the menu is
+  // opened on the edited record, and a parent's title is asked by the card.
+  const rows = new Map(about.holders.map(row => [row.id, row]));
+  rows.set(about.id, about);
+
+  const kinds = () => about.kinds.map(kind => ({
+    kind: 'from-selection-' + kind, text: popHuman(kind),
+    // `stays`, because this run fills the box with a form; see `popRan`.
+    stays: true,
+    run: () => popForm({
+      mode: 'new', kind: kind,
+      label: `New ${popHuman(kind).toLowerCase()} from the selection`,
+      verb: `Create ${popHuman(kind).toLowerCase()}`,
+    }),
+  }));
+
+  // **The items, and nothing but them.** `items` replaces the standard list
+  // rather than adding to it — see the host contract in `pop.py` for why
+  // `Status ▸`, `Edit…` and `Delete…` have no business on this page.
+  const host = {
+    may: () => true,
+    rows: id => rows.get(id) || null,
+    all: () => about.holders,
+    items: () => [{kind: 'from-selection', text: 'New record from selection', items: kinds}],
+  };
+
+  // Registered while a session is open and not otherwise, so a reader of the
+  // record — or a writer who has not opened an edit — has the browser's own
+  // menu everywhere on the page. A form already open stays registered to its
+  // host until it is left, because the form asks the host for the parent's
+  // title and for what it could be filed under.
+  const session = open => {
+    if (open) { popServes(host); return; }
+    popClose();
+    if (!POP_FORM) popServes(null);
+  };
+  addEventListener('openproj:session', event => session(event.detail));
+  session(editing());
+}
+</script>
+""")

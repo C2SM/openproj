@@ -1,4 +1,4 @@
-"""The right-click menu: one floating box, three hosts.
+"""The right-click menu: one floating box, four hosts.
 
 `design/context-menus.md` is the whole argument. Cut 2 built the box, the host
 contract and the reader's three items; cut 3 added the submenu machinery and the
@@ -26,7 +26,7 @@ and every page that decided for itself which key the body holds has got it wrong
 — see `popSettled`.
 
 **Here and not in `shell.py`.** That file is 4000 lines and ships on all twelve
-pages, including `/help` and `/people`; this menu is wanted by three. A module
+pages, including `/help` and `/people`; this menu is wanted by four. A module
 imported by the pages that want it is the shape this codebase already uses three
 times over — `_FILTER_JS` (`controls.py`), `_REQUIRED_JS` and `_combobox_html`.
 
@@ -540,6 +540,15 @@ const POP_SCHEMA = {{ schema|tojson }};
 // never silence: the parent items refuse with a sentence, and the create's
 // receipt stops claiming to know where the record went.
 //
+//     items: row => [item, …],      // in place of every item below
+//
+// `items` is the record page's, the fourth host, and it REPLACES the standard
+// list rather than adding to it the way `extras` does. That page hosts the menu
+// only while an edit is open, and what it is about is the text selected in the
+// editor (`attachSelectionMenu`, `editor.py`). `Status ▸`, `Edit…` and the rest
+// would be a second write path to the record whose own form is open around the
+// editor, and `Delete…` would delete the document under it.
+//
 // `may` gates the write half and is asked on every open, never cached: a page
 // that learns it is signed out does not get to go on offering writes until
 // somebody reloads.
@@ -618,6 +627,7 @@ function popAbout() { return POP_ID; }
 // a form, a status choice the gate sends to one, and `Delete…`. It said "exactly
 // one item" for as long as that was true, which was cut 3.
 function popItems(row) {
+  if (POP_HOST.items) return POP_HOST.items(row);
   const href = POP_RECORD + row.id;
   const items = [];
   // **The write half**, behind `POP_HOST.may()` — `Status ▸`, `Owner ▸` and

@@ -161,7 +161,7 @@ def test_the_menu_ships_on_the_three_views_that_want_it_and_not_on_the_rest(inde
     """`pop.py` and not `shell.py`, and this is the assertion that holds the line.
 
     The shell ships on all twelve pages, including `/help` and `/people`; this
-    menu is wanted by three. So the module is imported by the views that want
+    menu is wanted by four. So the module is imported by the views that want
     it, and a later "it would be simpler in the shell" shows up here as two
     pages that grew a menu nobody asked them for.
 
@@ -183,8 +183,20 @@ def test_the_menu_ships_on_the_three_views_that_want_it_and_not_on_the_rest(inde
         )
         assert "#pop .popitem" in page, f"{name} carries the menu with no stylesheet for it"
 
+    # The record page is a fourth host, and only for a writer on one record's own
+    # page: what its menu is about is the editor's selection (`tests/test_
+    # selection.py`). A reader of that page, the index of every record, and the
+    # static export are the shell's failure mode exactly as before.
+    one = next(iter(index.plan))
+    writer = render_detail(index, ROUTES, only=one, base_commit=HEAD, may_write=True)
+    assert "function popServes(" in writer, "the record page carries no menu for its writer"
+    assert "#pop .popitem" in writer, "the record page carries the menu with no stylesheet"
     elsewhere = {
-        "the record page": render_detail(index, ROUTES, base_commit=HEAD, may_write=True),
+        "the record page, to a reader": render_detail(
+            index, ROUTES, only=one, base_commit=HEAD, may_write=False
+        ),
+        "the index of every record": render_detail(index, ROUTES, base_commit=HEAD, may_write=True),
+        "the static export's record page": render_detail(index, STATIC),
         "help": render_help(index, ROUTES),
     }
     for name, page in elsewhere.items():
