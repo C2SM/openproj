@@ -890,6 +890,26 @@ function aceSurface(area, seeded) {
     onInput(listener) { heard.input.push(listener); },
     onCaret(listener) { heard.caret.push(listener); },
 
+    // A range that follows the document through every edit from now on — see the
+    // textarea's own `mark`. Here it is two anchors, which `applyDelta` moves in
+    // the same instruction as the caret whoever made the edit, exactly as the
+    // seats are carried. The end's `$insertRight` is Ace's own spelling, the one
+    // its snippet placeholders use, for "text typed exactly here goes after me":
+    // without it a word typed right after the selection would join it, and the
+    // range would read as changed when nothing in it was. If a re-vendoring took
+    // the field away, that is the whole of what it would cost — the text is
+    // compared before anything is written.
+    mark(from, to) {
+      const at = positionOf(from), end = positionOf(to);
+      const start = document_.createAnchor(at.row, at.column);
+      const stop = document_.createAnchor(end.row, end.column);
+      stop.$insertRight = true;
+      return {
+        at: () => ({from: indexOf(start.getPosition()), to: indexOf(stop.getPosition())}),
+        drop() { start.detach(); stop.detach(); },
+      };
+    },
+
     // The eighth capability, and the one a textarea does not have: what changed,
     // as ranges, rather than the whole document to be diffed against. A surface
     // that can say gets asked; one that cannot is recovered from. `_COEDIT`
@@ -2371,6 +2391,22 @@ function selectionRefusal(text, from, to) {
   return '';
 }
 
+// What a record made of these words is called: the words, without the marks
+// that make them bold or code or a heading, and with every run of spaces and
+// newlines one space — `**Port** the   transport` is `Port the transport`. Only
+// the box's first answer: the title is editable in the form like any other.
+//
+// An underscore goes only at the edge of a word, because `snake_case` is a word
+// and `_italic_` is a mark.
+function selectionTitle(source) {
+  return source
+    .split('\n').map(line => line.replace(SELECTION_MARK, '')).join(' ')
+    .replace(/\*+|~~|`+/g, '')
+    .replace(/(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function attachSelectionMenu(surface, about, editing) {
   // `rows` answers about the edited record and the records the parent picker
   // offers, and that is every id this host is ever asked about: the menu is
@@ -2382,18 +2418,68 @@ function attachSelectionMenu(surface, about, editing) {
   // by the time a kind is chosen the reader's focus is in the menu, and Ace
   // dims its selection without dropping it while a textarea keeps one too — but
   // "what was selected when you pressed" is the question, and only this answers
-  // it after the press.
+  // it after the press. `{from, to, source, range}`, where `range` is the same
+  // words followed through every edit made from the press on (`mark`).
   let pick = null;
+  // That range, held until the next press replaces it: a menu dismissed or a
+  // form left by Cancel never says so to its host, and one range held past its
+  // use is all that costs.
+  let held = null;
+
+  // **The record is made at once, and the link is written after it, in the
+  // session.** Holding the create until the session is saved would mean writing
+  // a link to an id the server has not handed out. So Save in the form commits
+  // the record, on its own, and this is what happens when it lands: the words
+  // become `[words](id)` as an ordinary edit in the open session — one undo
+  // step, typed into the room like any other, and committed with the document.
+  //
+  // **Unless the words are not what they were.** Somebody in the room can edit
+  // or delete them while the form is open, and the range has followed every
+  // edit since (`mark`). If the text at it now is not the text selected, the
+  // record is still made and nothing is written: a link around somebody else's
+  // sentence is worse than no link, and the receipt names the id so it can be
+  // linked by hand.
+  //
+  // Focus is already back in the editor — `popDone` hands it to whatever had it
+  // when the menu opened — and the receipt goes to the live region as well as
+  // the screen, because `announce` is both.
+  const linked = (answer, range, source) => {
+    const at = range.at();
+    range.drop();
+    if (held === range) held = null;
+    if (!editing())
+      return `Created ${answer.id}. The edit was closed, so it wasn't linked.`;
+    if (surface.text().slice(at.from, at.to) !== source)
+      return `Created ${answer.id}. The text you selected changed, so it wasn't linked.`;
+    surface.splice(at.from, at.to, `[${source}](${answer.id})`);
+    // What a person's keystroke would have told the form: Ace writes through its
+    // own document and fires no DOM `input`, and the bar's count of unsaved
+    // changes is listening for one.
+    surface.el.dispatchEvent(new Event('input', {bubbles: true}));
+    return `Created ${answer.id} and linked it.`;
+  };
 
   const kinds = () => about.kinds.map(kind => ({
     kind: 'from-selection-' + kind, text: popHuman(kind),
     // `stays`, because this run fills the box with a form; see `popRan`.
     stays: true,
-    run: () => popForm({
-      mode: 'new', kind: kind,
-      label: `New ${popHuman(kind).toLowerCase()} from the selection`,
-      verb: `Create ${popHuman(kind).toLowerCase()}`,
-    }),
+    run: () => {
+      const {source, range} = pick;
+      // Filed under the record being edited where this kind may be, because the
+      // words were written there — and only as an answer already in the box, NOT
+      // locked: `New child ▸` locks its parent because choosing it again is the
+      // gesture said twice, and here nobody has chosen anything yet. No
+      // dependency either way, and an empty body.
+      const under = ((POP_SCHEMA.child_kinds || {})[about.kind] || []).includes(kind);
+      const values = {title: selectionTitle(source)};
+      if (under) values.parent = about.id;
+      popForm({
+        mode: 'new', kind: kind, free: true, parent: under ? about : null, values: values,
+        label: `New ${popHuman(kind).toLowerCase()} from the selection`,
+        verb: `Create ${popHuman(kind).toLowerCase()}`,
+        landed: answer => linked(answer, range, source),
+      });
+    },
   }));
 
   // **The item, and nothing but it.** `items` replaces the standard list rather
@@ -2462,7 +2548,14 @@ function attachSelectionMenu(surface, about, editing) {
     const now = surface.caret();
     if (now.from === now.to) return;
     if (!keyboard && (press.from !== now.from || press.to !== now.to)) return;
-    pick = selectionPicked(surface.text(), now.from, now.to);
+    // A right-click while a form is open does nothing — `popMenu` says why — and
+    // must not take away the range that form's link is waiting on.
+    if (POP_FORM) { event.preventDefault(); return; }
+    const text = surface.text();
+    const {from, to} = selectionPicked(text, now.from, now.to);
+    if (held) held.drop();
+    held = surface.mark(from, to);
+    pick = {from, to, source: text.slice(from, to), range: held};
     // Beside the caret for the keyboard, where `popAt` would otherwise measure
     // the focused element: on Ace that is a two-pixel input already at the caret,
     // and on the textarea it is the whole box, whose foot can be below the window.

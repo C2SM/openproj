@@ -1444,6 +1444,9 @@ const popTitle = row => row.title || row.id;
 // Three modes, one function:
 //
 //   `new`   a kind, with `parent` filled and LOCKED — `New child ▸ <kind>`.
+//           With `free`, the parent is only a default and may be changed or
+//           cleared — the record page's `New record from selection ▸`, where
+//           the record being edited is a likely home and not a promise.
 //   `edit`  every field `_editable_for` offers this kind — `Edit…`.
 //   `only`  a named few — `Assign parent…`, and a status the gate refuses.
 //
@@ -2165,6 +2168,11 @@ function popForm(spec) {
   POP_FORM = {
     mode: spec.mode, kind: kind, row: spec.row || null, parent: spec.parent || null,
     label: spec.label, verb: spec.verb,
+    // `free` unlocks the parent of a create (see the modes above), and `landed`
+    // is the host's own receipt for one: handed the server's answer once the
+    // record exists, it does what the host does with it and says so. Without
+    // it the receipt is `popLanded`'s, which is about where the record went.
+    free: !!spec.free, landed: spec.landed || null,
     // What has been typed and not yet written. Empty on a live box — where a
     // field that has been answered is a field that has been saved — and the
     // whole of a staged one's answer.
@@ -2672,10 +2680,15 @@ function popLockedWhy(name) {
   // opened on, and choosing it again is the gesture said twice. Drawn and
   // disabled rather than hidden, so the form says what it is about to file this
   // under instead of asking the reader to remember.
-  if (form.mode === 'new')
-    return name === 'parent' && form.parent
+  if (form.mode === 'new') {
+    if (name !== 'parent') return '';
+    // A parent that is only a default is a choice like any other, and the
+    // choice is the host's rows — the same picker `Assign parent…` draws.
+    if (form.free) return popCandidates(form.kind, null) ? '' : popNoRows();
+    return form.parent
       ? `Filed under "${popTitle(form.parent)}", which is what New child means.`
       : '';
+  }
   // **A box drawn empty over a field whose value this view does not carry would
   // delete it.** `_row` (`rows.py`) ships `blocked_by` — a COUNT of unfinished
   // blockers — and no `depends_on` at all, so an Edit form would draw an empty
@@ -2809,7 +2822,8 @@ function popSelectOf(name, value) {
   // the server hands it `DATA.defaults`. Guessing the middle rung of
   // `priorities` here would be a second copy of a default that lives in the
   // model; a `defaults` key beside `opens` is where the answer belongs.
-  const locked = POP_FORM.mode === 'new' && name === 'parent' && POP_FORM.parent;
+  const locked = POP_FORM.mode === 'new' && name === 'parent' && POP_FORM.parent
+    && !POP_FORM.free;
   if ((name === 'parent' && !locked) || !raw) options.unshift({value: '', text: POP_NOTHING});
   for (const one of options) {
     const option = document.createElement('option');
@@ -2832,7 +2846,7 @@ function popSelectOf(name, value) {
 // than a list that could not express the mistake.
 function popParentOptions() {
   const form = POP_FORM;
-  if (form.mode === 'new' && form.parent)
+  if (form.mode === 'new' && form.parent && !form.free)
     return [{value: form.parent.id, text: popTitle(form.parent)}];
   return (popCandidates(form.kind, form.row ? form.row.id : null) || [])
     .map(row => ({value: row.id, text: popTitle(row)}));
@@ -3146,13 +3160,15 @@ function popCreated(values) {
     fields[name] = value;
   }
   // The parent, which is the whole of what `New child` means and is never read
-  // off its control — that control is disabled, so `popSave` skipped it.
-  if (form.parent) fields.parent = form.parent.id;
+  // off its control — that control is disabled, so `popSave` skipped it. A
+  // `free` parent is an answer like any other and is already in `values`,
+  // staged there by whoever opened the form, so clearing it sends nothing.
+  if (form.parent && !form.free) fields.parent = form.parent.id;
   // The present continuous, before the request rather than after the answer: two
   // seconds of a box that looks untouched is what taught somebody to press
   // Create twice on the deployed service.
   announce(`Creating this ${popHuman(form.kind).toLowerCase()}…`);
-  return popCreate(fields, String(fields.title));
+  return popCreate(fields, String(fields.title), form.landed);
 }
 
 // **Where the new record went, and whether it can be seen.**
@@ -3687,7 +3703,7 @@ async function popWrite(id, fields, said) {
 // records on the deployed service; `POP_WRITING` covers the press, and the
 // sentence a lost answer gets cannot be the PATCH one — "try it again" against a
 // create is advice to make a second record.
-async function popCreate(fields, title) {
+async function popCreate(fields, title, landed) {
   const flight = popStart();
   if (!flight) return false;
   // Before the request, for the reason written in `popWrite`.
@@ -3712,7 +3728,7 @@ async function popCreate(fields, title) {
     // After the host has redrawn, which is what makes "it is not on screen" a
     // question with an answer. Inside the `try`, so a throw in here is reported
     // by the same catch as a failed re-read rather than escaping unhandled.
-    if (answer) announce(popLanded(answer.id, title));
+    if (answer) announce(landed ? landed(answer) : popLanded(answer.id, title));
     return Boolean(answer);
   } catch (error) {
     // `createDraft`'s own advice, for `createDraft`'s own reason. And the
