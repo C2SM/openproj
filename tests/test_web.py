@@ -1783,6 +1783,41 @@ def test_a_field_the_client_did_not_send_is_not_rewritten(client: TestClient, re
     assert "developers" not in stored  # an untouched default is not materialised
 
 
+def test_done_without_a_pr_is_one_write_that_reads_back(client: TestClient, repo_path: Path):
+    """What every status door sends once somebody has said "Mark done without a
+    PR": the status and the waiver together, in one commit, so the plan never
+    holds a done record the validator refuses.
+
+    Asserted against the hand-formatted file, because a key the file did not have
+    is the case `patch_text` has to add rather than rewrite: one new line, the
+    status line changed, and every comment, blank line and list style the person
+    wrote left exactly where it was.
+    """
+    base = head(client)
+    before = file_at(repo_path, base, PATH)
+    saved = save(client, TASK, {"status": "done", "prs_waived": True}, base=base)
+
+    assert saved.status_code == 200, saved.text
+    after = file_at(repo_path, saved.json()["commit"], PATH).splitlines()
+    assert after.count("prs_waived: true") == 1, after
+    assert [line for line in after if line != "prs_waived: true"] == [
+        "status: done" if line == "status: in_progress" else line for line in before.splitlines()
+    ]
+    problems = [p for p in index_of(client)["problems"] if p["record_id"] == TASK]
+    assert not [p for p in problems if p["field"] == "prs"], problems
+
+
+def test_a_waiver_that_is_not_true_or_false_is_refused(client: TestClient, repo_path: Path):
+    """The same door `review_waived` has: `prs_waived: "yes"` is valid YAML that
+    the model would read as a string, and a string is not a switch."""
+    before = git_head(repo_path)
+    refused = save(client, DONE, {"prs_waived": "yes"}, base=before)
+
+    assert refused.status_code == 422
+    assert "prs_waived must be true or false" in refused.text
+    assert git_head(repo_path) == before, "a refusal writes nothing"
+
+
 # --------------------------------------------------------------------------- #
 # 4. Creation, where the required fields actually bite
 #

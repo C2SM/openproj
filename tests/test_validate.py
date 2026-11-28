@@ -566,6 +566,65 @@ def test_a_done_record_needs_at_least_one_pr():
     assert summary(problem) == ("blocker", "prs", NEEDS_PR, 1)
 
 
+def test_a_waived_done_record_needs_no_pr():
+    """The work finished with nothing merged — a decision, an investigation — and
+    `prs_waived` is how the record says so on purpose. The control is the same
+    record without the waiver, which is still refused exactly as before."""
+    closed = task(status="done", prs=[], end_date=date(2026, 8, 20))
+
+    assert check(closed.model_copy(update={"prs_waived": True})) == []
+    assert summary(only(check(closed), TASK_ID)) == ("blocker", "prs", NEEDS_PR, 1)
+
+
+def test_the_waiver_is_read_off_the_file_and_relaxes_nothing_but_the_pr_rule():
+    """Off the file, because `parse_text` is what every reader goes through; and
+    only the PR rule, because a waived record that is not done is held to the
+    gates of the status it is at, and a waived done record still needs the day it
+    ended."""
+    waived = parse_text(
+        "---\nid: task-aaa111\nkind: task\ntitle: A task\nparent: pitch-bbb222\n"
+        "status: done\nprs_waived: true\n---\n\nClosed by a decision.\n",
+        "tasks/task-aaa111.md",
+    )
+
+    assert waived.prs_waived is True
+    assert [(p.field, p.message) for p in check(waived)] == [("end_date", NEEDS_END_DATE)]
+    assert summary(only(check(task(owner=None, prs_waived=True)), TASK_ID))[1] == "owner"
+
+
+def test_check_agrees_that_a_waived_done_record_is_closed(tmp_path: Path, capsys):
+    """`openproj check` is the same `validate_all`, and it is the door CI goes
+    through: a waived record passes it and the same file without the waiver fails
+    it, naming the field."""
+    lines = [
+        "---",
+        "id: task-aaa111",
+        "kind: task",
+        "title: A task",
+        "status: done",
+        "owner: jackdawrie",
+        "developers: [jackdawrie]",
+        "reviewers: [merganserly]",
+        "person_weeks: 1.0",
+        "start_date: 2026-08-03",
+        "end_date: 2026-08-20",
+        "prs_waived: true",
+        "---",
+        "",
+        "Closed by a decision.",
+    ]
+    (tmp_path / "tasks").mkdir()
+    path = tmp_path / "tasks" / "task-aaa111--a-task.md"
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+    assert main(["check", str(tmp_path)]) == 0
+    assert NEEDS_PR not in capsys.readouterr().out
+
+    path.write_text("\n".join(line for line in lines if line != "prs_waived: true"))
+    assert main(["check", str(tmp_path)]) == 1
+    assert f"blocker: task-aaa111: prs: {NEEDS_PR}" in capsys.readouterr().out.splitlines()
+
+
 def test_a_shelved_record_has_no_requirements_at_all():
     """Shelved work is parked, not broken: nothing about it is worth reporting,
     not even the warnings that would fire on the same fields at any other status."""

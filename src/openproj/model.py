@@ -1371,6 +1371,14 @@ class Record(BaseModel):
     cycle: int | None = None
     tags: list[str] = []
     prs: list[str] = []
+    # Closed on purpose with nothing merged: a decision, an investigation, work
+    # done outside any repository. The same shape as `review_waived` and for the
+    # same reason it is stored rather than inferred — git then says the record
+    # was closed without a PR deliberately, where a done rule demoted to a
+    # warning would have made "closed on purpose" and "forgot the PR" look the
+    # same for ever. Only read at `done`, and a PR added later leaves it where it
+    # is: it relaxes a rule and cannot make anything wrong.
+    prs_waived: bool = False
 
     body: str = ""
     # What this record contributes to its cycle's review deck, or `None` where
@@ -2209,6 +2217,10 @@ _WORK_FIELDS = (
     "cycle",
     "priority",
     "prs",
+    # Beside `prs` for the reason `review_waived` sits in `_PEOPLE_FIELDS`: it is
+    # the switch for that field's gate and not a fact of its own, so a rung that
+    # does not read `prs` does not read the switch either.
+    "prs_waived",
 )
 
 
@@ -4158,7 +4170,10 @@ def _status_problems(
                 1,
             )
     elif record.status == "done":
-        if not record.prs:
+        # `prs_waived` answers this rule the way `review_waived` answers the
+        # reviewer one. No version of its own: a waiver only relaxes the rule, so
+        # nothing written before it is newly invalid.
+        if not record.prs and not record.prs_waived:
             yield "blocker", "prs", "a done record needs at least one PR", 1
         # And the day it ended, which is the one fact a finished record holds
         # that nothing can work out for itself. Without it a done record's span

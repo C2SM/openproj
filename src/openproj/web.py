@@ -1101,8 +1101,9 @@ def _reject_bad_types(fields: dict) -> None:
     for name in _LISTS:
         if name in fields and not isinstance(fields[name], list):
             raise HTTPException(422, f"{name} must be a list, not {fields[name]!r}")
-    if "review_waived" in fields and not isinstance(fields["review_waived"], bool):
-        raise HTTPException(422, "review_waived must be true or false")
+    for name in ("review_waived", "prs_waived"):
+        if name in fields and not isinstance(fields[name], bool):
+            raise HTTPException(422, f"{name} must be true or false")
     if "slide" in fields:
         fields["slide"] = _as_slide(fields["slide"])
 

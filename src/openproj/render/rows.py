@@ -414,6 +414,10 @@ def _row(index: Index, record_id: str) -> dict:
         "progress": round(counted.fraction, 4) if counted and works else None,
         "progress_text": counted.text if counted and works else "",
         "prs": read("prs", record.prs),
+        # The switch for the done rule's PR gate, which the status doors ask
+        # before they put the question, and the PRs cell and the card read to
+        # say "Done without a PR" rather than nothing (`closedWithoutPr`).
+        "prs_waived": read("prs_waived", record.prs_waived),
         "tags": record.tags,
         # Who is on the work filed under this record, and who reviews it, when it
         # names nobody itself. A pitch with reviewed tasks under it IS reviewed —
