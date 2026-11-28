@@ -3421,7 +3421,7 @@ function cardMark(ladder, value) {
 // A word that is not a rung picks nothing.
 function priBars(priority) {
   const bars = CARD_MARKS.bars || {};
-  return Object.prototype.hasOwnProperty.call(bars, priority) ? bars[priority] : '';
+  return Object.hasOwn(bars, priority) ? bars[priority] : '';
 }
 
 // **A PRIORITY OR A STATUS, PICKED** (`rung_picker` in `tokens.py`). One controller
@@ -3687,10 +3687,12 @@ const HILL = JSON.parse(document.getElementById('hill')?.textContent || 'null');
 // pointer moves.
 function hillHtml(status, kind) {
   if (!HILL) return '';
-  // The kind's own ladder, as `_hill_html` picks it: an issue and a note stand on
-  // theirs and every planned kind on the record's.
-  const own = (map, key) => Object.prototype.hasOwnProperty.call(map || {}, key);
-  const ladder = HILL.ladders[own(HILL.ladder_of, kind) ? HILL.ladder_of[kind] : 'record'];
+  // The kind's own ladder, by `_LADDER_OF` (`hill.py`) as `_hill_html` reads it:
+  // an issue and a note stand on theirs and every planned kind on the record's.
+  // Looked up here rather than carried on the row, which would be one more key on
+  // every row of three pages for a word that is `record` on all of them.
+  const ladder = HILL.ladders[
+    Object.hasOwn(HILL.ladder_of, kind) ? HILL.ladder_of[kind] : 'record'];
   const place = word => `left: ${100 * HILL.stops[word][0] / HILL.box[0]}%; `
     + `top: ${100 * HILL.stops[word][1] / HILL.box[1]}%; `
     + `--nx: ${HILL.normals[word][0]}; --ny: ${HILL.normals[word][1]}`;
@@ -3705,13 +3707,13 @@ function hillHtml(status, kind) {
   // `promoted` is the one of those: derived, no stop of its own, and standing
   // where the record it was handed to starts.
   const known = ladder.includes(status);
-  const at = known ? status : own(HILL.handed, status) ? HILL.handed[status] : null;
+  const at = known ? status : Object.hasOwn(HILL.handed, status) ? HILL.handed[status] : null;
   const ball = at
     ? `<span class="hill-ball hill-${status}" data-word="${esc(cardWord(status))}"`
       + ` style="${place(at)}"></span>`
     : '';
   const said = `${cardWord(status)} — `
-    + (at && own(HILL.where, status) ? HILL.where[status] : 'not on the hill');
+    + (at && Object.hasOwn(HILL.where, status) ? HILL.where[status] : 'not on the hill');
   const dim = !at || HILL.off.includes(status);
   return `<span class="card-hill"><span class="hill${dim ? ' hill-off' : ''}"`
     + ` role="img" aria-label="${esc(said)}">`
@@ -3731,23 +3733,17 @@ const CARD_FACTS = JSON.parse(document.getElementById('cardfacts')?.textContent 
 // the parent of a task it does not draw.
 const CARD_TITLES = JSON.parse(document.getElementById('cardtitles')?.textContent || 'null');
 
-// A record's title, where this page can name one. `popTitleOf` asks the host's
-// own `rows(id)`, which is the one question all three views answer; guarded
-// because a page could carry a card and no menu, and an id is a worse answer
-// than a title but is not a wrong one.
-function cardTitleOf(id) {
-  if (CARD_TITLES && CARD_TITLES[id]) return CARD_TITLES[id];
+// A record's title, where this card or this page can name one. The preview's own
+// `titles` first: a link in a body is drawn on a page whose payload names no
+// record at all (`card_preview`, `preview.py`). `popTitleOf` asks the host's own
+// `rows(id)`, which is the one question all three views answer; guarded because a
+// page could carry a card and no menu, and an id is a worse answer than a title
+// but is not a wrong one. `Object.hasOwn`, because a hand-written id of
+// `constructor` would otherwise find Object's own and draw a function's source.
+function cardTitleOf(id, row) {
+  if (row && row.titles && Object.hasOwn(row.titles, id)) return row.titles[id];
+  if (CARD_TITLES && Object.hasOwn(CARD_TITLES, id)) return CARD_TITLES[id];
   return typeof popTitleOf === 'function' ? popTitleOf(id) : id;
-}
-
-// A record a card's field names, by its title: the preview's own `titles` where
-// it carries them, and the page's otherwise. A link in a body is drawn on a page
-// whose payload names no record at all (`card_preview`, `preview.py`).
-// `hasOwnProperty`, because a hand-written id of `constructor` would otherwise
-// find Object's own and draw a function's source into the card.
-function cardNamed(row, id) {
-  const titles = row.titles || {};
-  return Object.prototype.hasOwnProperty.call(titles, id) ? titles[id] : cardTitleOf(id);
 }
 
 // One named fact, as the card shows it: already escaped, and `null` where this
@@ -3796,12 +3792,12 @@ function cardFact(row, name) {
   // anybody reads: nobody remembers `pitch-b4102f`.
   if (name === 'parent') {
     if (row.off_plan_parent) return esc('filed off this plan');
-    return value ? esc(cardNamed(row, value)) : null;
+    return value ? esc(cardTitleOf(value, row)) : null;
   }
   // And the records an issue was pitched into or a note became, the same way.
   if (name === 'pitched_into' || name === 'became')
     return Array.isArray(value) && value.length
-      ? esc(value.map(id => cardNamed(row, id)).join(', ')) : null;
+      ? esc(value.map(id => cardTitleOf(id, row)).join(', ')) : null;
   if (name === 'review_waived') return value ? 'Yes' : null;
   if (Array.isArray(value)) return value.length ? esc(value.join(', ')) : null;
   if (value == null || value === '') return null;
@@ -3953,8 +3949,14 @@ let cardPinned = false;
 // no question about a `let` that `queueCard`'s body reads being declared after it.
 let cardStandsDown = false;
 
-function queueCard(row, x, y, extra) {
-  if (!CARD || !row || cardStandsDown) return;
+// The record a card was asked for, until something hides the card: a preview
+// that lands after the pointer has left is then a preview nobody wants.
+let cardWanted = null;
+
+// The hover-intent rules, once, for both ways a card is asked for. `draw` runs
+// after the delay and is handed the fetch, which may not have answered yet.
+function queueWith(id, draw) {
+  if (!CARD || cardStandsDown) return;
   clearTimeout(cardTimer);
   clearTimeout(cardLeaving);
   // Ask for the document NOW, and draw it in 600ms. The wait before a card
@@ -3963,34 +3965,31 @@ function queueCard(row, x, y, extra) {
   // so the fields and the body arrive in one paint. Nothing is drawn from this —
   // `warmCardBody` only fills the cache — so a pointer crossing a table still
   // opens no card, it just leaves a few bodies behind it.
-  if (CARD_BODY_URL) warmCardBody(row.id);
+  const asked = CARD_BODY_URL ? warmCardBody(id) : Promise.resolve();
   // Already showing this one: the pointer moved inside the same row, which is
   // not a new question. Notably it does NOT move the card — a box that follows
   // the pointer is a box you cannot put the pointer into.
-  if (!CARD.hidden && cardShowing === row.id) return;
-  cardTimer = setTimeout(() => showCard(row, x, y, extra), CARD_DELAY);
+  if (!CARD.hidden && cardShowing === id) return;
+  cardWanted = id;
+  cardTimer = setTimeout(() => draw(asked), CARD_DELAY);
+}
+
+function queueCard(row, x, y, extra) {
+  if (row) queueWith(row.id, () => showCard(row, x, y, extra));
 }
 
 // A card for a record this page holds no row of: a link in a body. The card's
 // fields come with the document (`/api/body` answers `card_preview` beside it),
-// so the wait and the fetch run side by side, and the card is drawn when both are
-// done and only if the pointer is still on the link. A record the server has not
-// got answers 404, which leaves no preview and opens nothing.
+// so the card is drawn when both the wait and the answer are done, and only if
+// the pointer is still on the link. A record the server has not got answers 404,
+// which leaves no preview and opens nothing.
 const CARD_PREVIEWS = new Map();
-// The record a link asked for a card of, until something hides the card: a
-// preview that lands after the pointer has left is then a preview nobody wants.
-let cardWanted = null;
 function queueCardFor(id, x, y) {
-  if (!CARD || !CARD_BODY_URL || cardStandsDown) return;
-  clearTimeout(cardTimer);
-  clearTimeout(cardLeaving);
-  const asked = warmCardBody(id);
-  if (!CARD.hidden && cardShowing === id) return;
-  cardWanted = id;
-  cardTimer = setTimeout(() => asked.then(() => {
+  if (!CARD_BODY_URL) return;
+  queueWith(id, asked => asked.then(() => {
     const preview = CARD_PREVIEWS.get(id);
     if (preview && cardWanted === id && !cardStandsDown) showCard(preview, x, y);
-  }), CARD_DELAY);
+  }));
 }
 
 // The fetch on its own, with nothing drawn from it. Two callers: the hover, which
@@ -4004,15 +4003,20 @@ function warmCardBody(id) {
   const asking = fetch(CARD_BODY_URL + encodeURIComponent(id))
     // A refusal is not a document. `ok` and not a `catch` alone: a 404 is a
     // resolved promise with an error page in it, and `.json()` on that throws
-    // somewhere far away from the request that caused it.
-    .then(response => response.ok ? response.json() : null)
+    // somewhere far away from the request that caused it. A 404 is an answer,
+    // though: no such record, and asking again will not change that.
+    .then(response => response.ok ? response.json()
+                      : response.status === 404 ? {html: ''} : null)
     // Offline, or a policy that refuses the request. The card keeps what it
     // already drew; the row's own fields are the part that was never in doubt.
     .catch(() => null)
     .then(said => {
-      CARD_BODIES.set(id, said && typeof said.html === 'string' ? said.html : '');
-      if (said && said.card && typeof said.card === 'object') CARD_PREVIEWS.set(id, said.card);
       CARD_ASKED.delete(id);
+      // Nothing kept for a failure or a 5xx, so the next hover asks again rather
+      // than a link that once met a dropped connection never opening a card
+      if (!said) return;
+      CARD_BODIES.set(id, typeof said.html === 'string' ? said.html : '');
+      if (said.card && typeof said.card === 'object') CARD_PREVIEWS.set(id, said.card);
     });
   CARD_ASKED.set(id, asking);
   return asking;

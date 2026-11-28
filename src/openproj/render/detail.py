@@ -8,8 +8,8 @@ from collections.abc import Sequence
 from markupsafe import Markup, escape
 
 from ..index import Index, cascade_of
+from ..model import KINDS as KIND_LADDER
 from ..model import (
-    ID_PATTERN,
     NOTE_STATES,
     RUNG,
     Record,
@@ -21,7 +21,6 @@ from ..model import (
     tasks_occupy,
     workers_on,
 )
-from ..model import KINDS as KIND_LADDER
 from ..vendor import _ace, _yjs
 from .calendar import _CALENDAR_STYLE, _calendar_js
 from .controls import _REQUIRED_JS, _combobox_html, _control_html, _offered_templates
@@ -628,6 +627,10 @@ async function askPreview() {
   // What does move the pane is text getting SHORTER than the offset, and no
   // amount of saving fixes that — there is nowhere to put it back to.
   VIEW_PANE.innerHTML = html;
+  // The link a card was opened from may be gone or point somewhere else now, and
+  // a redraw is not a pointer leaving it, so nothing else would say so. The
+  // table's redraw does the same.
+  hideCardNow();
   previewPoints = null;
   // After the content, because the room is padding on the same box and a
   // `scrollHeight` measured before it is the old document's.
@@ -3309,31 +3312,27 @@ show();
 </script>{% endif %}
 {#- A link in a body to a record opens that record's card, after the delay a row
     of the table waits. Only where there is a server to ask for the card, so the
-    static export carries none of it, and only in this page's two renderings of
-    the document: the card's own body is in `#card`, and a card in a card is a
-    box over the box being read. -#}
+    static export carries none of it. In the reading view and the preview pane,
+    which is the create form's pane too, and not in a card's own body: a card in
+    a card is a box over the box being read. -#}
 {% if links.body %}<script>
-const BODY_LINKED = {{ links.record|tojson }};
-const BODY_ID = new RegExp({{ record_id_pattern|tojson }});
+// `data-record` is `_link`'s (`markdown.py`), on every link whose target is an id
 function bodyLinkAt(target) {
-  const link = target && target.closest ? target.closest('a[href]') : null;
-  if (!link || link.closest('#card') || !link.closest('.doc.read, #body-preview')) return null;
-  const href = link.getAttribute('href') || '';
-  const id = href.startsWith(BODY_LINKED) ? href.slice(BODY_LINKED.length) : '';
-  return BODY_ID.test(id) ? {link, id} : null;
+  const link = target && target.closest ? target.closest('a[data-record]') : null;
+  return link && link.closest('.doc.read, #body-preview') ? link : null;
 }
 // On the document and not on the two boxes, because the preview pane's links are
 // replaced on every keystroke that reaches the server.
 document.addEventListener('pointerover', event => {
-  const found = bodyLinkAt(event.target);
-  if (found) queueCardFor(found.id, event.clientX, event.clientY);
+  const link = bodyLinkAt(event.target);
+  if (link) queueCardFor(link.dataset.record, event.clientX, event.clientY);
 });
 document.addEventListener('pointerout', event => {
-  const found = bodyLinkAt(event.target);
-  if (!found) return;
+  const link = bodyLinkAt(event.target);
+  if (!link) return;
   // Into something inside the same link, a `code` span say, is not leaving it
   const into = event.relatedTarget;
-  if (into && into.closest && into.closest('a[href]') === found.link) return;
+  if (into && into.closest && into.closest('a[data-record]') === link) return;
   hideCard();
 });
 // The browser's own menu, which this page is never told has closed. The card goes
@@ -3343,12 +3342,6 @@ document.addEventListener('contextmenu', event => {
 });
 </script>{% endif %}
 """
-
-
-# `ID_PATTERN` as a JavaScript `RegExp` reads it, for the links in a body that
-# open a card: the one copy, with Python's anchors swapped for the browser's.
-_RECORD_ID_JS = "^" + ID_PATTERN.pattern.removeprefix(r"\A").removesuffix(r"\Z") + "$"
-assert "\\" not in _RECORD_ID_JS, "an id pattern the browser would read differently"
 
 
 def _links(ids: list[str], index: Index, links: Links = STATIC) -> Markup:
@@ -4517,7 +4510,6 @@ def render_detail(
         # deliberately withheld.
         views=_VIEWS if may_write else Markup(""),
         splitter=_SPLIT_HANDLE,
-        record_id_pattern=_RECORD_ID_JS,
         # The same gate the two lines below carry, and one more: the address had
         # to ask. See `_ace`.
         ace=_ace() if _ace_wanted(editor, base_commit, may_write) else Markup(""),

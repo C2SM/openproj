@@ -28,7 +28,7 @@ from test_injection import run_js
 from test_table import script
 
 from openproj.index import Index, build_index
-from openproj.model import Rung, load_repo
+from openproj.model import Record, load_repo
 from openproj.render import (
     ROUTES,
     card_preview,
@@ -327,30 +327,26 @@ def test_the_table_row_is_the_preview_and_the_tables_own_columns(index: Index):
         assert "titles" not in row, "the table's rows carry titles its own payload already has"
 
 
-def test_no_rung_says_whether_it_has_a_card():
-    """Every record has a card, so the ladder has nothing to say about it."""
-    assert "carded" not in Rung._fields
+def _promoted_note(seed_root: Path) -> tuple[Index, Record]:
+    """The fixture corpus's note that became a pitch and a project, both there."""
+    records, config, _ = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17))
+    return index, index.records["note-a03c59"]
 
 
 def test_a_preview_names_the_records_it_points_at(seed_root: Path):
     """The record page names no other record in its payload (the plan views
     do, through their rows), so a card drawn there of a note that became a pitch
     would say `pitch-6f2d18`. The preview carries the titles of what it names."""
-    records, config, _ = load_repo(seed_root)
-    index = build_index(records, config, date(2026, 8, 17))
-    note = next(
-        record
-        for record in index.records.values()
-        if record.kind == "note"
-        and record.became
-        and all(other in index.records for other in record.became)
-    )
+    index, note = _promoted_note(seed_root)
     preview = card_preview(index, note.id)
-    assert preview["became"] == note.became
+
+    assert preview["became"] == ["pitch-6f2d18", "proj-9a4c25"]
     assert preview["titles"] == {
-        other: index.records[other].title for other in note.became if other in index.records
+        "pitch-6f2d18": "Scan operator on the GPU backend",
+        "proj-9a4c25": "Hearth backend for the bed solver",
     }
-    assert preview["status"] == note.state(index.records), "a note's card shows its state"
+    assert preview["status"] == "promoted", "a note's card shows its state"
 
 
 def test_a_card_drawn_from_a_preview_shows_what_the_kind_has(seed_root: Path):
@@ -359,16 +355,7 @@ def test_a_card_drawn_from_a_preview_shows_what_the_kind_has(seed_root: Path):
     what it became by title, and its hill on the note's own ladder. `promoted`
     stands where the record it was handed to starts, and on the record ladder it
     had no ball at all."""
-    records, config, _ = load_repo(seed_root)
-    index = build_index(records, config, date(2026, 8, 17))
-    note = next(
-        record
-        for record in index.records.values()
-        if record.kind == "note"
-        and record.became
-        and all(other in index.records for other in record.became)
-    )
-    assert note.state(index.records) == "promoted", "the corpus's note is no longer promoted"
+    index, note = _promoted_note(seed_root)
     page = render_detail(index, ROUTES, only=note.id)
     answer = run_js(
         page,
@@ -381,10 +368,9 @@ def test_a_card_drawn_from_a_preview_shows_what_the_kind_has(seed_root: Path):
     rows = [one.text for one in drawn if one.tag == "dt"]
     assert rows == [fact["label"] for fact in card_facts()["note"]["facts"]], rows
     said = {one.text for one in drawn if one.tag == "dd"}
-    for other in note.became:
-        assert any(index.records[other].title in one for one in said), (
-            f"what the note became is drawn as {sorted(said)}, not by title"
-        )
+    assert "Scan operator on the GPU backend, Hearth backend for the bed solver" in said, (
+        f"what the note became is drawn as {sorted(said)}, not by title"
+    )
     balls = [one for one in drawn if "hill-ball" in one.attrs.get("class", "").split()]
     assert balls, "a promoted note's card drew a hill with no ball on it"
 
@@ -424,6 +410,7 @@ _HOVERED = """(async () => {
   const click = new Event('click', {target: link});
   document.dispatchEvent(click);
   %s
+  await settle();
   return {early, later, title, followed: !click.defaultPrevented, after: CARD.hidden};
 })()"""
 
@@ -441,6 +428,35 @@ def _hover(
 def _answered(index: Index, record_id: str) -> list[dict]:
     return [{"status": 200, "json": {"html": "<p>its document</p>",
                                      "card": card_preview(index, record_id)}}]
+
+
+def _writing(index: Index, pitch: str) -> str:
+    return render_detail(
+        index, ROUTES, only=pitch, base_commit=HEAD, may_write=True, editor="plain"
+    )
+
+
+# A link as `_link` draws one, put into the preview pane after the page loaded,
+# which is what a keystroke reaching the server does.
+_TYPED = (
+    "(() => { const pane = document.getElementById('body-preview');"
+    " pane.innerHTML = '<p>Typed: <a href=\"/detail/%s\" data-record=\"%s\">it</a></p>';"
+    " return pane.querySelector('a'); })()"
+)
+
+
+def test_a_record_link_is_marked_with_the_record_it_names(demo_root: Path):
+    """What the card opens from: the id on the anchor, put there by the renderer
+    that decided the link is a record's, so the browser needs no second copy of
+    `ID_PATTERN` and no knowledge of each page's link prefix."""
+    index, pitch, issue = _linked(demo_root)
+    anchors = [
+        one for one in elements(render_detail(index, ROUTES, only=pitch)) if one.tag == "a"
+    ]
+    assert any(
+        one.attrs.get("data-record") == issue and one.attrs.get("href") == f"/detail/{issue}"
+        for one in anchors
+    ), "the link to a record does not say which record"
 
 
 def test_a_link_in_the_document_opens_its_records_card_after_the_delay(demo_root: Path):
@@ -463,28 +479,44 @@ def test_a_link_typed_into_the_preview_pane_opens_its_card(demo_root: Path):
     loaded: the pane is redrawn on every keystroke that reaches the server, so
     the hover is heard on the document and not on the links."""
     index, pitch, issue = _linked(demo_root)
-    page = render_detail(
-        index, ROUTES, only=pitch, base_commit=HEAD, may_write=True, editor="plain"
-    )
-    typed = (
-        "(() => { const pane = document.getElementById('body-preview');"
-        f" pane.innerHTML = '<p>Typed: <a href=\"/detail/{issue}\">it</a></p>';"
-        " return pane.querySelector('a'); })()"
-    )
-    answer = _hover(page, typed, replies=_answered(index, issue))
+    page = _writing(index, pitch)
+    answer = _hover(page, _TYPED % (issue, issue), replies=_answered(index, issue))
 
     assert answer["value"]["later"] is False, "a link in the preview pane opened no card"
     assert answer["value"]["title"] == index.records[issue].title
 
 
+def test_a_card_goes_when_the_preview_pane_is_redrawn(demo_root: Path):
+    """The link a card was opened from may have been edited away by the keystroke
+    that redrew the pane, and a redraw is not a pointer leaving anything, so
+    without this the card stayed over a document that no longer said it."""
+    index, pitch, issue = _linked(demo_root)
+    # `drive.js` has no `AbortController`, which `askPreview` makes one of
+    redraw = (
+        "window.AbortController = class { constructor() { this.signal = {}; } abort() {} };"
+        " VIEW_PANE.hidden = false; await askPreview();"
+    )
+    answer = _hover(
+        _writing(index, pitch),
+        _TYPED % (issue, issue),
+        after=redraw,
+        replies=[*_answered(index, issue), {"status": 200, "json": {"html": "<p>No link.</p>"}}],
+    )
+
+    assert answer["value"]["later"] is False, "the card never came up, so the redraw is untested"
+    assert [call["url"] for call in answer["calls"]][-1] == "/api/preview", answer["calls"]
+    assert answer["value"]["after"] is True, "the card outlived the link it was opened from"
+
+
 def test_a_link_inside_a_cards_own_body_opens_no_card(demo_root: Path):
-    """No card in a card: the box the pointer is reading in would be covered by
-    another one."""
+    """No card in a card. The card's document is drawn by the same renderer, so its
+    links carry `data-record` too, and it is the reading view and the preview
+    pane, by name, that a link has to be in."""
     index, pitch, issue = _linked(demo_root)
     page = render_detail(index, ROUTES, only=pitch)
     inside = (
-        "(() => { CARD.innerHTML ="
-        f" '<div class=\"card-body\"><a href=\"/detail/{issue}\">it</a></div>';"
+        "(() => { CARD.innerHTML = '<div class=\"card-body\">"
+        f"<a href=\"/detail/{issue}\" data-record=\"{issue}\">it</a></div>';"
         " return CARD.querySelector('a'); })()"
     )
     answer = _hover(page, inside, replies=_answered(index, issue))
@@ -505,7 +537,8 @@ def test_a_link_to_a_record_nobody_can_fetch_opens_nothing(demo_root: Path, repl
     page = render_detail(index, ROUTES, only=pitch)
     missing = (
         "(() => { const link = document.querySelector('.doc.read a');"
-        " link.setAttribute('href', '/detail/issue-ffffff'); return link; })()"
+        " link.setAttribute('href', '/detail/issue-ffffff');"
+        " link.setAttribute('data-record', 'issue-ffffff'); return link; })()"
     )
     answer = _hover(page, missing, replies=[reply])
 
@@ -513,6 +546,37 @@ def test_a_link_to_a_record_nobody_can_fetch_opens_nothing(demo_root: Path, repl
     assert answer["value"]["later"] is True, "a card came up for a record nobody could fetch"
     assert answer["value"]["followed"]
     assert answer["errors"] == [], answer["errors"]
+
+
+_TWICE_OVER = """(async () => {
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  const link = document.querySelector('.doc.read a');
+  const hover = async () => {
+    document.dispatchEvent(new Event('pointerover', {target: link, clientX: 50, clientY: 50}));
+    await settle();
+    __tick();
+    await settle();
+    const hidden = CARD.hidden;
+    document.dispatchEvent(new Event('pointerout', {target: link}));
+    __tick();
+    return hidden;
+  };
+  return {first: await hover(), second: await hover()};
+})()"""
+
+
+def test_a_link_that_met_a_dropped_connection_asks_again(demo_root: Path):
+    """A failure is not an answer. Kept as one, a link whose first hover met a
+    dropped connection or a 500 opened no card again until the page was
+    reloaded."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    for failed in ({"reject": "offline"}, {"status": 503, "text": "unavailable"}):
+        answer = run_js(page, _TWICE_OVER, page=True, replies=[failed, *_answered(index, issue)])
+        assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+
+        assert [call["url"] for call in answer["calls"]] == [f"/api/body/{issue}"] * 2, failed
+        assert answer["value"] == {"first": True, "second": False}, failed
 
 
 def test_the_static_export_draws_no_card_for_a_link(demo_root: Path):
@@ -542,15 +606,35 @@ def test_the_right_click_menu_kills_a_links_card(demo_root: Path):
     assert shown["value"]["after"] is True, "the card stayed over the menu"
 
 
+# The delay runs out while the answer is still on its way, and the pointer leaves
+# before it lands. Synchronous up to `settle()`, so the shim's fetch, which
+# answers on a microtask, has not answered when the timer fires.
+_LEFT_IN_FLIGHT = """(async () => {
+  const link = document.querySelector('.doc.read a');
+  document.dispatchEvent(new Event('pointerover', {target: link, clientX: 50, clientY: 50}));
+  const waiting = CARD_BODIES.has(%s);
+  __tick();
+  document.dispatchEvent(new Event('pointerout', {target: link}));
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  return {waiting, landed: CARD_BODIES.has(%s), hidden: CARD.hidden};
+})()"""
+
+
 def test_a_card_that_lands_after_the_pointer_left_is_not_drawn(demo_root: Path):
     """The card needs the preview before it can draw anything, and the pointer
-    may be gone by the time it arrives."""
+    may be gone by the time it arrives. The delay has already fired by then, so
+    the only thing that knows is the record the card was last asked for."""
     index, pitch, issue = _linked(demo_root)
     page = render_detail(index, ROUTES, only=pitch)
-    left = "document.dispatchEvent(new Event('pointerout', {target: link}));"
-    answer = _hover(page, _IN_THE_DOCUMENT, between=left, replies=_answered(index, issue))
+    answer = run_js(
+        page, _LEFT_IN_FLIGHT % (json.dumps(issue), json.dumps(issue)),
+        page=True, replies=_answered(index, issue),
+    )
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
 
-    assert answer["value"]["later"] is True, "a card came up under a pointer that had left"
+    assert answer["value"]["waiting"] is False, "the answer was there before the delay ran out"
+    assert answer["value"]["landed"] is True, "the answer never landed, so nothing was asked"
+    assert answer["value"]["hidden"] is True, "a card came up under a pointer that had left"
 
 
 # --------------------------------------------------------------------------- #
