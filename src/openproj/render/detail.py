@@ -885,6 +885,9 @@ function chooseView(mode) {
   // it: recording the exit would take the split away from somebody who edits,
   // lands back on the page, and edits again.
   if (mode === 'edit' || mode === 'both') rememberEditor({mode});
+  // Any of the three is an answer to where the next record opens, the read view
+  // included. Not on the create form, whose way out is `null`.
+  if (VIEWS.includes(mode)) rememberEditor({lands: mode});
 }
 
 for (const name of VIEWS) {
@@ -998,11 +1001,10 @@ const VIEW_LINKED = VIEWS.find(name => VIEW_ASKED.has(name)) || null;
 // side-by-side)".
 //
 // **A one-shot handed across the reload, not the stored preference.**
-// `EDITOR.mode` is what a session opens in and is deliberately not applied at
-// load (see the branch below) — reading it here would open a session on every
-// record anybody visited after once pressing the split. This says something
+// `EDITOR.lands` is this browser's, shared by every tab. This says something
 // narrower and true of exactly one page load: the page before this one was in a
-// session, in this tab, and it reloaded itself.
+// session, in this tab, and it reloaded itself, so it wins over the preference
+// and comes back at the same line.
 //
 // **In `forThisTab` and not in `remembered`.** The reload is this tab's; a save
 // here must not open an editor in the other tab that happens to load a record
@@ -1142,10 +1144,11 @@ function stillBehind() {
 // looking at this particular document; a stored mode is only what this browser
 // last chose for itself.
 //
-// **The preference is applied when a session starts, not when the page
-// loads.** Sticky-at-load would mean that after once choosing the split,
-// every record anybody opened afterwards opened as a full-screen editor over
-// a record they had come to read — and reading is the ordinary case.
+// **The preference is applied when the page loads.** It used not to be, on the
+// argument that reading is the ordinary case, and every record then opened in
+// preview however you had left the last one. jcanton, 2026-11-28: "going back to
+// reading mode is just one click/shortcut away". Not on a phone, where a session
+// is Write over the whole window and would cover every record anybody taps.
 if (VIEW_LINKED) {
   // `?view` is a sessionless read link: it lands on the page, not in a
   // session. `?edit` and `?both` are views OF a session and `showView` opens
@@ -1187,7 +1190,7 @@ if (VIEW_LINKED) {
   // The ordinary page IS a state now, with its segment pressed and the
   // switcher on it: the segments are the door into a session, and a door
   // drawn only inside the room it opens is not a door.
-  showView('view');
+  showView(WRITE_PHONE.matches ? 'view' : EDITOR.lands);
 }
 
 // A session beginning or ending through any door this script did not open —

@@ -1534,6 +1534,12 @@ const EDITOR = (() => {
     // trap. A legacy `view` reads as `edit` — the nearest session — and is
     // rewritten the first time anything remembers.
     mode: one(held.mode === 'view' ? 'edit' : held.mode, ['edit', 'both'], 'edit'),
+    // Which of the three a record page opens in: the last segment pressed,
+    // preview included. jcanton, 2026-11-28, on every record resetting to
+    // preview: "going back to reading mode is just one click/shortcut away".
+    // `view` for somebody who has never pressed one, so the read page is still
+    // what a first visit gets.
+    lands: one(held.lands, ['edit', 'both', 'view'], 'view'),
     indent: one(held.indent, INDENT_WIDTHS, 2),
     autosave: one(held.autosave, DRAFT_SECONDS, 2),
     // On unless switched off — the spec's default, and a stored map from before
@@ -1565,7 +1571,7 @@ const EDITOR = (() => {
 // What is written down, named rather than "whatever is on the object": the
 // object also carries things that are true of this load and not of this browser,
 // and a preference store that quietly grows a field is one nothing forgets.
-const EDITOR_KEPT = ['mode', 'indent', 'autosave', 'keymap', 'split', 'tables'];
+const EDITOR_KEPT = ['mode', 'lands', 'indent', 'autosave', 'keymap', 'split', 'tables'];
 
 function rememberEditor(change) {
   Object.assign(EDITOR, change);
