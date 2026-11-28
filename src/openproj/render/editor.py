@@ -2298,12 +2298,92 @@ _SELECTION_JS = Markup(r"""
 // `about` is the server's: the record being edited, the kinds this plan has
 // (`Config.allows`, the only kinds the create route takes) and every record a
 // new one could be filed under. `editing` answers whether a session is open now.
+//
+// Every offset here is a UTF-16 code unit, which is what both surfaces' `caret`
+// answers, what a JavaScript string is indexed in and what the room's `Y.Text`
+// counts. Nothing here converts, because nothing here leaves the page.
+
+// What a line may begin with that is the block's and not its words: a list item's
+// bullet or number with its checkbox, a heading's hashes, a quote's `>`. The
+// first line of a selection is not wrapped with it — `[- item](id)` is a
+// paragraph where a list item was — and a line after the first that begins with
+// one is a second block, not the same paragraph wrapped.
+const SELECTION_MARK = new RegExp('^[ \\t]*(?:(?:[-*+][ \\t]+(?:\\[[ xX]\\][ \\t]+)?'
+  + '|\\d+[.)][ \\t]+|#{1,6}[ \\t]+|>[ \\t]?|\\|)[ \\t]*)*');
+const SELECTION_BLOCK = /^[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#{1,6}[ \t]|>|\||```|~~~)/;
+
+// What the renderer draws as a link (`markdown.py`): an inline link or image,
+// an autolink in angle brackets, and a bare URL that spells its scheme — linkify
+// runs with `fuzzy_link` off, so `example.com` alone is not one and is not here.
+const SELECTION_LINKS = [
+  /!?\[[^\]\n]*\]\([^)\n]*\)/g,
+  /<[A-Za-z][A-Za-z0-9+.-]*:[^>\s]*>/g,
+  /\bhttps?:\/\/[^\s<>()[\]]+/g,
+];
+
+// The range a press means, which is the selection less what is not words: the
+// spaces and newline a triple-click takes in at either end, and the mark at the
+// start of its first line. `[exact source](id)` is what is written, and a link
+// around ` Port the transport\n` or around `- Port the transport` is not the link
+// anybody selected those words to make.
+function selectionPicked(text, from, to) {
+  while (from < to && /\s/.test(text[from])) from++;
+  while (to > from && /\s/.test(text[to - 1])) to--;
+  const line = text.lastIndexOf('\n', from - 1) + 1;
+  const mark = SELECTION_MARK.exec(text.slice(line, to))[0].length;
+  if (line + mark > from) from = Math.min(to, line + mark);
+  return {from, to};
+}
+
+// Why this range cannot become `[words](id)`, or `''` when it can. Each answer
+// is drawn on the greyed item, so it says what is wrong with the selection in
+// the words of the gesture rather than of markdown's grammar.
+function selectionRefusal(text, from, to) {
+  const chosen = text.slice(from, to);
+  if (!chosen.trim())
+    return 'There are no words in the selection to name a record by.';
+  // A blank line is a paragraph's end, and a line that opens a block is another
+  // block; a link's text can hold neither. A single newline inside one paragraph
+  // is ordinary in a document wrapped at eighty columns, and a link may span it.
+  const blocks = chosen.split('\n').slice(1).some(one => SELECTION_BLOCK.test(one));
+  if (/\n[ \t]*\n/.test(chosen) || blocks)
+    return 'The selection runs across more than one paragraph, and a link cannot.';
+  // Asked of the whole lines the selection is on, because a link that only
+  // starts inside it is still the link it cuts.
+  const head = text.lastIndexOf('\n', from - 1) + 1;
+  const tail = text.indexOf('\n', to) === -1 ? text.length : text.indexOf('\n', to);
+  const lines = text.slice(head, tail);
+  for (const pattern of SELECTION_LINKS) {
+    for (const found of lines.matchAll(pattern)) {
+      const start = head + found.index, end = start + found[0].length;
+      if (end <= from || start >= to) continue;
+      if (start >= from && end <= to) return 'The selection already holds a link.';
+      if (start <= from && end >= to) return 'The selection is inside a link.';
+      return 'The selection cuts across a link.';
+    }
+  }
+  // A bracket ends the link's text or starts another one, so `[a]b](id)` is drawn
+  // as literal text with no link in it and nothing to say it failed. The toolbar's
+  // Link button escapes them; this refuses instead, because the words are about to
+  // become a record's title as well, and `a\]b` is not a title anybody typed.
+  if (/[[\]]/.test(chosen))
+    return 'The selection holds a [ or a ], which would end the link it becomes.';
+  return '';
+}
+
 function attachSelectionMenu(surface, about, editing) {
   // `rows` answers about the edited record and the records the parent picker
   // offers, and that is every id this host is ever asked about: the menu is
   // opened on the edited record, and a parent's title is asked by the card.
   const rows = new Map(about.holders.map(row => [row.id, row]));
   rows.set(about.id, about);
+
+  // The selection this menu was opened on, read when it opened and never again:
+  // by the time a kind is chosen the reader's focus is in the menu, and Ace
+  // dims its selection without dropping it while a textarea keeps one too — but
+  // "what was selected when you pressed" is the question, and only this answers
+  // it after the press.
+  let pick = null;
 
   const kinds = () => about.kinds.map(kind => ({
     kind: 'from-selection-' + kind, text: popHuman(kind),
@@ -2316,14 +2396,22 @@ function attachSelectionMenu(surface, about, editing) {
     }),
   }));
 
-  // **The items, and nothing but them.** `items` replaces the standard list
-  // rather than adding to it — see the host contract in `pop.py` for why
-  // `Status ▸`, `Edit…` and `Delete…` have no business on this page.
+  // **The item, and nothing but it.** `items` replaces the standard list rather
+  // than adding to it — see the host contract in `pop.py` for why `Status ▸`,
+  // `Edit…` and `Delete…` have no business on this page. A selection that cannot
+  // become a link is the same item refused, with the reason on it: an item that
+  // vanished would teach nothing about why.
   const host = {
     may: () => true,
     rows: id => rows.get(id) || null,
     all: () => about.holders,
-    items: () => [{kind: 'from-selection', text: 'New record from selection', items: kinds}],
+    items: () => {
+      const item = {kind: 'from-selection', text: 'New record from selection'};
+      const why = pick ? selectionRefusal(surface.text(), pick.from, pick.to)
+                       : 'Select the words to make a record of first.';
+      if (why) item.why = why; else item.items = kinds;
+      return [item];
+    },
   };
 
   // Registered while a session is open and not otherwise, so a reader of the
@@ -2338,6 +2426,54 @@ function attachSelectionMenu(surface, about, editing) {
   };
   addEventListener('openproj:session', event => session(event.detail));
   session(editing());
+
+  // --- the gesture ---------------------------------------------------------
+  //
+  // **A selection that existed BEFORE the press**, and that is the whole rule.
+  // On macOS a right-click on a word in a textarea selects that word before
+  // `contextmenu` fires, so a selection read then would take the browser's menu
+  // — and its spelling suggestions — away from nearly every right-click anybody
+  // makes in the editor. So the selection is read on `pointerdown`, which runs
+  // before the browser does anything with the press, and the menu is ours only
+  // when that selection was not empty and the press left it as it was.
+  //
+  // Capture phase on the surface's own element, because on Ace the press lands
+  // on its content and the menu event on its hidden input, both inside it — and
+  // the listener has to have run before Ace's own does. Only `preventDefault`,
+  // never `stopPropagation`: Ace's `contextmenu` handler is what puts its hidden
+  // input back where the caret is after a right press moved it under the
+  // pointer, and stopping it would leave Ace believing the mouse was still down.
+  let pressed = null;
+  surface.el.addEventListener('pointerdown', event => {
+    pressed = event.button === 2 ? surface.caret() : null;
+  }, true);
+  // The keyboard's menu is ContextMenu or Shift+F10, and either begins with a
+  // keydown: a press read on some earlier `pointerdown` is not about it.
+  surface.el.addEventListener('keydown', () => { pressed = null; }, true);
+  surface.el.addEventListener('contextmenu', event => {
+    const press = pressed;
+    pressed = null;
+    if (POP_HOST !== host) return;
+    // No `pointerdown` before it: the keyboard's menu, which has no press to have
+    // changed the selection — and Shift+F10 is the keyboard path, so its Shift is
+    // not the pointer's way to the browser's menu.
+    const keyboard = press === null;
+    if (!keyboard && theBrowsersMenu(event)) return;
+    const now = surface.caret();
+    if (now.from === now.to) return;
+    if (!keyboard && (press.from !== now.from || press.to !== now.to)) return;
+    pick = selectionPicked(surface.text(), now.from, now.to);
+    // Beside the caret for the keyboard, where `popAt` would otherwise measure
+    // the focused element: on Ace that is a two-pixel input already at the caret,
+    // and on the textarea it is the whole box, whose foot can be below the window.
+    let x = event.clientX, y = event.clientY;
+    if (keyboard) {
+      const box = surface.caretBox ? surface.caretBox() : surface.el.getBoundingClientRect();
+      x = box.left + (surface.caretBox ? 0 : 8);
+      y = surface.caretBox ? box.bottom : Math.max(8, Math.min(box.top + 8, innerHeight - 8));
+    }
+    if (popMenu(x, y, about.id)) event.preventDefault();
+  }, true);
 }
 </script>
 """)
