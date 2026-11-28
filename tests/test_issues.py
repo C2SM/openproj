@@ -341,6 +341,16 @@ def test_an_issue_renders_on_the_shared_record_page(client: TestClient, repo_pat
     assert "Blocks</dt>" not in page
     hovered = client.get(f"/api/body/{issue_id}")
     assert hovered.status_code == 200, "the hover card reads records, not the plan"
+    # And the fields the card draws, which a link to this issue in a body has no
+    # row to draw from: the issue's own, and no dates or appetite it does not have.
+    card = hovered.json()["card"]
+    assert (card["id"], card["kind"], card["title"]) == (
+        issue_id,
+        "issue",
+        "Halo exchange drops a rank",
+    )
+    assert "reported_by" in card
+    assert not {"start", "end", "start_date", "end_date", "size"} & set(card), card
     # The commitbar arrives with the shared page, and so does what it holds:
     # Save, and Reset — which since 2026-08-25 puts the record back and stays
     # where it is, rather than being a Cancel that also closed the editor.

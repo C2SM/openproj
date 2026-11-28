@@ -29,7 +29,15 @@ from test_table import script
 
 from openproj.index import Index, build_index
 from openproj.model import RUNG, load_repo
-from openproj.render import ROUTES, render_graph, render_table, render_timeline
+from openproj.render import (
+    ROUTES,
+    card_preview,
+    render_detail,
+    render_graph,
+    render_table,
+    render_timeline,
+)
+from openproj.render.rows import _row
 
 # Through the module, because it is the card's own source of truth about which
 # rows it draws — `shell.py` ships its answer as a payload and `pop.py` draws
@@ -260,6 +268,120 @@ def test_a_rendered_files_card_asks_no_server_for_a_document(index: Index):
     assert "card-title" in answer["value"]["first"]
     assert "card-body" not in answer["value"]["then"]
     assert answer["calls"] == [], "a rendered file asked a server for something"
+
+
+# --------------------------------------------------------------------------- #
+# One preview, for any record
+# --------------------------------------------------------------------------- #
+
+
+# The keys a card draws dates and an appetite from. An issue and a note have
+# neither, and a preview that carried them as nulls would be a card that is one
+# `?? ''` away from drawing a dash for a field the kind does not have.
+_DATED = {"start", "end", "start_date", "end_date", "size", "person_weeks"}
+
+
+def _one_of_each(index: Index) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for record_id, record in sorted(index.records.items()):
+        found.setdefault(record.kind, record_id)
+    return found
+
+
+def test_every_kind_has_a_preview(index: Index):
+    """The card used to draw the table's row, which reads `index.plan` and raised
+    for an issue or a note. The preview reads `index.records`, so a link to any
+    record has a card to open, and it carries the fields that kind's card lists
+    and no others."""
+    kinds = _one_of_each(index)
+    assert set(kinds) == {"product", "project", "pitch", "task", "issue", "note"}, (
+        f"the corpus has {sorted(kinds)}, so some kind's preview is untested"
+    )
+    for kind, record_id in kinds.items():
+        preview = card_preview(index, record_id)
+        assert (preview["id"], preview["kind"]) == (record_id, kind)
+        assert preview["title"] == index.records[record_id].title
+        listed = {fact["name"] for fact in card_facts()[kind]["facts"]}
+        for name in listed - {"person_weeks", "start_date", "end_date", "depends_on"}:
+            assert name in preview, f"a {kind}'s card lists {name} and its preview has none"
+    for kind in ("issue", "note"):
+        carried = _DATED & set(card_preview(index, kinds[kind]))
+        assert not carried, f"a {kind}'s preview carries {sorted(carried)}, which it does not have"
+    pitch = card_preview(index, kinds["pitch"])
+    assert {"start", "end", "size"} <= set(pitch), "a pitch's preview lost its dates or size"
+
+
+def test_the_table_row_is_the_preview_and_the_tables_own_columns(index: Index):
+    """One builder for what a card draws. The table, the graph and the timeline
+    hand the card a row; a link in a body hands it the preview `/api/body`
+    answers. If the row did not hold the preview, key for key, the same pitch
+    could read two ways depending on where it was pointed at."""
+    for record_id in index.plan:
+        preview = card_preview(index, record_id)
+        preview.pop("titles")
+        row = _row(index, record_id)
+        differ = {
+            key: (value, row.get(key)) for key, value in preview.items() if row.get(key) != value
+        }
+        assert not differ, f"{record_id}: the row and the preview disagree about {differ}"
+        assert "titles" not in row, "the table's rows carry titles its own payload already has"
+
+
+def test_a_preview_names_the_records_it_points_at(seed_root: Path):
+    """The record page names no other record in its payload (the plan views
+    do, through their rows), so a card drawn there of a note that became a pitch
+    would say `pitch-6f2d18`. The preview carries the titles of what it names."""
+    records, config, _ = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17))
+    note = next(
+        record
+        for record in index.records.values()
+        if record.kind == "note"
+        and record.became
+        and all(other in index.records for other in record.became)
+    )
+    preview = card_preview(index, note.id)
+    assert preview["became"] == note.became
+    assert preview["titles"] == {
+        other: index.records[other].title for other in note.became if other in index.records
+    }
+    assert preview["status"] == note.state(index.records), "a note's card shows its state"
+
+
+def test_a_card_drawn_from_a_preview_shows_what_the_kind_has(seed_root: Path):
+    """The card drawn on the record page, from the preview `/api/body` answers,
+    for a note: the rows its kind lists and no row for a date or an appetite,
+    what it became by title, and its hill on the note's own ladder. `promoted`
+    stands where the record it was handed to starts, and on the record ladder it
+    had no ball at all."""
+    records, config, _ = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17))
+    note = next(
+        record
+        for record in index.records.values()
+        if record.kind == "note"
+        and record.became
+        and all(other in index.records for other in record.became)
+    )
+    assert note.state(index.records) == "promoted", "the corpus's note is no longer promoted"
+    page = render_detail(index, ROUTES, only=note.id)
+    answer = run_js(
+        page,
+        f"(() => {{ showCard({json.dumps(card_preview(index, note.id))}, 100, 100);"
+        " return CARD.innerHTML; })()",
+        page=True,
+    )
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+    drawn = elements(answer["value"])
+    rows = [one.text for one in drawn if one.tag == "dt"]
+    assert rows == [fact["label"] for fact in card_facts()["note"]["facts"]], rows
+    said = {one.text for one in drawn if one.tag == "dd"}
+    for other in note.became:
+        assert any(index.records[other].title in one for one in said), (
+            f"what the note became is drawn as {sorted(said)}, not by title"
+        )
+    balls = [one for one in drawn if "hill-ball" in one.attrs.get("class", "").split()]
+    assert balls, "a promoted note's card drew a hill with no ball on it"
 
 
 # --------------------------------------------------------------------------- #

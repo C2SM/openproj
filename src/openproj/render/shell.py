@@ -3677,9 +3677,12 @@ const HILL = JSON.parse(document.getElementById('hill')?.textContent || 'null');
 // and with no stops on it. A card is a look and not a control — every gesture it
 // could offer would commit a status change from a box that disappears when the
 // pointer moves.
-function hillHtml(status) {
+function hillHtml(status, kind) {
   if (!HILL) return '';
-  const ladder = HILL.ladders.record;
+  // The kind's own ladder, as `_hill_html` picks it: an issue and a note stand on
+  // theirs and every planned kind on the record's.
+  const own = (map, key) => Object.prototype.hasOwnProperty.call(map || {}, key);
+  const ladder = HILL.ladders[own(HILL.ladder_of, kind) ? HILL.ladder_of[kind] : 'record'];
   const place = word => `left: ${100 * HILL.stops[word][0] / HILL.box[0]}%; `
     + `top: ${100 * HILL.stops[word][1] / HILL.box[1]}%; `
     + `--nx: ${HILL.normals[word][0]}; --ny: ${HILL.normals[word][1]}`;
@@ -3689,14 +3692,19 @@ function hillHtml(status) {
   // A word this ladder does not have gets no ball, exactly as the server does it:
   // `status` holds whatever a hand-edited file holds, and the alternative — the
   // chip's `st-ready` fallback — would put an unrecognised status on the summit.
-  // It is also what makes `hill-${status}` safe to write into a class at all.
+  // It is also what makes `hill-${status}` safe to write into a class at all: the
+  // word is either a stop of this ladder or a key of the server's `handed` map.
+  // `promoted` is the one of those: derived, no stop of its own, and standing
+  // where the record it was handed to starts.
   const known = ladder.includes(status);
-  const ball = known
+  const at = known ? status : own(HILL.handed, status) ? HILL.handed[status] : null;
+  const ball = at
     ? `<span class="hill-ball hill-${status}" data-word="${esc(cardWord(status))}"`
-      + ` style="${place(status)}"></span>`
+      + ` style="${place(at)}"></span>`
     : '';
-  const said = `${cardWord(status)} — ${known ? HILL.where[status] : 'not on the hill'}`;
-  const dim = !known || HILL.off.includes(status);
+  const said = `${cardWord(status)} — `
+    + (at && own(HILL.where, status) ? HILL.where[status] : 'not on the hill');
+  const dim = !at || HILL.off.includes(status);
   return `<span class="card-hill"><span class="hill${dim ? ' hill-off' : ''}"`
     + ` role="img" aria-label="${esc(said)}">`
     + `<svg viewBox="0 0 ${HILL.box[0]} ${HILL.box[1]}" aria-hidden="true" focusable="false">`
@@ -3722,6 +3730,16 @@ const CARD_TITLES = JSON.parse(document.getElementById('cardtitles')?.textConten
 function cardTitleOf(id) {
   if (CARD_TITLES && CARD_TITLES[id]) return CARD_TITLES[id];
   return typeof popTitleOf === 'function' ? popTitleOf(id) : id;
+}
+
+// A record a card's field names, by its title: the preview's own `titles` where
+// it carries them, and the page's otherwise. A link in a body is drawn on a page
+// whose payload names no record at all (`card_preview`, `preview.py`).
+// `hasOwnProperty`, because a hand-written id of `constructor` would otherwise
+// find Object's own and draw a function's source into the card.
+function cardNamed(row, id) {
+  const titles = row.titles || {};
+  return Object.prototype.hasOwnProperty.call(titles, id) ? titles[id] : cardTitleOf(id);
 }
 
 // One named fact, as the card shows it: already escaped, and `null` where this
@@ -3770,8 +3788,12 @@ function cardFact(row, name) {
   // anybody reads: nobody remembers `pitch-b4102f`.
   if (name === 'parent') {
     if (row.off_plan_parent) return esc('filed off this plan');
-    return value ? esc(cardTitleOf(value)) : null;
+    return value ? esc(cardNamed(row, value)) : null;
   }
+  // And the records an issue was pitched into or a note became, the same way.
+  if (name === 'pitched_into' || name === 'became')
+    return Array.isArray(value) && value.length
+      ? esc(value.map(id => cardNamed(row, id)).join(', ')) : null;
   if (name === 'review_waived') return value ? 'Yes' : null;
   if (Array.isArray(value)) return value.length ? esc(value.join(', ')) : null;
   if (value == null || value === '') return null;
@@ -3851,7 +3873,7 @@ function cardHtml(row, extra) {
   ];
   return `<p class="card-title" data-field="title">${esc(row.title)}</p>` +
     `<p class="card-chips">${marks.join(' ')}` +
-    (row.status ? hillHtml(row.status) : '') + '</p>' +
+    (row.status ? hillHtml(row.status, row.kind) : '') + '</p>' +
     '<dl class="card-facts">' + facts.map(([name, value, field]) =>
       `<div class="card-fact"${field ? ` data-field="${esc(field)}"` : ''}>` +
       `<dt>${esc(name)}</dt><dd>${value}</dd></div>`).join('') +
