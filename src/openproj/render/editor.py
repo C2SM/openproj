@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+import json
+
 from markupsafe import Markup
+
+# The inline markdown both editor scripts have to read alike, as JavaScript regex
+# sources: the Ace mode colours these runs, and the selection menu refuses a
+# selection that cuts one (`_SELECTION_JS`), because wrapping it in a link would
+# break what the renderer draws there. One copy, handed to both, because the two
+# had already drifted — the bare address stopped at `[` in one and ran through it
+# in the other.
+#
+# `url` is a bare address, an autolink and an `org/repo#12`, which the renderer
+# links too. `link` and `reference` carry the groups the Ace mode tokenises; a
+# caller that wants the whole run reads the match.
+_MD_INLINE = {
+    "code": r"``(?:[^`]|`(?!`))+``|`[^`]+`",
+    "link": r"(!?\[)([^\]]*)(\]\()([^)]*)(\))",
+    "reference": r"(!?\[)([^\]]*)(\]\[)([^\]]*)(\])",
+    "url": r"<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>()\]]+|\b[\w.-]+\/[\w.-]+#\d+\b",
+    "fence": r"^\s*(?:```+|~~~+)",
+}
 
 # --- the second editor's adapter, and where it is NOT ------------------------
 #
@@ -144,6 +164,7 @@ _ACE_SURFACE = Markup(r"""
 // for the same word.
 //
 // Built once per page: a mode is a tokenizer and every session may share it.
+const MARKDOWN_INLINE = """ + json.dumps(_MD_INLINE) + r""";
 let MARKDOWN_MODE = null;
 function markdownMode() {
   if (MARKDOWN_MODE) return MARKDOWN_MODE;
@@ -151,8 +172,8 @@ function markdownMode() {
   const TextRules = ace.require('ace/mode/text_highlight_rules').TextHighlightRules;
   const TextMode = ace.require('ace/mode/text').Mode;
   const src = pattern => pattern.source;
-  const FENCE = src(/^\s*(?:```+|~~~+)\s*/);
-  const CLOSE = src(/^\s*(?:```+|~~~+)\s*$/);
+  const FENCE = MARKDOWN_INLINE.fence + '\\s*';
+  const CLOSE = MARKDOWN_INLINE.fence + '\\s*$';
   // An info string's first word, the names people write for each; a language
   // whose file is not on the page stays code-coloured rather than breaking the
   // mode, which is a fence and not a tokenizer pointing at a state that is not
@@ -193,19 +214,18 @@ function markdownMode() {
     const inline = [
       // An escaped character is itself: `\*` opens no emphasis.
       {token: 'text', regex: src(/\\./)},
-      {token: 'md-code', regex: src(/``(?:[^`]|`(?!`))+``|`[^`]+`/)},
+      {token: 'md-code', regex: MARKDOWN_INLINE.code},
       {token: 'md-math', regex: [
         src(/\$\$.+?\$\$/), src(/\$(?=[^\s$])[^$]*?[^\s$]\$(?!\d)/), src(/\$[^\s$]\$(?!\d)/),
       ].join('|')},
       {token: 'md-comment', regex: src(/<!--.*?-->/)},
       {token: 'md-comment', regex: src(/<!--/), next: 'comment'},
       {token: ['md-link', 'md-link-text', 'md-link', 'md-url', 'md-link'],
-       regex: src(/(!?\[)([^\]]*)(\]\()([^)]*)(\))/)},
+       regex: MARKDOWN_INLINE.link},
+      {token: ['md-link', 'md-link-text', 'md-link', 'md-link', 'md-link'],
+       regex: MARKDOWN_INLINE.reference},
       // A bare address, an autolink, and `org/repo#12`, which the renderer links.
-      {token: 'md-url', regex: [
-        src(/<https?:\/\/[^>\s]+>/), src(/https?:\/\/[^\s<>()\]]+/),
-        src(/\b[\w.-]+\/[\w.-]+#\d+\b/),
-      ].join('|')},
+      {token: 'md-url', regex: MARKDOWN_INLINE.url},
       {token: 'md-bold', regex: [
         src(/\*\*(?=\S)(?:[^*]|\*(?!\*))+?\*\*/), src(/(?<!\w)__(?=\S).+?__(?!\w)/),
       ].join('|')},
@@ -890,26 +910,6 @@ function aceSurface(area, seeded) {
     onInput(listener) { heard.input.push(listener); },
     onCaret(listener) { heard.caret.push(listener); },
 
-    // A range that follows the document through every edit from now on — see the
-    // textarea's own `mark`. Here it is two anchors, which `applyDelta` moves in
-    // the same instruction as the caret whoever made the edit, exactly as the
-    // seats are carried. The end's `$insertRight` is Ace's own spelling, the one
-    // its snippet placeholders use, for "text typed exactly here goes after me":
-    // without it a word typed right after the selection would join it, and the
-    // range would read as changed when nothing in it was. If a re-vendoring took
-    // the field away, that is the whole of what it would cost — the text is
-    // compared before anything is written.
-    mark(from, to) {
-      const at = positionOf(from), end = positionOf(to);
-      const start = document_.createAnchor(at.row, at.column);
-      const stop = document_.createAnchor(end.row, end.column);
-      stop.$insertRight = true;
-      return {
-        at: () => ({from: indexOf(start.getPosition()), to: indexOf(stop.getPosition())}),
-        drop() { start.detach(); stop.detach(); },
-      };
-    },
-
     // The eighth capability, and the one a textarea does not have: what changed,
     // as ranges, rather than the whole document to be diffed against. A surface
     // that can say gets asked; one that cannot is recovered from. `_COEDIT`
@@ -1258,7 +1258,7 @@ _COEDIT = Markup(r"""
 const COEDIT = (() => {
   // What every refusal returns: an object that says it is not live, so `save()`
   // above takes the path it took before any of this existed.
-  const asleep = {live: () => false, joined: () => false, save: () => {}};
+  const asleep = {live: () => false, joined: () => false, save: () => {}, mark: () => null};
   if (typeof YJS === 'undefined' || typeof WebSocket === 'undefined') return asleep;
 
   const doc = new YJS.Doc();
@@ -2276,7 +2276,39 @@ const COEDIT = (() => {
   // without the room would leave behind: it was seeded by a room and the room
   // may come back. A room that has stopped does not reconnect.
   const joined = () => seed !== null && !dead;
-  return {live, joined, save(fields) {
+
+  // A range of the document, followed through every edit made to it from now
+  // on, and the record page's selection menu holds one across a create — which
+  // takes seconds, typed through by this person and by everybody else in the
+  // room. Answers a function that says where the range is now, or `null` from
+  // either when the room cannot say, and then the caller compares the text at
+  // the old offsets instead: a link is written only around the words selected.
+  //
+  // **Yjs's own relative positions, because every edit already passes through
+  // here.** The person's keystrokes reach `text` through `typed` or `spliced`
+  // and everybody else's arrive as updates, all in UTF-16 code units, so one
+  // pair of positions answers for both surfaces with no arithmetic of this
+  // page's own. The start leans right (`assoc` 0) and the end left (-1): text
+  // typed exactly at either edge is outside the range rather than in it.
+  //
+  // What it cannot be better than is `typed`: a textarea reports its whole
+  // value, and between two identical copies of a run the common-prefix walk
+  // places an edit in the later one whichever was typed into. A range at the
+  // boundary of such a pair can be carried into its twin, and the comparison of
+  // the words is what catches it.
+  function mark(from, to) {
+    if (!bound || dead || text.toString() !== SURFACE.text()) return null;
+    const start = YJS.createRelativePositionFromTypeIndex(text, from, 0);
+    const end = YJS.createRelativePositionFromTypeIndex(text, to, -1);
+    return () => {
+      if (!bound || dead || text.toString() !== SURFACE.text()) return null;
+      const at = YJS.createAbsolutePositionFromRelativePosition(start, doc);
+      const stop = YJS.createAbsolutePositionFromRelativePosition(end, doc);
+      return at && stop ? {from: at.index, to: stop.index} : null;
+    };
+  }
+
+  return {live, joined, mark, save(fields) {
     // Anything typed since the last input event, then one commit over the
     // socket: the fields from this form, the body from the room, one
     // `store.write` against the room's base.
@@ -2301,7 +2333,8 @@ const COEDIT = (() => {
 # no editor at all. Emitted after `_pop_js` (the menu it hosts) and before the
 # page script that calls `attachSelectionMenu`, because classic scripts share one
 # scope and a function in a later block is not hoisted into an earlier one.
-_SELECTION_JS = Markup(r"""
+_SELECTION_JS = Markup(
+    r"""
 <script>
 // --- a record from a selection ----------------------------------------------
 //
@@ -2315,31 +2348,30 @@ _SELECTION_JS = Markup(r"""
 // A selection in the reading view is rendered text, and `bold word` selected out
 // of `**bold** word` has no source range at all.
 //
-// `about` is the server's: the record being edited, the kinds this plan has
-// (`Config.allows`, the only kinds the create route takes) and every record a
-// new one could be filed under. `editing` answers whether a session is open now.
-//
 // Every offset here is a UTF-16 code unit, which is what both surfaces' `caret`
 // answers, what a JavaScript string is indexed in and what the room's `Y.Text`
 // counts. Nothing here converts, because nothing here leaves the page.
 
+// The inline grammar, which is the Ace mode's: `_MD_INLINE` (`editor.py`) is the
+// one copy, and both scripts are handed it. What the renderer links is what is
+// refused here — an inline link or image, a reference link, an autolink, a bare
+// address that spells its scheme and an `org/repo#12` — and code, inside which
+// a link is drawn as the text it is.
+const SELECTION_INLINE = """
+    + json.dumps(_MD_INLINE)
+    + r""";
+
 // What a line may begin with that is the block's and not its words: a list item's
 // bullet or number with its checkbox, a heading's hashes, a quote's `>`. The
 // first line of a selection is not wrapped with it — `[- item](id)` is a
-// paragraph where a list item was — and a line after the first that begins with
-// one is a second block, not the same paragraph wrapped.
+// paragraph where a list item was — and a line that begins with one, or with a
+// fence, opens a block of its own.
 const SELECTION_MARK = new RegExp('^[ \\t]*(?:(?:[-*+][ \\t]+(?:\\[[ xX]\\][ \\t]+)?'
   + '|\\d+[.)][ \\t]+|#{1,6}[ \\t]+|>[ \\t]?|\\|)[ \\t]*)*');
-const SELECTION_BLOCK = /^[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#{1,6}[ \t]|>|\||```|~~~)/;
-
-// What the renderer draws as a link (`markdown.py`): an inline link or image,
-// an autolink in angle brackets, and a bare URL that spells its scheme — linkify
-// runs with `fuzzy_link` off, so `example.com` alone is not one and is not here.
-const SELECTION_LINKS = [
-  /!?\[[^\]\n]*\]\([^)\n]*\)/g,
-  /<[A-Za-z][A-Za-z0-9+.-]*:[^>\s]*>/g,
-  /\bhttps?:\/\/[^\s<>()[\]]+/g,
-];
+const SELECTION_FENCE = new RegExp(SELECTION_INLINE.fence);
+function selectionOpensBlock(line) {
+  return /\S/.test(SELECTION_MARK.exec(line)[0]) || SELECTION_FENCE.test(line);
+}
 
 // The range a press means, which is the selection less what is not words: the
 // spaces and newline a triple-click takes in at either end, and the mark at the
@@ -2349,45 +2381,117 @@ const SELECTION_LINKS = [
 function selectionPicked(text, from, to) {
   while (from < to && /\s/.test(text[from])) from++;
   while (to > from && /\s/.test(text[to - 1])) to--;
-  const line = text.lastIndexOf('\n', from - 1) + 1;
+  const [line] = linesOf(text, from, from);
   const mark = SELECTION_MARK.exec(text.slice(line, to))[0].length;
   if (line + mark > from) from = Math.min(to, line + mark);
   return {from, to};
 }
 
+// The document's lines, each with where it starts and ends and whether it is
+// code. A fence's lines are, the fences included. A line indented four is, where
+// no paragraph can be continuing into it and no list can be holding it: after a
+// blank line or more code, and not under a list item or its indented
+// continuation — which is a heuristic, written down as one, and errs towards
+// offering the item rather than refusing a sentence in a nested list.
+function selectionLines(text) {
+  const lines = [];
+  let at = 0, fence = null, above = null;
+  for (const line of text.split('\n')) {
+    const blank = !line.trim();
+    const fenced = SELECTION_FENCE.exec(line);
+    let code = false;
+    if (fence) {
+      code = true;
+      const run = fenced && fenced[0].trim();
+      if (run && run[0] === fence[0] && run.length >= fence.length
+          && !line.slice(fenced[0].length).trim()) fence = null;
+    } else if (fenced) {
+      fence = fenced[0].trim();
+      code = true;
+    } else if (!blank && /^(?: {4}|\t)/.test(line)) {
+      const prev = lines[lines.length - 1];
+      const listed = above && !above.code
+        && (/^[ \t]*(?:[-*+]|\d+[.)])[ \t]/.test(above.line) || /^[ \t]{2,}/.test(above.line));
+      code = (!prev || prev.blank || prev.code) && !listed;
+    }
+    const one = {start: at, end: at + line.length, line, blank, code};
+    lines.push(one);
+    if (!blank) above = one;
+    at += line.length + 1;
+  }
+  return lines;
+}
+
+// Where a run `[start, end)` sits against the selection `[from, to)`: apart, held
+// whole by it, holding it, or cut by it.
+function selectionAgainst(start, end, from, to) {
+  if (end <= from || start >= to) return '';
+  if (start >= from && end <= to) return 'holds';
+  if (start <= from && end >= to) return 'inside';
+  return 'cuts';
+}
+
+const SELECTION_SAID = {
+  words: 'There are no words in the selection to name a record by.',
+  paragraphs: 'The selection runs across more than one paragraph, and a link cannot.',
+  code: 'The selection is in code, where a link would be drawn as plain text.',
+  codecut: 'The selection cuts across code.',
+  holds: 'The selection already holds a link.',
+  inside: 'The selection is inside a link.',
+  cuts: 'The selection cuts across a link.',
+  bracket: 'The selection holds a [ or a ], which would end the link it becomes.',
+};
+
 // Why this range cannot become `[words](id)`, or `''` when it can. Each answer
 // is drawn on the greyed item, so it says what is wrong with the selection in
 // the words of the gesture rather than of markdown's grammar.
+//
+// **Asked of the whole paragraph, not of the selection's lines.** A link whose
+// text wraps a line is one link, and a word selected on its second line is as
+// inside it as a word on its first.
 function selectionRefusal(text, from, to) {
-  const chosen = text.slice(from, to);
-  if (!chosen.trim())
-    return 'There are no words in the selection to name a record by.';
-  // A blank line is a paragraph's end, and a line that opens a block is another
-  // block; a link's text can hold neither. A single newline inside one paragraph
-  // is ordinary in a document wrapped at eighty columns, and a link may span it.
-  const blocks = chosen.split('\n').slice(1).some(one => SELECTION_BLOCK.test(one));
-  if (/\n[ \t]*\n/.test(chosen) || blocks)
-    return 'The selection runs across more than one paragraph, and a link cannot.';
-  // Asked of the whole lines the selection is on, because a link that only
-  // starts inside it is still the link it cuts.
-  const head = text.lastIndexOf('\n', from - 1) + 1;
-  const tail = text.indexOf('\n', to) === -1 ? text.length : text.indexOf('\n', to);
-  const lines = text.slice(head, tail);
-  for (const pattern of SELECTION_LINKS) {
-    for (const found of lines.matchAll(pattern)) {
-      const start = head + found.index, end = start + found[0].length;
-      if (end <= from || start >= to) continue;
-      if (start >= from && end <= to) return 'The selection already holds a link.';
-      if (start <= from && end >= to) return 'The selection is inside a link.';
-      return 'The selection cuts across a link.';
+  if (!text.slice(from, to).trim()) return SELECTION_SAID.words;
+  const lines = selectionLines(text);
+  const first = lines.findIndex(one => one.end >= from);
+  const last = lines.findIndex(one => one.end >= to);
+  if (lines.slice(first, last + 1).some(one => one.code)) return SELECTION_SAID.code;
+  // The paragraph: up to the line that opens its block or the one under a blank
+  // line, a heading or code; down to the line before the next of those. A
+  // heading is a block of one line.
+  const heading = one => /^ {0,3}#{1,6}(?:[ \t]|$)/.test(one.line);
+  const ends = one => one.blank || one.code;
+  let top = first;
+  while (top > 0 && !selectionOpensBlock(lines[top].line)
+         && !ends(lines[top - 1]) && !heading(lines[top - 1])) top--;
+  let bottom = first;
+  while (bottom + 1 < lines.length && !heading(lines[bottom])
+         && !ends(lines[bottom + 1]) && !selectionOpensBlock(lines[bottom + 1].line)) bottom++;
+  if (last > bottom) return SELECTION_SAID.paragraphs;
+  const head = lines[top].start;
+  let block = text.slice(head, lines[bottom].end);
+  // Code first, and then blanked out, so that `[a](b)` written inside backticks
+  // is the text it is and not a link the selection holds.
+  for (const found of block.matchAll(new RegExp(SELECTION_INLINE.code, 'g'))) {
+    const against = selectionAgainst(head + found.index, head + found.index + found[0].length,
+                                     from, to);
+    if (against === 'inside') return SELECTION_SAID.code;
+    if (against === 'cuts') return SELECTION_SAID.codecut;
+    block = block.slice(0, found.index) + ' '.repeat(found[0].length)
+      + block.slice(found.index + found[0].length);
+  }
+  for (const name of ['link', 'reference', 'url']) {
+    for (const found of block.matchAll(new RegExp(SELECTION_INLINE[name], 'g'))) {
+      const against = selectionAgainst(head + found.index,
+                                       head + found.index + found[0].length, from, to);
+      if (against) return SELECTION_SAID[against];
     }
   }
   // A bracket ends the link's text or starts another one, so `[a]b](id)` is drawn
   // as literal text with no link in it and nothing to say it failed. The toolbar's
   // Link button escapes them; this refuses instead, because the words are about to
   // become a record's title as well, and `a\]b` is not a title anybody typed.
-  if (/[[\]]/.test(chosen))
-    return 'The selection holds a [ or a ], which would end the link it becomes.';
+  // Outside code: a bracket between backticks is the text it is, there too.
+  if (/[[\]]/.test(block.slice(from - head, to - head))) return SELECTION_SAID.bracket;
   return '';
 }
 
@@ -2407,7 +2511,11 @@ function selectionTitle(source) {
     .trim();
 }
 
-function attachSelectionMenu(surface, about, editing) {
+// `about` is the server's: the record being edited, the kinds this plan has
+// (`Config.allows`, the only kinds the create route takes) and every record a
+// new one could be filed under. `page` is the two things this needs of the page
+// around it: whether a session is open now, and the commit it was rendered at.
+function attachSelectionMenu(surface, about, page) {
   // `rows` answers about the edited record and the records the parent picker
   // offers, and that is every id this host is ever asked about: the menu is
   // opened on the edited record, and a parent's title is asked by the card.
@@ -2415,16 +2523,12 @@ function attachSelectionMenu(surface, about, editing) {
   rows.set(about.id, about);
 
   // The selection this menu was opened on, read when it opened and never again:
-  // by the time a kind is chosen the reader's focus is in the menu, and Ace
-  // dims its selection without dropping it while a textarea keeps one too — but
-  // "what was selected when you pressed" is the question, and only this answers
-  // it after the press. `{from, to, source, range}`, where `range` is the same
-  // words followed through every edit made from the press on (`mark`).
+  // by the time a kind is chosen the reader's focus is in the menu, and Ace dims
+  // its selection while a textarea keeps one — but "what was selected when you
+  // pressed" is the question, and only this answers it after the press.
+  // `{from, to, source, range}`, where `range` is the room's `mark` of the same
+  // words, or `null` when there is no room to follow them through.
   let pick = null;
-  // That range, held until the next press replaces it: a menu dismissed or a
-  // form left by Cancel never says so to its host, and one range held past its
-  // use is all that costs.
-  let held = null;
 
   // **The record is made at once, and the link is written after it, in the
   // session.** Holding the create until the session is saved would mean writing
@@ -2434,28 +2538,28 @@ function attachSelectionMenu(surface, about, editing) {
   // step, typed into the room like any other, and committed with the document.
   //
   // **Unless the words are not what they were.** Somebody in the room can edit
-  // or delete them while the form is open, and the range has followed every
-  // edit since (`mark`). If the text at it now is not the text selected, the
-  // record is still made and nothing is written: a link around somebody else's
-  // sentence is worse than no link, and the receipt names the id so it can be
-  // linked by hand.
+  // or delete them while the form is open, and so can the person who opened it.
+  // The room follows the range through every edit; without a room the words are
+  // looked for where they were. Either way, if the text there now is not the
+  // text selected, the record is still made and nothing is written: a link
+  // around somebody else's sentence is worse than no link, and the receipt names
+  // the id so it can be linked by hand.
   //
   // Focus is already back in the editor — `popDone` hands it to whatever had it
   // when the menu opened — and the receipt goes to the live region as well as
   // the screen, because `announce` is both.
-  const linked = (answer, range, source) => {
-    const at = range.at();
-    range.drop();
-    if (held === range) held = null;
-    if (!editing())
+  const linked = (answer, chosen) => {
+    const at = (chosen.range && chosen.range()) || chosen;
+    if (!page.editing())
       return `Created ${answer.id}. The edit was closed, so it wasn't linked.`;
-    if (surface.text().slice(at.from, at.to) !== source)
+    if (surface.text().slice(at.from, at.to) !== chosen.source)
       return `Created ${answer.id}. The text you selected changed, so it wasn't linked.`;
-    surface.splice(at.from, at.to, `[${source}](${answer.id})`);
-    // What a person's keystroke would have told the form: Ace writes through its
-    // own document and fires no DOM `input`, and the bar's count of unsaved
-    // changes is listening for one.
-    surface.el.dispatchEvent(new Event('input', {bubbles: true}));
+    surface.splice(at.from, at.to, `[${chosen.source}](${answer.id})`);
+    // What a keystroke would have told the form's unsaved count. The textarea's
+    // splice is `execCommand`, which fires its own `input`; Ace writes through its
+    // own document and fires none.
+    if (surface.el.tagName !== 'TEXTAREA')
+      surface.el.dispatchEvent(new Event('input', {bubbles: true}));
     return `Created ${answer.id} and linked it.`;
   };
 
@@ -2464,20 +2568,21 @@ function attachSelectionMenu(surface, about, editing) {
     // `stays`, because this run fills the box with a form; see `popRan`.
     stays: true,
     run: () => {
-      const {source, range} = pick;
+      const chosen = pick;
       // Filed under the record being edited where this kind may be, because the
-      // words were written there — and only as an answer already in the box, NOT
-      // locked: `New child ▸` locks its parent because choosing it again is the
-      // gesture said twice, and here nobody has chosen anything yet. No
-      // dependency either way, and an empty body.
-      const under = ((POP_SCHEMA.child_kinds || {})[about.kind] || []).includes(kind);
-      const values = {title: selectionTitle(source)};
-      if (under) values.parent = about.id;
+      // words were written there — as an answer already in the box and NOT as
+      // the form's `parent`, which is what locks one: `New child ▸` locks its
+      // parent because choosing it again is the gesture said twice, and here
+      // nobody has chosen anything yet. No dependency either way, and an empty
+      // body.
+      const values = {title: selectionTitle(chosen.source)};
+      if (((POP_SCHEMA.child_kinds || {})[about.kind] || []).includes(kind))
+        values.parent = about.id;
       popForm({
-        mode: 'new', kind: kind, free: true, parent: under ? about : null, values: values,
+        mode: 'new', kind: kind, values: values,
         label: `New ${popHuman(kind).toLowerCase()} from the selection`,
         verb: `Create ${popHuman(kind).toLowerCase()}`,
-        landed: answer => linked(answer, range, source),
+        landed: answer => linked(answer, chosen),
       });
     },
   }));
@@ -2498,6 +2603,14 @@ function attachSelectionMenu(surface, about, editing) {
       if (why) item.why = why; else item.items = kinds;
       return [item];
     },
+    // **A base of its own, which the create moves and nothing else reads.** The
+    // page's `base_commit` is what this record's own save is compared against,
+    // and a create advancing it would move the page past commits it never saw:
+    // somebody else's change to this record, then this create, then the page's
+    // Save sent against the create's commit — which writes over theirs with no
+    // conflict. A new file cannot collide with anything, so the create needs no
+    // newer base than the page has.
+    base: () => ({value: page.base()}),
   };
 
   // Registered while a session is open and not otherwise, so a reader of the
@@ -2511,7 +2624,7 @@ function attachSelectionMenu(surface, about, editing) {
     if (!POP_FORM) popServes(null);
   };
   addEventListener('openproj:session', event => session(event.detail));
-  session(editing());
+  session(page.editing());
 
   // --- the gesture ---------------------------------------------------------
   //
@@ -2523,6 +2636,13 @@ function attachSelectionMenu(surface, about, editing) {
   // before the browser does anything with the press, and the menu is ours only
   // when that selection was not empty and the press left it as it was.
   //
+  // **Every `pointerdown`, whichever button.** A Ctrl+click on a Mac and a
+  // long-press on Android both open a context menu off the PRIMARY button, and
+  // reading only a right press took them for the keyboard — which skipped the
+  // check above and the Shift escape, and put this menu over the word the click
+  // had just selected. The keyboard is the one path with no press since its own
+  // keydown.
+  //
   // Capture phase on the surface's own element, because on Ace the press lands
   // on its content and the menu event on its hidden input, both inside it — and
   // the listener has to have run before Ace's own does. Only `preventDefault`,
@@ -2530,43 +2650,42 @@ function attachSelectionMenu(surface, about, editing) {
   // input back where the caret is after a right press moved it under the
   // pointer, and stopping it would leave Ace believing the mouse was still down.
   let pressed = null;
-  surface.el.addEventListener('pointerdown', event => {
-    pressed = event.button === 2 ? surface.caret() : null;
-  }, true);
-  // The keyboard's menu is ContextMenu or Shift+F10, and either begins with a
-  // keydown: a press read on some earlier `pointerdown` is not about it.
+  surface.el.addEventListener('pointerdown', () => { pressed = surface.caret(); }, true);
   surface.el.addEventListener('keydown', () => { pressed = null; }, true);
   surface.el.addEventListener('contextmenu', event => {
     const press = pressed;
     pressed = null;
     if (POP_HOST !== host) return;
-    // No `pointerdown` before it: the keyboard's menu, which has no press to have
-    // changed the selection — and Shift+F10 is the keyboard path, so its Shift is
-    // not the pointer's way to the browser's menu.
+    // Shift+F10 is the keyboard path, so its Shift is not the pointer's way to
+    // the browser's menu.
     const keyboard = press === null;
     if (!keyboard && theBrowsersMenu(event)) return;
     const now = surface.caret();
     if (now.from === now.to) return;
     if (!keyboard && (press.from !== now.from || press.to !== now.to)) return;
     // A right-click while a form is open does nothing — `popMenu` says why — and
-    // must not take away the range that form's link is waiting on.
+    // must not take away the words that form's link is waiting on.
     if (POP_FORM) { event.preventDefault(); return; }
     const text = surface.text();
     const {from, to} = selectionPicked(text, now.from, now.to);
-    if (held) held.drop();
-    held = surface.mark(from, to);
-    pick = {from, to, source: text.slice(from, to), range: held};
+    pick = {from, to, source: text.slice(from, to),
+            range: typeof COEDIT === 'undefined' ? null : COEDIT.mark(from, to)};
     // Beside the caret for the keyboard, where `popAt` would otherwise measure
     // the focused element: on Ace that is a two-pixel input already at the caret,
     // and on the textarea it is the whole box, whose foot can be below the window.
     let x = event.clientX, y = event.clientY;
-    if (keyboard) {
-      const box = surface.caretBox ? surface.caretBox() : surface.el.getBoundingClientRect();
-      x = box.left + (surface.caretBox ? 0 : 8);
-      y = surface.caretBox ? box.bottom : Math.max(8, Math.min(box.top + 8, innerHeight - 8));
+    if (keyboard && surface.caretBox) {
+      const box = surface.caretBox();
+      x = box.left;
+      y = box.bottom;
+    } else if (keyboard) {
+      const box = surface.el.getBoundingClientRect();
+      x = box.left + 8;
+      y = Math.max(8, Math.min(box.top + 8, innerHeight - 8));
     }
     if (popMenu(x, y, about.id)) event.preventDefault();
   }, true);
 }
 </script>
-""")
+"""
+)

@@ -36,7 +36,7 @@ from .editor import (
 from .env import PHONE, _compiled, _fragment
 from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
 from .markdown import _body_html, _pr_link
-from .pop import _POP_STYLE, _pop_js
+from .pop import _POP_CORE_STYLE, _pop_js
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SUGGEST_STYLE
 from .tokens import (
@@ -1435,7 +1435,7 @@ _DETAIL = """
       still be one of `FORM`'s own controls — `CONTROLS` is a `querySelectorAll`
       over the form's subtree, and a title outside it is a title no save sends. -#}
   <form id="edit" data-id="{{ e.id }}" onsubmit="return false">
-    <input type="hidden" name="base_commit" value="{{ base_commit }}" id="base">
+    <input type="hidden" name="base_commit" value="{{ base_commit }}">
   {% endif %}
   {#- The header, BELOW the two bars of controls — jcanton, 2026-08-24: the
       title "should always be below" the view buttons, in every view. It used to
@@ -2071,8 +2071,8 @@ grip.ondblclick = () => {
 {{ calendar }}
 {#- The right-click menu and the one thing it offers here, a record made from
     the editor's selection — empty unless a writer is on one stored record's own
-    page; the gate is at `selection=` below. -#}
-{{ pop }}{{ selecting }}
+    page; the gate is at `selecting=` below. -#}
+{{ selecting }}
 {% if editable %}<script>
 // Only what changed travels. Serialising the whole form would send back every
 // field as this tab last saw it, overwriting whatever somebody else changed while
@@ -2142,8 +2142,10 @@ attachDrawing(SURFACE, document.getElementById('state'));
 // drawing anything on the plain box, which has no caret to report — see
 // `attachBodyCompletion`.
 attachBodyCompletion(SURFACE);
-{% if selection %}attachSelectionMenu(SURFACE, {{ selection|tojson }},
-  () => document.querySelector('article.record').classList.contains('editing'));{% endif %}
+{% if selection %}attachSelectionMenu(SURFACE, {{ selection|tojson }}, {
+  editing: () => document.querySelector('article.record').classList.contains('editing'),
+  base: () => BASE.value,
+});{% endif %}
 attachGutter(SURFACE, document.getElementById('gutter-note'));
 attachStatus(SURFACE, document.getElementById('statusbar'));
 // The commit this page was rendered at, and what every save is compared against.
@@ -4433,13 +4435,19 @@ def render_detail(
                 if base_commit is not None and may_write and record.kind in PROMOTABLE
                 else Markup("")
             )
-    # The right-click menu, and only where it has something to be about: one
-    # stored record's own page, served to somebody who may write. Not the static
-    # export (no `base_commit`), not a reader, and not the create form, which has
-    # no record to link a selection to yet.
-    selecting = (
-        base_commit is not None and may_write and creating is None and only in index.records
-    )
+    # A session the server would take a write from, on a record that exists:
+    # what the room's bytes are gated on, and the right-click menu as well.
+    in_a_room = base_commit is not None and may_write and creating is None
+    # The menu, and only where it has something to be about: one stored record's
+    # own page. Not the static export (no `base_commit`), not a reader, not the
+    # create form, which has no record to link a selection to yet, and not the
+    # index of every record.
+    selecting = in_a_room and only in index.records
+    # The create form's picker, the kind chip's menu and the selection menu's
+    # kinds: only the kinds this plan has, because each one leads to a write the
+    # server refuses for a kind that is off. `index.kinds` is `Config.allows`'s
+    # set, carried.
+    kinds = tuple(kind for kind in KINDS if kind in index.kinds)
     body = _compiled(_DETAIL).render(
         records=rows,
         groups=[] if creating else _by_status(rows),
@@ -4450,10 +4458,7 @@ def render_detail(
         showing=[] if creating else [row["id"] for row in rows],
         single=creating is not None or only is not None,
         creating=creating,
-        # The create form's picker and the kind chip's menu, both: only the kinds
-        # this plan has, because each one leads to a write the server refuses for
-        # a kind that is off. `index.kinds` is `Config.allows`'s set, carried.
-        kinds=tuple(kind for kind in KINDS if kind in index.kinds),
+        kinds=kinds,
         # Wherever the form is, which is wherever the Template button is: the
         # record page offers the same bodies the create form starts from.
         templates=_offered_templates(index) if base_commit is not None else [],
@@ -4516,15 +4521,13 @@ def render_detail(
         #
         # And never when creating: a record with no id has no room to join,
         # exactly as the old create page never carried these bytes.
-        # The menu with its write half, because this host's one item creates a
-        # record — `_pop_js` without the index draws "Editing is unavailable".
-        pop=_pop_js(links, index) if selecting else Markup(""),
-        selecting=_SELECTION_JS if selecting else Markup(""),
-        selection=_selection_about(index, index.records[only]) if selecting else None,
-        yjs=_yjs() if base_commit is not None and may_write and creating is None else Markup(""),
-        coedit=(
-            _COEDIT if base_commit is not None and may_write and creating is None else Markup("")
-        ),
+        yjs=_yjs() if in_a_room else Markup(""),
+        coedit=_COEDIT if in_a_room else Markup(""),
+        # The menu's script with its write half — this host's one item creates a
+        # record, and `_pop_js` without the index draws "Editing is unavailable"
+        # — less everything only a row's menu runs, and the block that hosts it.
+        selecting=(_pop_js(links, index, rows=False) + _SELECTION_JS) if selecting else Markup(""),
+        selection=_selection_about(index.records[only], kinds, index) if selecting else None,
     )
     # Beside the widget and under the same gate, and LAST in the concatenation:
     # the calendar's own rules are written to win their ties on source order —
@@ -4534,7 +4537,7 @@ def render_detail(
     # the two sheets in front of it.
     style = _DETAIL_STYLE + _SUGGEST_STYLE
     if selecting:
-        style += _POP_STYLE
+        style += _POP_CORE_STYLE
     if base_commit is not None:
         style += _CALENDAR_STYLE
     if creating is not None:
@@ -4580,7 +4583,7 @@ def render_detail(
 _HOLDING = frozenset(kind for kinds in PARENT_KINDS.values() for kind in kinds)
 
 
-def _selection_about(index: Index, record: Record) -> dict:
+def _selection_about(record: Record, kinds: tuple[str, ...], index: Index) -> dict:
     """What `attachSelectionMenu` (`editor.py`) is told about this page.
 
     The edited record, which a new one defaults to being filed under; the kinds
@@ -4592,10 +4595,10 @@ def _selection_about(index: Index, record: Record) -> dict:
     return {
         "id": record.id,
         "kind": record.kind,
-        "title": record.title or record.id,
-        "kinds": [kind for kind in KINDS if kind in index.kinds],
+        "title": record.title,
+        "kinds": list(kinds),
         "holders": [
-            {"id": record_id, "kind": held.kind, "title": held.title or record_id}
+            {"id": record_id, "kind": held.kind, "title": held.title}
             for record_id, held in sorted(index.plan.items())
             if held.kind in _HOLDING
         ],

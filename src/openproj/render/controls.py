@@ -804,18 +804,6 @@ function replaceRange(area, text) {
   area.dispatchEvent(new Event('input', {bubbles: true}));
 }
 
-// Where an offset lands once `[from, to)` has been replaced by `put`, all in
-// UTF-16 code units. `stays` is the end of a range: text inserted exactly there
-// is after the range and does not join it, where at the start it is before the
-// range and pushes it along. An offset inside what was replaced collapses onto
-// the replacement, which is a range whose text has changed — and the one caller,
-// `mark`, compares the text rather than trusting the offsets for exactly that.
-function carriedPast(at, from, to, put, stays) {
-  if (at < from || (at === from && to === from && stays)) return at;
-  if (at >= to) return at + put.length - (to - from);
-  return from + (stays ? 0 : put.length);
-}
-
 function textareaSurface(area) {
   // The re-entrancy flag: belt and braces on a textarea, and the whole of the
   // difference on anything else between reflecting somebody's keystroke and
@@ -841,37 +829,6 @@ function textareaSurface(area) {
     area.addEventListener(kind, () => fire('caret'));
   }
 
-  // The ranges held by `mark`, and the text they were last carried against.
-  // The room's splices arrive through `splice` under `apply` with their exact
-  // bounds, which is the arithmetic the seat bands are carried by too; what a
-  // person types arrives as an `input` with none, and is recovered from the text
-  // before and after it by a common prefix and suffix. That walk can put a
-  // boundary between two halves of one emoji, which moves nothing here: an
-  // offset is only ever compared and sliced by, and the length is right.
-  // An array and not a `Set`, because a set's removal is spelled the way a
-  // document's splice is, and `test_the_browser_splices_on_a_whole_character`
-  // reads every call spelled that way in the editor as an index into the text.
-  let marks = [];
-  let carriedTo = area.value;
-  const carryMarks = (from, to, put) => {
-    for (const held of marks) {
-      held.from = carriedPast(held.from, from, to, put, false);
-      held.to = carriedPast(held.to, from, to, put, true);
-    }
-  };
-  area.addEventListener('input', () => {
-    if (applying || !marks.length) return;
-    const was = carriedTo, now = area.value;
-    const most = Math.min(was.length, now.length);
-    let head = 0;
-    while (head < most && was.charCodeAt(head) === now.charCodeAt(head)) head++;
-    let tail = 0;
-    const same = back =>
-      was.charCodeAt(was.length - 1 - back) === now.charCodeAt(now.length - 1 - back);
-    while (tail < most - head && same(tail)) tail++;
-    carryMarks(head, was.length - tail, now.slice(head, now.length - tail));
-    carriedTo = now;
-  });
 
   return {
     // The box, for the questions that are about a box rather than a document:
@@ -915,7 +872,6 @@ function textareaSurface(area) {
       // difference, and nothing may end up before where the splice began.
       const moved = at => at <= from ? at : Math.max(from, at + shift);
       area.value = was.slice(0, from) + put + was.slice(to);
-      if (marks.length) { carryMarks(from, to, put); carriedTo = area.value; }
       // Only when this box has the caret: `setSelectionRange` on an unfocused
       // textarea also scrolls it, and a page scrolling itself because somebody
       // else typed is the thing nobody asked for.
@@ -926,19 +882,6 @@ function textareaSurface(area) {
     // person did it"; `onCaret` is "the caret is somewhere else".
     onInput(listener) { heard.input.push(listener); },
     onCaret(listener) { heard.caret.push(listener); },
-
-    // NOT one of the seven: a range that follows the document through every edit
-    // made to it from now on — this person's and the room's — so that a question
-    // asked of it later is about the same words. `at()` is where it is now, and
-    // `drop()` lets go of it. The record page's selection menu holds one across
-    // a create, which takes seconds and is typed through by everybody else.
-    mark(from, to) {
-      const held = {from, to};
-      if (!marks.length) carriedTo = area.value;
-      marks.push(held);
-      return {at: () => ({from: held.from, to: held.to}),
-              drop: () => { marks = marks.filter(one => one !== held); }};
-    },
 
     // 7. Where everybody ELSE in the room is: a translucent band on the row each
     // of their carets is in, with the login on the right.
@@ -1320,8 +1263,14 @@ function historyOf(surface) {
 const ORDERED = /^(\s*)\d+\.\s+/;
 
 function lineRange(surface) {
-  const text = surface.text();
-  const {from: start, to: end} = surface.caret();
+  const {from, to} = surface.caret();
+  return linesOf(surface.text(), from, to);
+}
+
+// The whole lines `[start, end)` touches, as `[from, to)` — the same question
+// asked of a text and a range rather than of the caret, for a caller that has a
+// range of its own (`selectionRefusal`).
+function linesOf(text, start, end) {
   const from = text.lastIndexOf('\n', start - 1) + 1;
   const to = text.indexOf('\n', end);
   return [from, to === -1 ? text.length : to];
