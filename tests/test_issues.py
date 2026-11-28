@@ -86,7 +86,7 @@ def test_an_issue_is_a_rung_of_the_ladder():
     assert (rung.prefix, rung.directory) == ("issue", "issues")
     assert rung.planned is False, "off every plan view, enforced in build_index"
     assert rung.statuses == ISSUE_STATUS
-    assert not rung.schedules and not rung.depends and not rung.sized and not rung.carded
+    assert not rung.schedules and not rung.depends and not rung.sized
     for commitment in ("owner", "cycle", "priority", "depends_on", "person_weeks"):
         assert commitment in unread_fields("issue"), commitment
     assert "status" not in unread_fields("issue"), "an issue reads its status"

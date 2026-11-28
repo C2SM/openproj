@@ -28,7 +28,7 @@ from test_injection import run_js
 from test_table import script
 
 from openproj.index import Index, build_index
-from openproj.model import RUNG, load_repo
+from openproj.model import Rung, load_repo
 from openproj.render import (
     ROUTES,
     card_preview,
@@ -325,6 +325,11 @@ def test_the_table_row_is_the_preview_and_the_tables_own_columns(index: Index):
         }
         assert not differ, f"{record_id}: the row and the preview disagree about {differ}"
         assert "titles" not in row, "the table's rows carry titles its own payload already has"
+
+
+def test_no_rung_says_whether_it_has_a_card():
+    """Every record has a card, so the ladder has nothing to say about it."""
+    assert "carded" not in Rung._fields
 
 
 def test_a_preview_names_the_records_it_points_at(seed_root: Path):
@@ -648,33 +653,13 @@ def test_a_box_answers_for_its_label_and_not_for_its_acres(index: Index, tmp_pat
     assert set(got["said"]) >= {"project", "pitch"}, (
         f"only {sorted(got['said'])} was asked, so the other kind of box is untested"
     )
-    # WHICH boxes answer is a fact about the ladder and not about this list.
-    # `carded` is a property on `Rung` in `model.py` — a product declares
-    # `carded: false`, because a card of one would be a title, a sentence and
-    # eight dashes, which teaches a reader that cards are not worth hovering
-    # for. The graph reads that same property (`CARDED` in `graph.py`), so this
-    # asserts the rule rather than a list of kinds that has to be edited every
-    # time a rung is added.
-    #
-    # Untestable until 2026-08-23: `carded: false` had no record in any corpus,
-    # so the one rung that declares it was never hovered and the branch that
-    # honours it was never reached. This test asserted "every box opens a card"
-    # and passed for four kinds that all happen to be carded.
+    # Every kind of box answers, a product included. A product had no card
+    # (`carded: false` on the ladder) while one opened on hover, because the
+    # pointer crossed it on the way to another node; the graph opens its card on
+    # a click since 2026-10-12, so the reason went and so did the field.
+    assert "product" in got["said"], "the corpus has no product box, so it is untested"
     for kind, answer in got["said"].items():
-        wanted = "a card" if RUNG[kind].carded else "nothing"
-        assert answer == wanted, (
-            f"a {kind}'s own title brought up {answer}, and the ladder says "
-            f"carded={RUNG[kind].carded}, so it should bring up {wanted}"
-        )
-    # And both halves of that rule were actually asked. A corpus with no
-    # uncarded box would pass the loop above without ever reaching the branch it
-    # was written for — which is exactly the state this suite was in yesterday.
-    carded = {kind for kind in got["said"] if RUNG[kind].carded}
-    assert carded, "no carded box was hovered, so 'a card comes up' is untested"
-    assert set(got["said"]) - carded, (
-        "no box of an uncarded kind is on this graph, so the rule that a hover "
-        "over one brings up nothing is untested"
-    )
+        assert answer == "a card", f"a {kind}'s own title brought up {answer}"
 
 
 # How many times the card's markup changes between the hover and the card being
