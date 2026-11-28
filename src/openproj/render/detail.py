@@ -1435,7 +1435,7 @@ _DETAIL = """
       still be one of `FORM`'s own controls — `CONTROLS` is a `querySelectorAll`
       over the form's subtree, and a title outside it is a title no save sends. -#}
   <form id="edit" data-id="{{ e.id }}" onsubmit="return false">
-    <input type="hidden" name="base_commit" id="base" value="{{ base_commit }}">
+    <input type="hidden" name="base_commit" value="{{ base_commit }}" id="base">
   {% endif %}
   {#- The header, BELOW the two bars of controls — jcanton, 2026-08-24: the
       title "should always be below" the view buttons, in every view. It used to

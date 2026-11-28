@@ -1445,7 +1445,7 @@ const popTitle = row => row.title || row.id;
 //
 //   `new`   a kind, with `parent` filled and LOCKED — `New child ▸ <kind>`.
 //           With `free`, the parent is only a default and may be changed or
-//           cleared — the record page's `New record from selection ▸`, where
+//           cleared — the record page's menu over a selection, where
 //           the record being edited is a likely home and not a promise.
 //   `edit`  every field `_editable_for` offers this kind — `Edit…`.
 //   `only`  a named few — `Assign parent…`, and a status the gate refuses.
