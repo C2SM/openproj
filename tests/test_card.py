@@ -28,8 +28,16 @@ from test_injection import run_js
 from test_table import script
 
 from openproj.index import Index, build_index
-from openproj.model import RUNG, load_repo
-from openproj.render import ROUTES, render_graph, render_table, render_timeline
+from openproj.model import Record, load_repo
+from openproj.render import (
+    ROUTES,
+    card_preview,
+    render_detail,
+    render_graph,
+    render_table,
+    render_timeline,
+)
+from openproj.render.rows import _row
 
 # Through the module, because it is the card's own source of truth about which
 # rows it draws — `shell.py` ships its answer as a payload and `pop.py` draws
@@ -260,6 +268,373 @@ def test_a_rendered_files_card_asks_no_server_for_a_document(index: Index):
     assert "card-title" in answer["value"]["first"]
     assert "card-body" not in answer["value"]["then"]
     assert answer["calls"] == [], "a rendered file asked a server for something"
+
+
+# --------------------------------------------------------------------------- #
+# One preview, for any record
+# --------------------------------------------------------------------------- #
+
+
+# The keys a card draws dates and an appetite from. An issue and a note have
+# neither, and a preview that carried them as nulls would be a card that is one
+# `?? ''` away from drawing a dash for a field the kind does not have.
+_DATED = {"start", "end", "start_date", "end_date", "size", "person_weeks"}
+
+
+def _one_of_each(index: Index) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for record_id, record in sorted(index.records.items()):
+        found.setdefault(record.kind, record_id)
+    return found
+
+
+def test_every_kind_has_a_preview(index: Index):
+    """The card used to draw the table's row, which reads `index.plan` and raised
+    for an issue or a note. The preview reads `index.records`, so a link to any
+    record has a card to open, and it carries the fields that kind's card lists
+    and no others."""
+    kinds = _one_of_each(index)
+    assert set(kinds) == {"product", "project", "pitch", "task", "issue", "note"}, (
+        f"the corpus has {sorted(kinds)}, so some kind's preview is untested"
+    )
+    for kind, record_id in kinds.items():
+        preview = card_preview(index, record_id)
+        assert (preview["id"], preview["kind"]) == (record_id, kind)
+        assert preview["title"] == index.records[record_id].title
+        listed = {fact["name"] for fact in card_facts()[kind]["facts"]}
+        for name in listed - {"person_weeks", "start_date", "end_date", "depends_on"}:
+            assert name in preview, f"a {kind}'s card lists {name} and its preview has none"
+    for kind in ("issue", "note"):
+        carried = _DATED & set(card_preview(index, kinds[kind]))
+        assert not carried, f"a {kind}'s preview carries {sorted(carried)}, which it does not have"
+    pitch = card_preview(index, kinds["pitch"])
+    assert {"start", "end", "size"} <= set(pitch), "a pitch's preview lost its dates or size"
+
+
+def test_the_table_row_is_the_preview_and_the_tables_own_columns(index: Index):
+    """One builder for what a card draws. The table, the graph and the timeline
+    hand the card a row; a link in a body hands it the preview `/api/body`
+    answers. If the row did not hold the preview, key for key, the same pitch
+    could read two ways depending on where it was pointed at."""
+    for record_id in index.plan:
+        preview = card_preview(index, record_id)
+        preview.pop("titles")
+        row = _row(index, record_id)
+        differ = {
+            key: (value, row.get(key)) for key, value in preview.items() if row.get(key) != value
+        }
+        assert not differ, f"{record_id}: the row and the preview disagree about {differ}"
+        assert "titles" not in row, "the table's rows carry titles its own payload already has"
+
+
+def _promoted_note(seed_root: Path) -> tuple[Index, Record]:
+    """The fixture corpus's note that became a pitch and a project, both there."""
+    records, config, _ = load_repo(seed_root)
+    index = build_index(records, config, date(2026, 8, 17))
+    return index, index.records["note-a03c59"]
+
+
+def test_a_preview_names_the_records_it_points_at(seed_root: Path):
+    """The record page names no other record in its payload (the plan views
+    do, through their rows), so a card drawn there of a note that became a pitch
+    would say `pitch-6f2d18`. The preview carries the titles of what it names."""
+    index, note = _promoted_note(seed_root)
+    preview = card_preview(index, note.id)
+
+    assert preview["became"] == ["pitch-6f2d18", "proj-9a4c25"]
+    assert preview["titles"] == {
+        "pitch-6f2d18": "Scan operator on the GPU backend",
+        "proj-9a4c25": "Hearth backend for the bed solver",
+    }
+    assert preview["status"] == "promoted", "a note's card shows its state"
+
+
+def test_a_card_drawn_from_a_preview_shows_what_the_kind_has(seed_root: Path):
+    """The card drawn on the record page, from the preview `/api/body` answers,
+    for a note: the rows its kind lists and no row for a date or an appetite,
+    what it became by title, and its hill on the note's own ladder. `promoted`
+    stands where the record it was handed to starts, and on the record ladder it
+    had no ball at all."""
+    index, note = _promoted_note(seed_root)
+    page = render_detail(index, ROUTES, only=note.id)
+    answer = run_js(
+        page,
+        f"(() => {{ showCard({json.dumps(card_preview(index, note.id))}, 100, 100);"
+        " return CARD.innerHTML; })()",
+        page=True,
+    )
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+    drawn = elements(answer["value"])
+    rows = [one.text for one in drawn if one.tag == "dt"]
+    assert rows == [fact["label"] for fact in card_facts()["note"]["facts"]], rows
+    said = {one.text for one in drawn if one.tag == "dd"}
+    assert "Scan operator on the GPU backend, Hearth backend for the bed solver" in said, (
+        f"what the note became is drawn as {sorted(said)}, not by title"
+    )
+    balls = [one for one in drawn if "hill-ball" in one.attrs.get("class", "").split()]
+    assert balls, "a promoted note's card drew a hill with no ball on it"
+
+
+# --------------------------------------------------------------------------- #
+# A link in a body opens the card of what it names
+# --------------------------------------------------------------------------- #
+
+
+def _linked(demo_root: Path) -> tuple[Index, str, str]:
+    """The demo plan with one pitch whose document links to an issue: the kind
+    the table's row could never have drawn a card of."""
+    records, config, _ = load_repo(demo_root)
+    plain = build_index(records, config, date(2026, 8, 17))
+    pitch = min(i for i, r in plain.plan.items() if r.kind == "pitch")
+    issue = min(i for i, r in plain.records.items() if r.kind == "issue")
+    linked = [
+        r.model_copy(update={"body": f"See [the issue]({issue}) first.\n"}) if r.id == pitch else r
+        for r in records
+    ]
+    return build_index(linked, config, date(2026, 8, 17)), pitch, issue
+
+
+# Hover, wait out the fetch, then the delay. `drive.js` queues timers rather than
+# running them, so `__tick()` is the 600ms passing and nothing before it is.
+_HOVERED = """(async () => {
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  const link = %s;
+  document.dispatchEvent(new Event('pointerover', {target: link, clientX: 50, clientY: 50}));
+  await settle();
+  const early = CARD.hidden;
+  %s
+  __tick();
+  await settle();
+  const later = CARD.hidden;
+  const title = (CARD.innerHTML.match(/card-title[^>]*>([^<]*)/) || [])[1] || '';
+  const click = new Event('click', {target: link});
+  document.dispatchEvent(click);
+  %s
+  await settle();
+  return {early, later, title, followed: !click.defaultPrevented, after: CARD.hidden};
+})()"""
+
+_IN_THE_DOCUMENT = "document.querySelector('.doc.read a')"
+
+
+def _hover(
+    page: str, link: str, between: str = "", after: str = "", replies: list[dict] | None = None
+) -> dict:
+    answer = run_js(page, _HOVERED % (link, between, after), page=True, replies=replies or [])
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+    return answer
+
+
+def _answered(index: Index, record_id: str) -> list[dict]:
+    return [{"status": 200, "json": {"html": "<p>its document</p>",
+                                     "card": card_preview(index, record_id)}}]
+
+
+def _writing(index: Index, pitch: str) -> str:
+    return render_detail(
+        index, ROUTES, only=pitch, base_commit=HEAD, may_write=True, editor="plain"
+    )
+
+
+# A link as `_link` draws one, put into the preview pane after the page loaded,
+# which is what a keystroke reaching the server does.
+_TYPED = (
+    "(() => { const pane = document.getElementById('body-preview');"
+    " pane.innerHTML = '<p>Typed: <a href=\"/detail/%s\" data-record=\"%s\">it</a></p>';"
+    " return pane.querySelector('a'); })()"
+)
+
+
+def test_a_record_link_is_marked_with_the_record_it_names(demo_root: Path):
+    """What the card opens from: the id on the anchor, put there by the renderer
+    that decided the link is a record's, so the browser needs no second copy of
+    `ID_PATTERN` and no knowledge of each page's link prefix."""
+    index, pitch, issue = _linked(demo_root)
+    anchors = [
+        one for one in elements(render_detail(index, ROUTES, only=pitch)) if one.tag == "a"
+    ]
+    assert any(
+        one.attrs.get("data-record") == issue and one.attrs.get("href") == f"/detail/{issue}"
+        for one in anchors
+    ), "the link to a record does not say which record"
+
+
+def test_a_link_in_the_document_opens_its_records_card_after_the_delay(demo_root: Path):
+    """The reading view: the card of what the link names, after the delay a row
+    waits and not before, drawn from the preview `/api/body` answers. A click
+    still follows the link."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    answer = _hover(page, _IN_THE_DOCUMENT, replies=_answered(index, issue))
+
+    assert [call["url"] for call in answer["calls"]] == [f"/api/body/{issue}"]
+    assert answer["value"]["early"] is True, "the card opened before the delay"
+    assert answer["value"]["later"] is False, "no card came up for a link to a record"
+    assert answer["value"]["title"] == index.records[issue].title
+    assert answer["value"]["followed"], "the card took the link's click"
+
+
+def test_a_link_typed_into_the_preview_pane_opens_its_card(demo_root: Path):
+    """The split view's preview pane, with a link that was not on the page when it
+    loaded: the pane is redrawn on every keystroke that reaches the server, so
+    the hover is heard on the document and not on the links."""
+    index, pitch, issue = _linked(demo_root)
+    page = _writing(index, pitch)
+    answer = _hover(page, _TYPED % (issue, issue), replies=_answered(index, issue))
+
+    assert answer["value"]["later"] is False, "a link in the preview pane opened no card"
+    assert answer["value"]["title"] == index.records[issue].title
+
+
+def test_a_card_goes_when_the_preview_pane_is_redrawn(demo_root: Path):
+    """The link a card was opened from may have been edited away by the keystroke
+    that redrew the pane, and a redraw is not a pointer leaving anything, so
+    without this the card stayed over a document that no longer said it."""
+    index, pitch, issue = _linked(demo_root)
+    # `drive.js` has no `AbortController`, which `askPreview` makes one of
+    redraw = (
+        "window.AbortController = class { constructor() { this.signal = {}; } abort() {} };"
+        " VIEW_PANE.hidden = false; await askPreview();"
+    )
+    answer = _hover(
+        _writing(index, pitch),
+        _TYPED % (issue, issue),
+        after=redraw,
+        replies=[*_answered(index, issue), {"status": 200, "json": {"html": "<p>No link.</p>"}}],
+    )
+
+    assert answer["value"]["later"] is False, "the card never came up, so the redraw is untested"
+    assert [call["url"] for call in answer["calls"]][-1] == "/api/preview", answer["calls"]
+    assert answer["value"]["after"] is True, "the card outlived the link it was opened from"
+
+
+def test_a_link_inside_a_cards_own_body_opens_no_card(demo_root: Path):
+    """No card in a card. The card's document is drawn by the same renderer, so its
+    links carry `data-record` too, and it is the reading view and the preview
+    pane, by name, that a link has to be in."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    inside = (
+        "(() => { CARD.innerHTML = '<div class=\"card-body\">"
+        f"<a href=\"/detail/{issue}\" data-record=\"{issue}\">it</a></div>';"
+        " return CARD.querySelector('a'); })()"
+    )
+    answer = _hover(page, inside, replies=_answered(index, issue))
+
+    assert answer["calls"] == [], "a link in a card asked for a card of its own"
+    assert answer["value"]["later"] is True
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [{"status": 404, "text": '{"detail": "no such record"}'}, {"reject": "offline"}],
+    ids=["missing", "offline"],
+)
+def test_a_link_to_a_record_nobody_can_fetch_opens_nothing(demo_root: Path, reply: dict):
+    """A link to a record the plan has not got stays a broken link, as `_link`'s
+    docstring decided: no card, nothing thrown, and the link still followed."""
+    index, pitch, _ = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    missing = (
+        "(() => { const link = document.querySelector('.doc.read a');"
+        " link.setAttribute('href', '/detail/issue-ffffff');"
+        " link.setAttribute('data-record', 'issue-ffffff'); return link; })()"
+    )
+    answer = _hover(page, missing, replies=[reply])
+
+    assert [call["url"] for call in answer["calls"]] == ["/api/body/issue-ffffff"]
+    assert answer["value"]["later"] is True, "a card came up for a record nobody could fetch"
+    assert answer["value"]["followed"]
+    assert answer["errors"] == [], answer["errors"]
+
+
+_TWICE_OVER = """(async () => {
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  const link = document.querySelector('.doc.read a');
+  const hover = async () => {
+    document.dispatchEvent(new Event('pointerover', {target: link, clientX: 50, clientY: 50}));
+    await settle();
+    __tick();
+    await settle();
+    const hidden = CARD.hidden;
+    document.dispatchEvent(new Event('pointerout', {target: link}));
+    __tick();
+    return hidden;
+  };
+  return {first: await hover(), second: await hover()};
+})()"""
+
+
+def test_a_link_that_met_a_dropped_connection_asks_again(demo_root: Path):
+    """A failure is not an answer. Kept as one, a link whose first hover met a
+    dropped connection or a 500 opened no card again until the page was
+    reloaded."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    for failed in ({"reject": "offline"}, {"status": 503, "text": "unavailable"}):
+        answer = run_js(page, _TWICE_OVER, page=True, replies=[failed, *_answered(index, issue)])
+        assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+
+        assert [call["url"] for call in answer["calls"]] == [f"/api/body/{issue}"] * 2, failed
+        assert answer["value"] == {"first": True, "second": False}, failed
+
+
+def test_the_static_export_draws_no_card_for_a_link(demo_root: Path):
+    """A rendered file has no server to ask for a card, so it carries none of
+    this, and a hover over a link asks nothing and throws nothing."""
+    index, pitch, _ = _linked(demo_root)
+    page = render_detail(index, only=pitch)
+    answer = _hover(page, _IN_THE_DOCUMENT)
+
+    assert answer["calls"] == [], "a rendered file asked a server for a card"
+    assert answer["value"]["later"] is True
+    assert "bodyLinkAt" not in page
+
+
+def test_the_right_click_menu_kills_a_links_card(demo_root: Path):
+    """`design/context-menus.md`: opening a menu kills the card. Here the menu is
+    the browser's own, which says nothing when it closes, so the card goes on
+    `contextmenu` and one still waiting on its delay goes with it."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    menu = "document.dispatchEvent(new Event('contextmenu', {target: link}));"
+    waiting = _hover(page, _IN_THE_DOCUMENT, between=menu, replies=_answered(index, issue))
+    assert waiting["value"]["later"] is True, "a card queued before the menu came up after it"
+
+    shown = _hover(page, _IN_THE_DOCUMENT, after=menu, replies=_answered(index, issue))
+    assert shown["value"]["later"] is False, "the card never came up, so the menu is untested"
+    assert shown["value"]["after"] is True, "the card stayed over the menu"
+
+
+# The delay runs out while the answer is still on its way, and the pointer leaves
+# before it lands. Synchronous up to `settle()`, so the shim's fetch, which
+# answers on a microtask, has not answered when the timer fires.
+_LEFT_IN_FLIGHT = """(async () => {
+  const link = document.querySelector('.doc.read a');
+  document.dispatchEvent(new Event('pointerover', {target: link, clientX: 50, clientY: 50}));
+  const waiting = CARD_BODIES.has(%s);
+  __tick();
+  document.dispatchEvent(new Event('pointerout', {target: link}));
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  return {waiting, landed: CARD_BODIES.has(%s), hidden: CARD.hidden};
+})()"""
+
+
+def test_a_card_that_lands_after_the_pointer_left_is_not_drawn(demo_root: Path):
+    """The card needs the preview before it can draw anything, and the pointer
+    may be gone by the time it arrives. The delay has already fired by then, so
+    the only thing that knows is the record the card was last asked for."""
+    index, pitch, issue = _linked(demo_root)
+    page = render_detail(index, ROUTES, only=pitch)
+    answer = run_js(
+        page, _LEFT_IN_FLIGHT % (json.dumps(issue), json.dumps(issue)),
+        page=True, replies=_answered(index, issue),
+    )
+    assert not [e for e in answer["errors"] if e.startswith("expression:")], answer["errors"]
+
+    assert answer["value"]["waiting"] is False, "the answer was there before the delay ran out"
+    assert answer["value"]["landed"] is True, "the answer never landed, so nothing was asked"
+    assert answer["value"]["hidden"] is True, "a card came up under a pointer that had left"
 
 
 # --------------------------------------------------------------------------- #
@@ -526,33 +901,13 @@ def test_a_box_answers_for_its_label_and_not_for_its_acres(index: Index, tmp_pat
     assert set(got["said"]) >= {"project", "pitch"}, (
         f"only {sorted(got['said'])} was asked, so the other kind of box is untested"
     )
-    # WHICH boxes answer is a fact about the ladder and not about this list.
-    # `carded` is a property on `Rung` in `model.py` — a product declares
-    # `carded: false`, because a card of one would be a title, a sentence and
-    # eight dashes, which teaches a reader that cards are not worth hovering
-    # for. The graph reads that same property (`CARDED` in `graph.py`), so this
-    # asserts the rule rather than a list of kinds that has to be edited every
-    # time a rung is added.
-    #
-    # Untestable until 2026-08-23: `carded: false` had no record in any corpus,
-    # so the one rung that declares it was never hovered and the branch that
-    # honours it was never reached. This test asserted "every box opens a card"
-    # and passed for four kinds that all happen to be carded.
+    # Every kind of box answers, a product included. A product had no card
+    # (`carded: false` on the ladder) while one opened on hover, because the
+    # pointer crossed it on the way to another node; the graph opens its card on
+    # a click since 2026-10-12, so the reason went and so did the field.
+    assert "product" in got["said"], "the corpus has no product box, so it is untested"
     for kind, answer in got["said"].items():
-        wanted = "a card" if RUNG[kind].carded else "nothing"
-        assert answer == wanted, (
-            f"a {kind}'s own title brought up {answer}, and the ladder says "
-            f"carded={RUNG[kind].carded}, so it should bring up {wanted}"
-        )
-    # And both halves of that rule were actually asked. A corpus with no
-    # uncarded box would pass the loop above without ever reaching the branch it
-    # was written for — which is exactly the state this suite was in yesterday.
-    carded = {kind for kind in got["said"] if RUNG[kind].carded}
-    assert carded, "no carded box was hovered, so 'a card comes up' is untested"
-    assert set(got["said"]) - carded, (
-        "no box of an uncarded kind is on this graph, so the rule that a hover "
-        "over one brings up nothing is untested"
-    )
+        assert answer == "a card", f"a {kind}'s own title brought up {answer}"
 
 
 # How many times the card's markup changes between the hover and the card being

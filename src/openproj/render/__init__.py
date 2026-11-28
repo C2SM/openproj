@@ -86,6 +86,7 @@ from .markdown import (
     _inlined_assets as inlined_assets,
 )
 from .pop import _POP_STYLE, _pop_js
+from .preview import card_preview
 from .records import render_records
 from .rows import _row
 from .shell import (
@@ -235,6 +236,7 @@ __all__ = [
     "people_of",
     "_timeline",
     "_yjs",
+    "card_preview",
     "hill_geometry",
     "icon_svg",
     "preview_html",

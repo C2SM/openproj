@@ -1736,7 +1736,6 @@ class Rung(NamedTuple):
     staffed: bool  # do people work on it directly
     depends: bool  # may it wait on anything
     sized: bool  # may it carry person_weeks
-    carded: bool  # does a hover show its shaping document
     planned: bool  # does it appear in the plan: table, graph, timeline, people, scheduler
     statuses: tuple[str, ...]  # the status vocabulary this kind reads; () means status is not read
     # The field that answers "who is behind this record". Per rung because the
@@ -1765,7 +1764,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=False,
         sized=False,
-        carded=False,
         planned=True,
         statuses=(),
         who="owner",
@@ -1780,7 +1778,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=True,
         sized=False,
-        carded=True,
         planned=True,
         statuses=STATUS_ORDER,
         who="owner",
@@ -1795,7 +1792,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=True,
         depends=True,
         sized=True,
-        carded=True,
         planned=True,
         statuses=STATUS_ORDER,
         who="owner",
@@ -1814,7 +1810,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=True,
         depends=True,
         sized=True,
-        carded=True,
         planned=True,
         statuses=STATUS_ORDER,
         who="owner",
@@ -1829,7 +1824,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=False,
         sized=False,
-        carded=False,
         planned=False,
         statuses=ISSUE_STATUS,
         who="reported_by",
@@ -1844,7 +1838,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=False,
         sized=False,
-        carded=False,
         planned=False,
         statuses=NOTE_STATUS,
         who="written_by",

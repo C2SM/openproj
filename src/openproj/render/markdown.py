@@ -761,11 +761,17 @@ def _link(self: RendererHTML, tokens: Sequence[Token], idx: int, options: object
     `_pr_link` does with a pull request nobody opened, and it is a broken link
     rather than a page that renders differently depending on which view you are
     in.
+
+    **And the id goes on the anchor as `data-record`**, which is what the record
+    page's card opens from. Read back out of the `href` it would mean knowing
+    each page's link prefix in the browser and spelling `ID_PATTERN` a second time
+    there.
     """
     token = tokens[idx]
     href = token.attrGet("href") or ""
     if ID_PATTERN.match(href):
         token.attrSet("href", env.get("links", STATIC).record + href)
+        token.attrSet("data-record", href)
     return self.renderToken(tokens, idx, options, env)
 
 
