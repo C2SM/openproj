@@ -6787,6 +6787,45 @@ def test_the_pitch_template_leaves_progress_to_its_tasks():
     assert "## For later" in TEMPLATES["pitch"]
 
 
+def test_a_record_closed_without_a_pr_says_so_in_its_facts():
+    """The PRs row of a done, waived record reads "Done without a PR" and not the
+    dash every empty field gets: the dash says a PR is missing, and this record
+    was closed with nothing merged on purpose. The three controls are the three
+    ways a waiver does not draw its words — a PR added since, no waiver at all,
+    and a waived record that went back to work."""
+    from openproj.model import Config, Task
+    from openproj.render import STATIC, _fact_rows
+
+    done = dict(kind="task", title="T", status="done", end_date=date(2026, 8, 14))
+    index = build_index(
+        [
+            Task(id="task-000001", prs_waived=True, **done),
+            Task(id="task-000002", prs_waived=True, prs=["kilnlab/kiln4py#1"], **done),
+            Task(id="task-000003", **done),
+            Task(
+                id="task-000004",
+                kind="task",
+                title="T",
+                status="in_progress",
+                start_date=date(2026, 8, 3),
+                prs_waived=True,
+            ),
+        ],
+        Config(),
+        date(2026, 8, 17),
+    )
+
+    def prs(record_id: str) -> str:
+        rows = _fact_rows(index, index.plan[record_id], STATIC)
+        return str(next(row["display"] for row in rows if row["label"] == "PRs"))
+
+    assert prs("task-000001") == "Done without a PR"
+    assert "kilnlab/kiln4py#1" in prs("task-000002")
+    assert "Done without a PR" not in prs("task-000002")
+    assert "Done without a PR" not in prs("task-000003")
+    assert "Done without a PR" not in prs("task-000004")
+
+
 def test_a_pitch_with_no_appetite_yet_is_not_accused_of_exceeding_it():
     """`_rollup_problems` says nothing where no bet was made, and the page has to
     agree: a number shouted in warning colour where `check` is silent teaches a

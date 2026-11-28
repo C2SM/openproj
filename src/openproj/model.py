@@ -2224,6 +2224,18 @@ _WORK_FIELDS = (
 )
 
 
+def closed_without_a_pr(record: Record) -> bool:
+    """Whether the PRs this record would draw are instead the waiver's words.
+
+    Done, waived and empty, all three. A waiver on a record that has since gained
+    a PR leaves it where it is and draws the PR, and a waived record that went
+    back to work is not done. The browser's copy is `closedWithoutPr` in the
+    shell, which the table and the card ask of a row this page may have just
+    written without a reload.
+    """
+    return record.status == "done" and record.prs_waived and not record.prs
+
+
 def unread_fields(kind: str) -> tuple[str, ...]:
     """The fields this rung does not read, off the ladder.
 

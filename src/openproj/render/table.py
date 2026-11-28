@@ -683,6 +683,8 @@ function shown(row, key) {
   // is what silently turned the PR column into plain text.
   if (key === 'title')
     return prMarkOf(row.id) + `<a href="{{ links.record }}${esc(row.id)}">${esc(row.title)}</a>`;
+  // A record closed without a PR says so, where a dash would say one is missing.
+  if (key === 'prs' && closedWithoutPr(row)) return esc(NO_PR_SAID);
   if (key === 'prs') return clamped((value || []).map(prLink), 'pull request', 'pull requests');
   // No kind chip here. `pitch-0c0001` already says pitch, in a prefix the model
   // guarantees agrees with the kind, so the chip was restating the first word of

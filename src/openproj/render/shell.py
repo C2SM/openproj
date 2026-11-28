@@ -32,6 +32,7 @@ from .tokens import (
     _NAV_KEYS,
     HUMAN,
     KINDS,
+    NO_PR_SAID,
     PRIORITY_LEVEL,
     RUNG_CHEVRON,
     RUNG_LIST_ID,
@@ -3345,6 +3346,16 @@ function placeFloat(box, x, y) {
 // itself, because "nothing was changed" is true of a cell and false of a form
 // that is still open holding the edit.
 const NO_PR_ASKED = 'No pull request is linked. Mark done anyway?';
+// And what such a record reads afterwards where its PRs would be drawn.
+const NO_PR_SAID = {{ no_pr_said|tojson }};
+
+// Whether a row's PRs are drawn as those words: done, waived and empty, all three.
+// `closed_without_a_pr` (`model.py`) is the server's copy, for the record page and
+// the slide; this one is asked of a row the page may have just written itself,
+// where a reload is the thing that has not happened.
+function closedWithoutPr(row) {
+  return !!row && row.status === 'done' && !!row.prs_waived && !(row.prs || []).length;
+}
 let NO_PR_BOX = null;
 let NO_PR_ANSWER = null;
 
@@ -3868,6 +3879,7 @@ function cardFact(row, name) {
     return value ? esc(cardTitleOf(value)) : null;
   }
   if (name === 'review_waived') return value ? 'Yes' : null;
+  if (name === 'prs' && closedWithoutPr(row)) return esc(NO_PR_SAID);
   if (Array.isArray(value)) return value.length ? esc(value.join(', ')) : null;
   if (value == null || value === '') return null;
   return esc(String(value));
@@ -6103,6 +6115,10 @@ def _page(
         # because five pages inventing their own capitalisation is how one status
         # came to be spelled three ways on one screen; a card is the fourth page.
         words=HUMAN,
+        # What a done record closed without a PR reads in the two places the
+        # browser draws its PRs — the card and the table's cell — off the same
+        # string the record page and the slide draw on the server.
+        no_pr_said=NO_PR_SAID,
         # The marks that go with those words, for the hover card: one map per
         # ladder, so a card says the rung the same way on all three views.
         # The priority meter as the server draws it, so a row the table draws

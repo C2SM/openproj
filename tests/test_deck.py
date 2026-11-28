@@ -533,6 +533,28 @@ def test_a_heading_the_bet_emptied_is_not_printed_over_blank_paper():
     assert "The plan lives here." in slide["doc"]
 
 
+def test_a_slide_closed_without_a_pr_says_so_where_its_prs_go():
+    """The room reads the slide's PR list as what the work produced, and an
+    empty one beside a done record reads as a PR nobody linked. A record closed
+    with nothing merged on purpose says so in that list's place; one that has
+    gained a PR since draws the PR."""
+    waived = _one(status="done", end_date=date(2026, 8, 14), prs_waived=True)
+    linked = _one(
+        id="task-d00002",
+        title="Another leaf",
+        status="done",
+        end_date=date(2026, 8, 14),
+        prs_waived=True,
+        prs=["kilnlab/kiln4py#1"],
+    )
+    slides = {slide["heading"]: slide for slide in _slides_on(_index_of(waived, linked))}
+
+    assert "Done without a PR" in slides["A leaf"]["said"], slides["A leaf"]["said"]
+    assert slides["A leaf"]["prs"] == [], "the words are not a link to anything"
+    assert "Done without a PR" not in slides["Another leaf"]["said"]
+    assert len(slides["Another leaf"]["prs"]) == 1, slides["Another leaf"]["prs"]
+
+
 def test_a_pull_request_on_a_slide_is_a_link_to_the_pull_request(deck: str):
     """A dead reference teaches people the field is decorative, and the deck is
     where the field is most read: the real one links a PR on nearly every slide.

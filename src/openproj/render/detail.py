@@ -15,6 +15,7 @@ from ..model import (
     Record,
     a_number,
     checklist,
+    closed_without_a_pr,
     sections,
     size_weeks,
     staffing_of,
@@ -43,6 +44,7 @@ from .tokens import (
     FIELD_TEACH,
     KINDS,
     LABELS,
+    NO_PR_SAID,
     PREFIX,
     STATUS_TEACH,
     STATUSES,
@@ -3458,7 +3460,14 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             # id is not an answer anybody can press.
             display = _link_lines(getattr(record, name), index, links) or empty
         elif name == "prs":
-            display = Markup(", ").join(_pr_link(ref, links) for ref in record.prs) or empty
+            # The waiver's words where a done record was closed with nothing
+            # merged, and not the dash: the dash says a PR is missing, and this
+            # record is not short of anything.
+            display = (
+                Markup("{}").format(NO_PR_SAID)
+                if closed_without_a_pr(record)
+                else Markup(", ").join(_pr_link(ref, links) for ref in record.prs) or empty
+            )
         elif name == "review_waived":
             display = Markup("waived") if record.review_waived else empty
         elif name == "status":

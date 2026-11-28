@@ -484,6 +484,15 @@ PREFIX = {rung.name: rung.prefix for rung in KIND_LADDER}
 # validator_s_own_and_not_a_second_copy` is what keeps it honest.
 REQUIRED_AT = required_at()
 
+# What a done record closed with `prs_waived` reads where its pull requests would
+# be drawn: the record page's facts, the table's PRs cell, the card and the slide.
+# Words rather than the dash every other empty field gets, because the record is
+# not short of anything: somebody said it was finished with nothing merged, and a
+# dash would make that look like a PR nobody linked. The two Python places read
+# this; the shell hands the same string to the two the browser draws
+# (`NO_PR_SAID`), so the words are written once.
+NO_PR_SAID = "Done without a PR"
+
 # The reader's name for a field. `appetite_weeks` and `effort_weeks` were two
 # storage fields holding one quantity, and calling it Effort here, Appetite on the
 # detail page and weeks in the table made it look like three different numbers

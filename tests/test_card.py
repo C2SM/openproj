@@ -164,6 +164,39 @@ def test_the_card_says_the_things_a_row_does_not(index: Index):
     )
 
 
+def test_a_record_closed_without_a_pr_says_so_on_the_card_and_in_the_table():
+    """The two places the browser draws a record's PRs — the card and the
+    table's PRs cell — draw "Done without a PR" for a done, waived record, off
+    the row the server sent and the words it sent with the shell. The control is
+    a waived record that has since gained a PR, which draws the PR."""
+    from openproj.model import Config, Task
+
+    done = dict(kind="task", status="done", end_date=date(2026, 8, 14), prs_waived=True)
+    index = build_index(
+        [
+            Task(id="task-000001", title="Decided", **done),
+            Task(id="task-000002", title="Merged after", prs=["kilnlab/kiln4py#1"], **done),
+        ],
+        Config(),
+        date(2026, 8, 17),
+    )
+    page = render_table(index, ROUTES, base_commit=HEAD, may_write=True)
+    drawn = run_js(
+        page,
+        "(() => { const on = id => DATA.rows[id];"
+        " return {card: cardFact(on('task-000001'), 'prs'), cell: shown(on('task-000001'), 'prs'),"
+        "         linkedCard: cardFact(on('task-000002'), 'prs'),"
+        "         linkedCell: shown(on('task-000002'), 'prs')}; })()",
+        page=True,
+    )["value"]
+
+    assert drawn["card"] == "Done without a PR"
+    assert drawn["cell"] == "Done without a PR"
+    assert "kilnlab/kiln4py#1" in drawn["linkedCard"]
+    assert "kilnlab/kiln4py#1" in drawn["linkedCell"]
+    assert "Done without a PR" not in drawn["linkedCard"] + drawn["linkedCell"]
+
+
 def test_the_document_is_fetched_on_hover_and_not_shipped_with_the_rows(index: Index):
     """Inlining every body into the table's payload puts the whole corpus in every
     page load to answer a question about the one row somebody is pointing at.
