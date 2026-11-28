@@ -11,16 +11,22 @@ pipes.
 
 from __future__ import annotations
 
+import base64
 import json
 import random
+from pathlib import Path
 
 import pygit2
 import pytest
+from browser import chrome, measured_in
 from fastapi.testclient import TestClient
+from test_coedit import _welcome, in_chrome_room, shown_body, stored
 from test_injection import run_js
 from test_store import commit_directly
-from test_web import SECRET, SEED, TASK
+from test_web import PATH, SECRET, SEED, TASK
 
+from openproj import coedit
+from openproj.model import split_front_matter
 from openproj.render.markdown import _MD
 from openproj.web import create_app
 
@@ -33,8 +39,22 @@ def page(tmp_path_factory: pytest.TempPathFactory) -> str:
     repo = tmp_path_factory.mktemp("tables") / "plan.git"
     pygit2.init_repository(str(repo), bare=True, initial_head="main")
     commit_directly(repo, SEED, "seed the corpus")
-    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as client:
-        return client.get(f"/detail/{TASK}?editor=plain").text
+    with TestClient(create_app(repo, auth="dev", secret=SECRET)) as served:
+        return served.get(f"/detail/{TASK}?editor=plain").text
+
+
+@pytest.fixture
+def plan(tmp_path: Path) -> Path:
+    repo = tmp_path / "plan.git"
+    pygit2.init_repository(str(repo), bare=True, initial_head="main")
+    commit_directly(repo, SEED, "seed the corpus")
+    return repo
+
+
+@pytest.fixture
+def client(plan: Path):
+    with TestClient(create_app(plan, auth="dev", secret=SECRET)) as served:
+        yield served
 
 
 def shipped(page: str, expression: str) -> object:
@@ -473,3 +493,247 @@ def test_the_caret_keeps_its_place_in_its_cell_when_the_table_is_aligned(page: s
         " return [now.slice(inCell - 6, inCell), now.slice(after, after + 4)]; })()",
     )
     assert got == ["cell o", "here"]
+
+
+# --------------------------------------------------------------------------- #
+# On an explicit save, and only then
+# --------------------------------------------------------------------------- #
+
+# A page with no server behind it: every PATCH is kept for the test and answered
+# as committed, the preview is answered, and the socket never opens — so the
+# save takes the PATCH path, which is the one that sends the body as the box
+# holds it.
+_NO_ROOM = """
+window.__errors = [];
+addEventListener('error', event => window.__errors.push(String(event.message)));
+window.__patches = [];
+const answered = value => new Response(JSON.stringify(value),
+  {status: 200, headers: {'content-type': 'application/json'}});
+window.fetch = async (url, init) => {
+  if (init && init.method === 'PATCH') {
+    window.__patches.push(JSON.parse(init.body).body);
+    return answered({commit: 'c'.repeat(40), outcome: 'committed'});
+  }
+  return answered({html: '<p data-startline="1">rendered</p>'});
+};
+function Unopened() { this.readyState = 0; }
+Unopened.OPEN = 1;
+Unopened.prototype.send = function () {};
+Unopened.prototype.close = function () {};
+window.WebSocket = Unopened;
+"""
+
+_SAVED = r"""
+const wait = ms => new Promise(go => setTimeout(go, ms));
+if (!document.querySelector('article.record.editing')) { flipEditing(); await wait(300); }
+const opened = SURFACE.text();
+// Typed, as a person's edit: through `splice` outside `apply`.
+SURFACE.splice(opened.length, opened.length, RAGGED);
+SURFACE.setCaret(SURFACE.text().indexOf('cell one') + 6);
+const typed = SURFACE.text();
+document.getElementById('save').focus();
+document.getElementById('save').click();
+await wait(300);
+const caret = SURFACE.caret().from;
+const clicked = {
+  sent: window.__patches[0] ?? null,
+  box: SURFACE.text(),
+  caret: SURFACE.text().slice(caret - 6, caret),
+  focus: document.activeElement.id,
+};
+historyOf(SURFACE).step('undo');
+await wait(100);
+const undone = SURFACE.text();
+// A row typed under the table, and Ctrl-S this time.
+SURFACE.splice(undone.length, undone.length, MORE);
+window.dispatchEvent(new KeyboardEvent('keydown',
+  {key: 's', ctrlKey: true, bubbles: true, cancelable: true}));
+await wait(300);
+return {opened, typed, clicked, undone, keyed: window.__patches[1] ?? null,
+        patches: window.__patches.length, errors: window.__errors};
+"""
+
+_RAGGED = "\n\n|a|b|\n|-|-|\n|cell one|x|\n"
+_ALIGNED = "\n\n| a        | b   |\n| -------- | --- |\n| cell one | x   |\n"
+_MORE = "|three|a much longer cell|\n"
+_GROWN = (
+    "\n\n| a        | b                  |\n"
+    "| -------- | ------------------ |\n"
+    "| cell one | x                  |\n"
+    "| three    | a much longer cell |\n"
+)
+
+
+def _with_stub(html: str, stub: str) -> str:
+    return html.replace('<link rel="icon"', f'<script>{stub}</script><link rel="icon"', 1)
+
+
+@pytest.mark.parametrize("editor", ["plain", "ace"])
+def test_save_aligns_the_tables_in_the_body(client: TestClient, tmp_path: Path, editor: str):
+    """The Save button and Ctrl-S both align before the body goes, on both
+    surfaces, as an edit: the caret stays in the cell it was in, the focus stays
+    on the button that was pressed, and one undo gives back the table as typed."""
+    html = client.get(f"/detail/{TASK}?editor={editor}").text
+    got = measured_in(
+        chrome(),
+        _with_stub(html, _NO_ROOM),
+        tmp_path / f"saved-{editor}.html",
+        1400,
+        _SAVED.replace("RAGGED", json.dumps(_RAGGED)).replace("MORE", json.dumps(_MORE)),
+        query=f"?editor={editor}",
+        patience=4000,
+    )
+    assert got["errors"] == [], got["errors"]
+    assert got["typed"] == got["opened"] + _RAGGED, "the ragged table never reached the box"
+    assert got["clicked"]["sent"] == got["opened"] + _ALIGNED, (
+        f"Save sent the table as typed: {got['clicked']['sent']!r}"
+    )
+    assert got["clicked"]["box"] == got["clicked"]["sent"]
+    assert got["clicked"]["caret"] == "cell o", "the caret left the cell it was typing in"
+    assert got["clicked"]["focus"] == "save", "aligning took the focus off the Save button"
+    assert got["undone"] == got["typed"], "one undo did not give back the table as typed"
+    assert got["keyed"] == got["opened"] + _GROWN, f"Ctrl-S did not align: {got['keyed']!r}"
+    assert got["patches"] == 2
+
+
+_IN_A_ROOM = r"""
+SURFACE.setCaret(SURFACE.text().indexOf('cell one') + 6);
+// Bob's sentence, in the paragraph above the table, before the press.
+window.__room.onmessage({data: JSON.stringify({t: 'update', u: REMOTE})});
+const before = window.__sent.length;
+await save();
+return {errors: window.__errors, sent: window.__sent, box: SURFACE.text(),
+        frames: window.__sent.slice(before).map(frame => frame.t)};
+"""
+
+# Long enough that a body replaced whole and a table replaced alone are far apart
+# in what the room credits to the person who pressed Save.
+_PROSE = "Intro line. " + "The seam shows up only with two ranks, and only at the drum. " * 5
+
+
+@pytest.mark.parametrize("editor", ["plain", "ace"])
+def test_the_alignment_reaches_the_room_as_splices_of_the_table_only(
+    client: TestClient, plan: Path, tmp_path: Path, editor: str
+):
+    """Somebody else is typing in the paragraph above while this tab saves.
+
+    The alignment goes up the socket as an edit of the table's lines and of
+    nothing else. Asked of a real `Room` two ways: what it credits to the tab
+    that saved, which is the table's characters and not the body's — a body
+    written back whole would credit the paragraph to whoever pressed Save — and
+    a second sentence of Bob's, made against the document before the alignment
+    arrived, which has to land where he typed it. Ace is the surface where this
+    can go wrong: it sends its own splices, where the textarea's are recovered
+    from a prefix and a suffix and come out minimal whatever the page did.
+    """
+    body = f"{_PROSE}\n\n|a|b|\n|-|-|\n|cell one|x|\n\nAfter.\n"
+    front, _ = split_front_matter(stored(plan))
+    commit_directly(plan, {**SEED, PATH: f"---\n{front}\n---\n\n{body}"}, "a ragged table")
+    shown = shown_body(client)
+    assert shown == body, "the page is not showing the body this test is about"
+
+    room = coedit.Room(TASK, PATH, "0" * 40, shown)
+    welcome = _welcome(room)
+    bob = coedit.Room(TASK, PATH, "0" * 40, shown)
+    above = bob.absorb(shown.replace("Intro line.", "Intro line, by bob."))
+    room.apply(above, "bob")
+    # Made before Bob's copy sees the alignment: concurrent with it.
+    below = bob.absorb(bob.body().replace("After.", "After, and more."))
+
+    answer = in_chrome_room(
+        client,
+        tmp_path / f"room-{editor}.html",
+        room,
+        welcome,
+        _IN_A_ROOM.replace("REMOTE", json.dumps(base64.b64encode(above).decode())),
+        editor=editor,
+    )
+    room.apply(below, "bob")
+
+    table = "| a        | b   |\n| -------- | --- |\n| cell one | x   |"
+    assert answer["frames"][-1] == "save" and "update" in answer["frames"], answer["frames"]
+    assert room.body() == body.replace("Intro line.", "Intro line, by bob.").replace(
+        "|a|b|\n|-|-|\n|cell one|x|", table
+    ).replace("After.", "After, and more."), f"the room holds {room.body()!r}"
+    assert room.typed.get("ann", 0) <= len(table), (
+        f"the room credits {room.typed.get('ann')} characters to the tab that saved, "
+        f"for a table of {len(table)}: the alignment went up as more than the table"
+    )
+
+
+def test_the_room_idle_commit_does_not_align(client: TestClient, plan: Path):
+    """The room commits twenty seconds after the last keystroke, and that commit
+    is the server's. Nothing in the page answers it by aligning: the box keeps
+    the table as typed, and nothing but the keystroke goes up the socket."""
+    body = "Intro.\n\n|a|b|\n|-|-|\n|cell one|x|\n"
+    front, _ = split_front_matter(stored(plan))
+    commit_directly(plan, {**SEED, PATH: f"---\n{front}\n---\n\n{body}"}, "a ragged table")
+    shown = shown_body(client)
+    page = client.get(f"/detail/{TASK}?editor=plain").text
+    room = coedit.Room(TASK, PATH, "0" * 40, shown)
+    typed = shown.replace("Intro.", "Intro, typed.")
+    quiet = {"t": "saved", "commit": "e" * 40, "outcome": "committed", "pushed": True}
+    answer = run_js(
+        page,
+        "(() => {"
+        "  flipEditing();"
+        "  __socket.opened();"
+        f" __socket.hear({json.dumps(_welcome(room))});"
+        "  if (!COEDIT.live()) return 'the room never came up';"
+        "  const box = document.querySelector('[name=body]');"
+        f" box.value = {json.dumps(typed)};"
+        "  box.dispatchEvent(new Event('input', {bubbles: true}));"
+        f" __socket.hear({json.dumps(quiet)});"
+        "  return {box: box.value, sent: __socket.sent()};"
+        "})()",
+        page=True,
+        socket=True,
+    )
+    assert not answer["errors"], answer["errors"]
+    assert answer["value"]["box"] == typed, "the room's own commit realigned the table"
+    for frame in answer["value"]["sent"]:
+        if frame["t"] == "update":
+            room.apply(base64.b64decode(frame["u"]), "ann")
+    assert room.body() == typed
+    assert "save" not in [frame["t"] for frame in answer["value"]["sent"]]
+
+
+_SAVED_AS_TYPED = """(async () => {
+  flipEditing();
+  const box = document.querySelector('[name=body]');
+  box.value = box.value + RAGGED;
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await save();
+  const control = document.getElementById('tablefmt');
+  const said = control.textContent;
+  // The shim's elements have no `click()`, and this is what one runs.
+  control.onclick();
+  return {said, then: control.textContent, sent: box.value};
+})()"""
+
+
+def test_format_tables_on_save_can_be_switched_off(page: str):
+    """Per person, beside the draft interval, on by default, and kept through
+    `remembered`: a page opened with it off saves the table as typed, its
+    control says so in words a reader can find, and pressing it turns it back on
+    for the next page as well as this one."""
+    expression = _SAVED_AS_TYPED.replace("RAGGED", json.dumps(_RAGGED))
+    answer = run_js(
+        page,
+        expression,
+        page=True,
+        storage={"openproj:editor:1": json.dumps({"tables": "off"})},
+        replies=[{"status": 200, "json": {"commit": "d" * 40, "outcome": "committed"}}],
+    )
+    assert answer["settled"], answer["errors"]
+    value = answer["value"]
+    patches = [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert len(patches) == 1, answer["calls"]
+    assert json.loads(patches[0]["body"])["body"] == value["sent"]
+    assert value["sent"].endswith(_RAGGED), "the table was aligned with the preference off"
+    assert value["said"] == "Format tables on save: off"
+    assert value["then"] == "Format tables on save: on"
+    assert json.loads(answer["stored"]["openproj:editor:1"])["tables"] == "on"
+
+    fresh = run_js(page, "document.getElementById('tablefmt').textContent", page=True)
+    assert fresh["value"] == "Format tables on save: on", "the default is not on"

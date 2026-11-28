@@ -626,5 +626,29 @@ function tableEdit(text, at, op) {
     run: {from: here.start, to: here.end, put},
   };
 }
+
+// An explicit save — the Save button and Ctrl-S / ⌘S, which both call `save()`
+// — aligns every top-level table first, when this person has not switched it
+// off. Never the room's quiet commit: that is the server's, twenty seconds after
+// the last keystroke, and realigning a table under somebody still typing in it
+// is exactly what this must not do. Never the server either: a commit that
+// rewrote the body would move text under co-editors' cursors and reformat files
+// people edit in git.
+//
+// One splice per table that changes, over the lines that change, so a room
+// hears a few lines of the table and not a new body: whoever is typing in the
+// paragraph above keeps their place and their authorship. The focus goes back
+// where it was — a splice is a person's edit and focuses the box, and pressing
+// Save is not asking to be put back in the document.
+function alignForSave(surface) {
+  if (EDITOR.tables !== 'on') return;
+  const runs = alignedRuns(surface.text());
+  if (!runs.length) return;
+  const was = document.activeElement;
+  spliceTables(surface, runs);
+  if (was && was !== document.activeElement && !surface.el.contains(was) && was.focus) {
+    was.focus();
+  }
+}
 </script>
 """)

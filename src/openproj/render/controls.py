@@ -1450,6 +1450,10 @@ const INDENT_WIDTHS = [2, 4, 8];
 // draft this browser is holding. An interval coarser than it would let somebody
 // set their own floor below the thing that catches them.
 const DRAFT_SECONDS = [1, 2, 5, 10, 20];
+// Whether an explicit save aligns the body's tables first (`alignForSave` in
+// `tables.py`). Words and not a boolean, because the status strip draws the
+// value as it is and `Format tables on save: true` is not a sentence.
+const TABLE_FORMATS = ['on', 'off'];
 // How lopsided the split view may be remembered as being: the writing box over
 // the preview, which is what `--split` is in `fr`. Every other value here is one
 // of a list and `one()` checks it; this is a ratio, so it gets its own guard and
@@ -1518,6 +1522,9 @@ const EDITOR = (() => {
     mode: one(held.mode === 'view' ? 'edit' : held.mode, ['edit', 'both'], 'edit'),
     indent: one(held.indent, INDENT_WIDTHS, 2),
     autosave: one(held.autosave, DRAFT_SECONDS, 2),
+    // On unless switched off — the spec's default, and a stored map from before
+    // this has no `tables` and gets it, as it does `split`.
+    tables: one(held.tables, TABLE_FORMATS, 'on'),
     // Added to this key rather than bumping it to `openproj:editor:2`. A bump
     // says "the SHAPE changed and the old value cannot be read"; every field
     // here is read one at a time against its own fallback, so a stored map from
@@ -1544,7 +1551,7 @@ const EDITOR = (() => {
 // What is written down, named rather than "whatever is on the object": the
 // object also carries things that are true of this load and not of this browser,
 // and a preference store that quietly grows a field is one nothing forgets.
-const EDITOR_KEPT = ['mode', 'indent', 'autosave', 'keymap', 'split'];
+const EDITOR_KEPT = ['mode', 'indent', 'autosave', 'keymap', 'split', 'tables'];
 
 function rememberEditor(change) {
   Object.assign(EDITOR, change);

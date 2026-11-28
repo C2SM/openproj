@@ -1746,6 +1746,8 @@ _DETAIL = """
           and this is where the settings are. -#}
       <p class="field bodybar statusbar" id="statusbar">
         {% if not creating %}<button type="button" id="draftevery"></button>{% endif %}
+        {#- On the create form too: its Save aligns the tables it creates with. -#}
+        <button type="button" id="tablefmt"></button>
       </p>
       {#- No draft and no 409-with-a-report on a create; a refused create lands
           in `#problems` above. -#}
@@ -2801,7 +2803,7 @@ async function save() {
   // a record that does not exist yet is POSTed whole. The branch is the entire
   // difference between the two modes' write paths — everything around it,
   // Cmd+S included, is shared.
-  if (CREATING) { await createRecord(); return; }
+  if (CREATING) { alignForSave(SURFACE); await createRecord(); return; }
   let fields;
   try {
     fields = changed();
@@ -2815,6 +2817,12 @@ async function save() {
   // the surface nobody uses, which is exactly how a start date typed into the
   // past came to be refused by one door and committed by the other.
   if (stillNeeded(fields)) return;
+  // The tables, aligned as an edit this person made, before either write path
+  // reads the body: in a room the splices go up the socket ahead of the save
+  // frame, and without one the PATCH sends what the box now holds. After the
+  // check above and not before it, so a save that stops there has not edited
+  // the document either.
+  alignForSave(SURFACE);
   // While a room is live the body is not this tab's to send: it is the room's,
   // and Save is one commit made over the socket against the room's base, with
   // the fields from this form. Sending both down this path would be two commits
@@ -3185,6 +3193,15 @@ if (!CREATING) {
                         + 'Nothing is committed on a timer.');
              });
 }
+
+// Beside the draft interval, on both pages.
+statusPick(document.getElementById('tablefmt'), 'Format tables on save', TABLE_FORMATS,
+           EDITOR.tables, chosen => {
+             rememberEditor({tables: chosen});
+             announce(chosen === 'on'
+               ? 'Save aligns the tables in this document first.'
+               : 'Save leaves the tables in this document as they are typed.');
+           });
 
 // No restore on the create page: with no stored record there is no id, and a
 // draft key built from an empty id would be every create page's at once. The
