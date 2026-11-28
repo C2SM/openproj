@@ -410,23 +410,37 @@ def pressed_in(
             f"`at` must answer [x, y] in viewport coordinates; it answered {where!r}"
         )
         x, y = where
-        for kind in ("mousePressed", "mouseReleased"):
-            call(
-                "Input.dispatchMouseEvent",
-                {
-                    "type": kind,
-                    "x": x,
-                    "y": y,
-                    "button": button,
-                    "clickCount": 1,
-                    # The mask says which buttons are held, so the release holds
-                    # none whichever button was pressed.
-                    "buttons": PRESSES[button] if kind == "mousePressed" else 0,
-                },
-            )
-            time.sleep(0.1)
+        press(call, x, y, button)
         time.sleep(settle)
         return _evaluated(call, then), said
+
+
+def press(call, x: float, y: float, button: str = "left", modifiers: int = 0) -> None:
+    """One trusted press and its release at a viewport point, through DevTools.
+
+    `modifiers` is CDP's mask — Alt 1, Ctrl 2, Meta 4, Shift 8 — which is how a
+    test asks about Shift+right-click, the one press that must reach the
+    browser's own menu.
+    """
+    import time
+
+    assert button in PRESSES, f"`button` must be one of {sorted(PRESSES)}; it was {button!r}"
+    for kind in ("mousePressed", "mouseReleased"):
+        call(
+            "Input.dispatchMouseEvent",
+            {
+                "type": kind,
+                "x": x,
+                "y": y,
+                "button": button,
+                "clickCount": 1,
+                # The mask says which buttons are held, so the release holds
+                # none whichever button was pressed.
+                "buttons": PRESSES[button] if kind == "mousePressed" else 0,
+                "modifiers": modifiers,
+            },
+        )
+        time.sleep(0.1)
 
 
 def in_a_live_page(
