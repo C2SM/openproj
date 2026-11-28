@@ -3228,7 +3228,8 @@ def create_app(
         already in their rows; a link in a body is drawn on a page that has no
         row for what it names, so it is asked for here, beside the document. Asked
         rather than embedded in the record page, because the preview
-        pane's links change as somebody types.
+        pane's links change as somebody types. Built for every request, the
+        table's hover included, so the route has one answer shape.
         """
         _, index, links = plan_now()
         record = index.records.get(record_id)

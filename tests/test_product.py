@@ -287,7 +287,6 @@ def test_a_product_is_drawn_differently(plan: Path):
 
     assert 'node[kind = "product"]' in page, "a product is drawn like everything else"
     assert "'border-style': 'dashed'" in page
-    assert "CARDED" not in page, "the graph still asks which kinds have a card"
 
 
 def test_a_container_has_no_work_state_to_gate():

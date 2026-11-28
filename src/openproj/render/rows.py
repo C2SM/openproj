@@ -246,11 +246,7 @@ def _row(index: Index, record_id: str) -> dict:
     record = index.plan[record_id]
     span = index.spans.get(record_id)
     row = card_head(index, record) | card_fields(index, record, PLANNED_FACTS)
-    # What this rung does not read is not on its row. The model defaults `status`
-    # to `shaping` and `priority` to `medium` for every record, so a product —
-    # which has neither — arrived at the table as a shaping, medium-priority
-    # record and was drawn with both chips. `unread_fields` is the same list the
-    # validator reports from and the editors decline to offer.
+    # What this rung does not read is not on its row (`card_head` says why)
     unread = unread_fields(record.kind)
     # Whether this rung is work at all, as against a grouping something is filed
     # under. `unread_fields` answers per FIELD and neither of the two things this
@@ -277,14 +273,12 @@ def _row(index: Index, record_id: str) -> dict:
     # says it started, and a `ready` date that clears the floor survives too.
     # What a reader needs to know is whether the date in front of them is one
     # somebody chose, and that is what this compares.
-    typed = {
-        column: read(field, getattr(record, field))
-        for column, field in (("start", "start_date"), ("end", "end_date"))
-    }
+    # Every rung the scheduler dates reads both dates, so the stated date on the
+    # row is the one `read` would have passed.
     stated = [
         column
-        for column, day in typed.items()
-        if row[column] is not None and day is not None and row[column] == day.isoformat()
+        for column in ("start", "end")
+        if row[column] is not None and row[column] == row[f"{column}_date"]
     ]
 
     return row | {

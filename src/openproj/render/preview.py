@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from functools import cache
 
-from ..index import Index
+from ..index import Index, _title_of
 from ..model import KINDS, RUNG, Record, size_weeks, unread_fields
 from .tokens import card_facts
 
@@ -76,13 +76,11 @@ def card_fields(index: Index, record: Record, names: tuple[str, ...]) -> dict:
         if name == "person_weeks":
             fields["size"] = read(name, size_weeks(record))
         elif name in ("start_date", "end_date"):
-            stated = read(name, getattr(record, name))
-            if span is None:
-                drawn = stated
-            else:
-                drawn = span.start if name == "start_date" else span.end
-            fields["start" if name == "start_date" else "end"] = _iso(drawn)
-            fields[name] = _iso(getattr(record, name))
+            column = name.removesuffix("_date")
+            stated = getattr(record, name)
+            drawn = getattr(span, column) if span else read(name, stated)
+            fields[column] = _iso(drawn)
+            fields[name] = _iso(stated)
         elif name == "depends_on":
             # Looked up in `records`, never `plan`: `blocked_by` is total over
             # records, so a planned task whose hand-written `depends_on` names an
@@ -114,6 +112,11 @@ def card_head(index: Index, record: Record) -> dict:
     record it is the written status. A ladder the kind does not read is None, so a
     product draws no status and no priority chip.
     """
+    # The model defaults `status` to `shaping` and `priority` to `medium` for
+    # every record, so a product, which has neither, arrived at the table as a
+    # shaping, medium-priority record and was drawn with both chips.
+    # `unread_fields` is the same list the validator reports from and the editors
+    # decline to offer.
     unread = unread_fields(record.kind)
     counted = index.progress.get(record.id)
     # Counted only for a rung that is work: "42% done" beside a codebase is a
@@ -143,11 +146,11 @@ def card_preview(index: Index, record_id: str) -> dict:
     """
     record = index.records[record_id]
     preview = card_head(index, record) | card_fields(index, record, fact_names(record.kind))
-    named: list[str] = []
+    titles: dict[str, str] = {}
     for name in _NAMING:
         value = preview.get(name)
-        named += value if isinstance(value, list) else [value] if value else []
-    preview["titles"] = {
-        other: index.records[other].title or other for other in named if other in index.records
-    }
+        for other in value if isinstance(value, list) else [value]:
+            if other in index.records:
+                titles[other] = _title_of(index.records, other) or other
+    preview["titles"] = titles
     return preview
