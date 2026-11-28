@@ -2972,6 +2972,44 @@ def test_a_link_to_the_split_view_opens_in_the_split_view(client: TestClient, tm
     assert not plain["editing"], "no link, and the page opened a session anyway"
 
 
+# The view the page opened in, then Preview pressed, then what was written down.
+_LANDED_THEN_READ = (
+    _DEEP_LINK.replace("return {", "const opened = {", 1)
+    + """
+document.getElementById('preview').click();
+let stored = null;
+try { stored = JSON.parse(localStorage.getItem('openproj:editor:1')).lands; } catch (e) {}
+return {...opened, stored};
+"""
+)
+
+
+def test_a_record_opens_in_the_view_the_last_one_was_left_in(
+    client: TestClient, tmp_path: Path
+):
+    """jcanton, 2026-11-28: every record reset to preview, "going back to reading
+    mode is just one click/shortcut away". The last segment pressed is what the
+    next record opens in, preview included, and a link still beats it."""
+    page = client.get(f"/detail/{TASK}").text
+    split = _before_the_page_runs(page, _SEED % json.dumps({"lands": "both"}))
+
+    got = measured_in(chrome(), split, tmp_path / "split.html", 1400, _LANDED_THEN_READ)
+    assert got["classes"] == ["view-both"] and got["pressed"] == ["view-both"], got
+    assert got["editing"], "the remembered split did not open a session"
+    assert got["stored"] == "view", "pressing Preview was not remembered for the next record"
+
+    linked = measured_in(chrome(), split, tmp_path / "linked.html", 1400, _DEEP_LINK,
+                         query="?view=")
+    assert linked["classes"] == ["view-view"] and not linked["editing"], (
+        "a link to the read view lost to the stored preference"
+    )
+
+    narrow = measured_in(chrome(), split, tmp_path / "phone.html", 390, _DEEP_LINK)
+    assert narrow["classes"] == ["view-view"] and not narrow["editing"], (
+        "a phone opened every record in Write over the whole window"
+    )
+
+
 # The socket, counted and timestamped: `bodyAtConnect` is what the surface held
 # at the instant the room was joined, which is the fact the restore-before-
 # connect ordering is pinned by.
