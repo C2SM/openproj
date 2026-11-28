@@ -1101,9 +1101,9 @@ def render_slide_editor(
         # `![figure](assets/…){width=60}` something somebody can produce here
         # rather than only type.
         + (_combobox_html(index) if editable else Markup(""))
-        # And the Table button's half of `tables.py`, which the toolbar above
-        # calls into when it draws that button. Only the button: this page's Save
-        # is its own and does not align.
+        # And `tables.py`, which the toolbar above calls into when it draws the
+        # Table button, so the button inserts and edits tables here as it does on
+        # the record page. This page's own Save does not call `alignForSave`.
         + (_TABLES if editable else Markup(""))
         + _fragment(
             _SLIDE_SCRIPT,

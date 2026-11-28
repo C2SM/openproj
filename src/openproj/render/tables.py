@@ -9,10 +9,11 @@ from markupsafe import Markup
 # A block of its own and not a part of `_COMBOBOX`, on the argument `_ACE_SURFACE`
 # makes in `editor.py`: `_COMBOBOX` is emitted on the table and the cycle page as
 # well, and neither has a body to hold a table. So this goes out with the toolbar
-# that can reach it — the record page and the create form, when they are
-# editable — and nowhere else. Nothing here runs at load: `FORMATS`'s Table
-# entry and `save()` call into it when they are pressed, so its place among the
-# page's scripts does not matter.
+# that can reach it — on every page that draws `#marks`, which is the record page,
+# the create form and the slide editor, when they are editable.
+# `test_every_page_with_a_toolbar_carries_the_table_button` holds that list to the
+# pages. Nothing here runs at load: `FORMATS`'s Table entry and `save()` call into
+# it when they are pressed, so its place among the page's scripts does not matter.
 _TABLES = Markup(r"""
 <script>
 // --- tables in the body, found the way the renderer finds them ---------------
@@ -45,6 +46,38 @@ _TABLES = Markup(r"""
 // edit this produces is whole lines: a splice that starts and ends at a line
 // boundary cannot land inside a surrogate pair, which is the defect this
 // repository has already shipped twice.
+
+// The whitespace Python's `str.strip()` strips, which is what markdown-it-py
+// trims a row and a cell with. Not JavaScript's `trim()`: that one also strips
+// U+FEFF and leaves U+001C-U+001F and U+0085, so a byte-order mark before a row
+// made a table of what the renderer draws as a paragraph.
+const TABLE_HEAD_WS = /^[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+const TABLE_TAIL_WS = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/;
+
+function stripStart(text) { return text.replace(TABLE_HEAD_WS, ''); }
+function stripped(text) { return stripStart(text).replace(TABLE_TAIL_WS, ''); }
+
+// The text as lines, each with where it starts and the line ending after it.
+// markdown-it reads `\r\n` and a lone `\r` as `\n`, and so does this: a body
+// pasted from Windows into a surface that kept its endings is the same document
+// to both, and an edit written back uses the endings the table already had.
+function tableModel(text) {
+  const lines = [];
+  const starts = [];
+  const breaks = [];
+  const ending = /\r\n|\r|\n/g;
+  let from = 0;
+  for (let found; (found = ending.exec(text));) {
+    lines.push(text.slice(from, found.index));
+    starts.push(from);
+    breaks.push(found[0]);
+    from = found.index + found[0].length;
+  }
+  lines.push(text.slice(from));
+  starts.push(from);
+  breaks.push('');
+  return {lines, starts, breaks};
+}
 
 // Spaces and tabs only, which is what markdown-it counts as indentation, with a
 // tab to the next multiple of four.
@@ -83,9 +116,6 @@ function closesFence(lead, fence) {
   return at >= fence.length && /^[ \t]*$/.test(lead.rest.slice(at));
 }
 
-// `context` is whose terminator this is asked for, because markdown-it's list
-// rule answers differently inside a paragraph: there an empty item, or an
-// ordered one not numbered 1, cannot interrupt.
 function itemOf(lead) {
   if (lead.col >= 4) return null;
   const found = TABLE_ITEM.exec(lead.rest);
@@ -97,6 +127,9 @@ function itemOf(lead) {
   };
 }
 
+// `context` is whose terminator this is asked for, because markdown-it's list
+// rule answers differently inside a paragraph: there an empty item, or an
+// ordered one not numbered 1, cannot interrupt.
 function endsABlock(lead, context) {
   if (lead.blank || lead.col >= 4) return false;
   if (fenceOf(lead) || lead.rest[0] === '>' || TABLE_HR.test(lead.rest)) return true;
@@ -130,15 +163,18 @@ function tableCells(text) {
 // The trimmed row and where it starts in its line.
 function tableRow(line) {
   const lead = tableLead(line);
-  const text = lead.rest.trim();
-  return {text, at: lead.at + (lead.rest.length - lead.rest.trimStart().length)};
+  return {text: stripped(lead.rest), at: lead.at + lead.rest.length - stripStart(lead.rest).length};
 }
 
-// Whether line `i` opens a table: markdown-it's `table` rule up to the point it
-// pushes a token. Answers the delimiter row's alignments, one per column.
+// Where the text of one cell starts in its row, and the text itself.
+function cellSpan(text, cell) {
+  const raw = text.slice(cell.from, cell.to);
+  return {opens: cell.from + raw.length - stripStart(raw).length, said: stripped(raw)};
+}
+
 // The alignments a delimiter row says, one per column, or `null` when the line
 // is not one. Asked of the second line of a table — and of the first line this
-// writes, see `tableLines`.
+// writes, see `tableRewritable`.
 function delimiterOf(rule) {
   if (rule.length < 2 || !'|-:'.includes(rule[0])) return null;
   if (!'|-: \t'.includes(rule[1])) return null;
@@ -150,7 +186,7 @@ function delimiterOf(rule) {
   const pieces = rule.split('|');
   const aligns = [];
   for (let k = 0; k < pieces.length; k++) {
-    const piece = pieces[k].trim();
+    const piece = stripped(pieces[k]);
     if (!piece) {
       if (k === 0 || k === pieces.length - 1) continue;
       return null;
@@ -171,7 +207,7 @@ function tableHead(lines, i) {
   if (head.col >= 4 || under.col >= 4) return null;
   const aligns = delimiterOf(under.rest);
   if (!aligns) return null;
-  const text = head.rest.trim();
+  const text = stripped(head.rest);
   if (!text.includes('|')) return null;
   const count = tableCells(text).length;
   return count && count === aligns.length ? aligns : null;
@@ -189,15 +225,28 @@ function tableEnd(lines, i) {
   return j;
 }
 
-// `$$` opens a display equation (`dollarmath_plugin`) only if it closes before a
-// blank line; one that does not is a paragraph that starts with two dollars.
+// Indented code runs over blank lines and ends after its last indented line.
+function codeEnd(lines, i) {
+  let j = i + 1;
+  let last = j;
+  while (j < lines.length) {
+    const lead = tableLead(lines[j]);
+    if (lead.blank) { j++; continue; }
+    if (lead.col < 4) break;
+    last = ++j;
+  }
+  return last;
+}
+
+// `$$` opens display maths (`dollarmath_plugin`) that runs to the next line
+// ending in `$$`, blank lines and all: `_MD` leaves `allow_blank_lines` at its
+// default, which is on. `$$` that never closes is not maths, and the line is
+// read as the rest of this scan would read it.
 function mathEnd(lines, i) {
-  const first = tableLead(lines[i]).rest.trim();
+  const first = stripped(tableLead(lines[i]).rest);
   if (first.length > 3 && first.endsWith('$$')) return i + 1;
   for (let j = i + 1; j < lines.length; j++) {
-    const said = tableLead(lines[j]).rest.trim();
-    if (said.endsWith('$$')) return j + 1;
-    if (!said) return null;
+    if (stripped(tableLead(lines[j]).rest).endsWith('$$')) return j + 1;
   }
   return null;
 }
@@ -275,8 +324,7 @@ function paragraphEnd(lines, i) {
 // Every top-level table, as `{first, last, aligns}` in lines, `last` exclusive.
 // markdown-it's block order at the top level: table, code, math, fence,
 // blockquote, rule, list, heading, paragraph. `html` is off in `_MD`, so there
-// is no HTML block, and a reference definition is a paragraph as far as a table
-// is concerned, because a table interrupts both.
+// is no HTML block.
 function topTables(lines) {
   const found = [];
   let i = 0;
@@ -290,18 +338,7 @@ function topTables(lines) {
       i = last;
       continue;
     }
-    if (lead.col >= 4) {
-      let j = i + 1;
-      let last = j;
-      while (j < lines.length) {
-        const next = tableLead(lines[j]);
-        if (next.blank) { j++; continue; }
-        if (next.col < 4) break;
-        last = ++j;
-      }
-      i = last;
-      continue;
-    }
+    if (lead.col >= 4) { i = codeEnd(lines, i); continue; }
     if (lead.rest.startsWith('$$')) {
       const last = mathEnd(lines, i);
       if (last !== null) { i = last; continue; }
@@ -353,13 +390,12 @@ function tableWidth(text) {
     TABLE_SEGMENTER = typeof Intl !== 'undefined' && Intl.Segmenter
       ? new Intl.Segmenter(undefined, {granularity: 'grapheme'}) : false;
   }
-  const parts = TABLE_SEGMENTER
-    ? Array.from(TABLE_SEGMENTER.segment(text), part => part.segment) : Array.from(text);
   let width = 0;
-  for (const part of parts) {
+  for (const one of TABLE_SEGMENTER ? TABLE_SEGMENTER.segment(text) : text) {
+    const part = typeof one === 'string' ? one : one.segment;
     const point = part.codePointAt(0);
     if (/^[\p{Mn}\p{Me}\p{Cf}]/u.test(part)) continue;
-    if (part.includes('️') || /^\p{Emoji_Presentation}/u.test(part)
+    if (part.includes('\ufe0f') || /^\p{Emoji_Presentation}/u.test(part)
         || TABLE_WIDE.some(([low, high]) => point >= low && point <= high)) {
       width += 2;
     } else {
@@ -371,44 +407,51 @@ function tableWidth(text) {
 
 // --- a table, written out aligned -----------------------------------------
 
+// A short row is given empty cells up to the header's count, because the
+// renderer draws them anyway; a long row keeps every cell it has, because a
+// formatter never drops text — the renderer drops the extras, and that is for
+// the writer to see and decide about.
+function padded(cells, count) {
+  return cells.length >= count ? cells : cells.concat(Array(count - cells.length).fill(''));
+}
+
 // The cells of every line of one table, as they are typed — escapes kept, so a
-// `\|` is still one cell when it is written back.
+// `\|` is still one cell when it is written back — and every row padded.
 function tableMatrix(lines, table) {
   const row = line => {
     const {text} = tableRow(line);
-    return tableCells(text).map(cell => text.slice(cell.from, cell.to).trim());
+    return tableCells(text).map(cell => cellSpan(text, cell).said);
   };
+  const head = row(lines[table.first]);
   return {
-    head: row(lines[table.first]),
+    head,
     aligns: table.aligns.slice(),
-    body: lines.slice(table.first + 2, table.last).map(row),
+    body: lines.slice(table.first + 2, table.last).map(line => padded(row(line), head.length)),
   };
 }
 
 // The lines of a table: every column as wide as its widest cell and never
 // narrower than `---`, one space inside every pipe, a pipe at both ends, each
-// cell placed as its column's delimiter says. A short row is given empty cells
-// up to the header's count, because the renderer draws them anyway; a long row
-// keeps every cell it has, because a formatter never drops text — the renderer
-// drops the extras, and that is for the writer to see and decide about.
+// cell placed as its column's delimiter says.
 function tableLines(matrix) {
-  const count = matrix.head.length;
-  const rows = matrix.body.map(cells =>
-    cells.length >= count ? cells : cells.concat(Array(count - cells.length).fill('')));
+  const rows = [matrix.head, ...matrix.body];
+  const measured = rows.map(cells => cells.map(tableWidth));
   const widths = [];
-  for (const cells of [matrix.head, ...rows]) {
-    cells.forEach((cell, k) => { widths[k] = Math.max(widths[k] || 3, tableWidth(cell)); });
+  for (const row of measured) {
+    row.forEach((width, k) => { widths[k] = Math.max(widths[k] || 3, width); });
   }
-  const placed = (cell, k) => {
-    const gap = widths[k] - tableWidth(cell);
-    const align = matrix.aligns[k] || '';
-    if (align === 'right') return ' '.repeat(gap) + cell;
-    if (align === 'center') {
-      return ' '.repeat(Math.floor(gap / 2)) + cell + ' '.repeat(Math.ceil(gap / 2));
-    }
-    return cell + ' '.repeat(gap);
+  const line = (cells, r) => {
+    const placed = cells.map((cell, k) => {
+      const gap = widths[k] - measured[r][k];
+      const align = matrix.aligns[k] || '';
+      if (align === 'right') return ' '.repeat(gap) + cell;
+      if (align === 'center') {
+        return ' '.repeat(Math.floor(gap / 2)) + cell + ' '.repeat(Math.ceil(gap / 2));
+      }
+      return cell + ' '.repeat(gap);
+    });
+    return `| ${placed.join(' | ')} |`;
   };
-  const line = cells => `| ${cells.map(placed).join(' | ')} |`;
   const rule = matrix.aligns.map((align, k) => {
     const width = widths[k];
     if (align === 'center') return ':' + '-'.repeat(width - 2) + ':';
@@ -416,32 +459,8 @@ function tableLines(matrix) {
     if (align === 'left') return ':' + '-'.repeat(width - 1);
     return '-'.repeat(width);
   });
-  return [line(matrix.head), `| ${rule.join(' | ')} |`, ...rows.map(line)];
-}
-
-// Where in `lines` each line starts, in code units.
-function tableLineStarts(lines) {
-  const starts = [];
-  let at = 0;
-  for (const line of lines) { starts.push(at); at += line.length + 1; }
-  return starts;
-}
-
-// One run per table that changes: the lines from the first that differs to the
-// last that does, as `{from, to, put}` in code units over `text`. Lines that
-// are already aligned are not in a run, so somebody typing on one of them is
-// not written over.
-function tableRun(lines, starts, first, now) {
-  let a = 0;
-  while (a < now.length && now[a] === lines[first + a]) a++;
-  if (a === now.length) return null;
-  let b = now.length - 1;
-  while (b > a && now[b] === lines[first + b]) b--;
-  return {
-    from: starts[first + a],
-    to: starts[first + b] + lines[first + b].length,
-    put: now.slice(a, b + 1).join('\n'),
-  };
+  const written = rows.map(line);
+  return [written[0], `| ${rule.join(' | ')} |`, ...written.slice(1)];
 }
 
 // **A header made of dashes is left as typed.** `- | -` under a paragraph is a
@@ -454,120 +473,137 @@ function tableRewritable(now) {
   return delimiterOf(now[0]) === null;
 }
 
-function alignedRuns(text) {
-  const lines = text.split('\n');
-  const starts = tableLineStarts(lines);
-  return topTables(lines)
+// One run per table that changes: the lines from the first that differs to the
+// last that does, as `{from, to, put}` in code units, with the line the run
+// starts on, the lines it writes and what it joins them with. Lines that are
+// already aligned are not in a run, so somebody typing on one of them is not
+// written over.
+function tableRun(model, table, now) {
+  const {lines, starts} = model;
+  const first = table.first;
+  let a = 0;
+  while (a < now.length && now[a] === lines[first + a]) a++;
+  if (a === now.length) return null;
+  let b = now.length - 1;
+  while (b > a && now[b] === lines[first + b]) b--;
+  const join = model.breaks[first] || '\n';
+  return {
+    from: starts[first + a],
+    to: starts[first + b] + lines[first + b].length,
+    first: first + a,
+    lines: now.slice(a, b + 1),
+    join,
+    put: now.slice(a, b + 1).join(join),
+  };
+}
+
+function alignedRuns(model) {
+  return topTables(model.lines)
     .map(table => {
-      const now = tableLines(tableMatrix(lines, table));
-      return tableRewritable(now) ? tableRun(lines, starts, table.first, now) : null;
+      const now = tableLines(tableMatrix(model.lines, table));
+      return tableRewritable(now) ? tableRun(model, table, now) : null;
     })
     .filter(Boolean);
 }
 
-function withRuns(text, runs) {
-  let out = text;
-  for (const run of [...runs].reverse()) out = out.slice(0, run.from) + run.put + out.slice(run.to);
-  return out;
-}
-
-// Every top-level table in `text`, aligned. The same string, `===`, when there
-// is nothing to align — a body with nothing to do gets no edit at all.
-function alignTables(text) {
-  const runs = alignedRuns(text);
-  return runs.length ? withRuns(text, runs) : text;
-}
-
 // --- the caret, across an edit it did not make ----------------------------
 
-// Which cell of a table line an offset into it is in, and how far into the
-// cell's text. A caret on a pipe belongs to the cell before it, which is the
-// one it has just finished typing.
+// Where a caret is in a table line: in which cell and how far into its text, or
+// outside the cells altogether — before the opening pipe or after the closing
+// one — which is `edge`. A caret on a pipe belongs to the cell before it, which
+// is the one it has just finished typing; a caret after the closing pipe stays
+// after it, or "type a row, save, Enter" splits the row it was typing.
 function tableCellAt(line, at) {
   const {text, at: start} = tableRow(line);
   const cells = tableCells(text);
-  if (!cells.length) return {column: 0, into: 0};
   const here = at - start;
-  let column = cells.findIndex(cell => here <= cell.to);
-  if (column === -1) column = cells.length - 1;
-  const cell = cells[column];
-  const raw = text.slice(cell.from, cell.to);
-  const opens = cell.from + raw.length - raw.trimStart().length;
-  return {column, into: Math.max(0, Math.min(here - opens, raw.trim().length))};
+  if (!cells.length) return {column: 0, into: 0, edge: here > 0 ? 'end' : 'start'};
+  const last = cells[cells.length - 1];
+  if (here < 0 || here < cells[0].from) return {column: 0, into: 0, edge: 'start'};
+  if (here > last.to || here > text.length) return {column: cells.length - 1, into: 0, edge: 'end'};
+  const column = cells.findIndex(cell => here <= cell.to);
+  const {opens, said} = cellSpan(text, cells[column]);
+  return {column, into: Math.max(0, Math.min(here - opens, said.length)), edge: null};
 }
 
-// And back: the offset, in a line this wrote, of `into` characters into the
-// text of cell `column`. An empty cell puts the caret after the space inside
-// its pipe, where typing starts.
-function tableCellOffset(line, column, into) {
+// And back: the offset in a line this wrote of a place `tableCellAt` answered.
+// An empty cell puts the caret after the space inside its pipe, where typing
+// starts.
+function tableCellOffset(line, place) {
+  if (place.edge === 'start') return 0;
+  if (place.edge === 'end') return line.length;
   const {text, at: start} = tableRow(line);
   const cells = tableCells(text);
-  const cell = cells[Math.min(column, cells.length - 1)];
+  const cell = cells[Math.min(place.column, cells.length - 1)];
   if (!cell) return start;
-  const raw = text.slice(cell.from, cell.to);
-  const said = raw.trim();
+  const {opens, said} = cellSpan(text, cell);
   if (!said) return start + Math.min(cell.from + 1, cell.to);
-  const opens = cell.from + raw.length - raw.trimStart().length;
-  return start + opens + Math.min(into, said.length);
+  return start + opens + Math.min(place.into, said.length);
 }
 
-// Where offset `at` in `text` is once `runs` are applied. Before a run it does
-// not move; after one it moves by the difference; inside one it stays in the
-// same row, the same cell and the same place in that cell's text.
-function caretThrough(text, runs, at) {
+function tableLineOf(model, at) {
+  let line = model.starts.length - 1;
+  while (line > 0 && model.starts[line] > at) line--;
+  return line;
+}
+
+// Where offset `at` is once `runs` are applied. Before a run it does not move;
+// after one it moves by the difference; inside one it stays in the same row,
+// the same cell and the same place in that cell's text.
+function caretThrough(model, runs, at) {
   let shift = 0;
   for (const run of runs) {
     if (at > run.to) { shift += run.put.length - (run.to - run.from); continue; }
     if (at < run.from) break;
-    const before = text.slice(run.from, at).split('\n');
-    const row = before.length - 1;
-    const lineStart = at - before[row].length;
-    const lineEnd = text.indexOf('\n', at);
-    const was = text.slice(lineStart, lineEnd === -1 || lineEnd > run.to ? run.to : lineEnd);
-    const {column, into} = tableCellAt(was, at - lineStart);
-    const now = run.put.split('\n');
-    const offset = now.slice(0, row).reduce((n, line) => n + line.length + 1, 0);
-    return run.from + shift + offset + tableCellOffset(now[row], column, into);
+    const line = tableLineOf(model, at);
+    const row = line - run.first;
+    const offset = run.lines.slice(0, row).reduce((n, one) => n + one.length + run.join.length, 0);
+    const place = tableCellAt(model.lines[line], at - model.starts[line]);
+    return run.from + shift + offset + tableCellOffset(run.lines[row], place);
   }
   return at + shift;
 }
 
-// The runs, written into a surface as edits a person made — one splice per
-// table, from the last to the first so the offsets before each are still true —
-// and the caret put back where it was in the text.
-function spliceTables(surface, runs) {
-  if (!runs.length) return;
-  const text = surface.text();
+// Every top-level table on a surface, aligned as an edit a person made — one
+// splice per table, from the last to the first so the offsets before each are
+// still true — and the caret put back where it was in the text. Whether there
+// was anything to align, because a body with nothing to do gets no edit at all.
+function alignSurface(surface) {
+  const model = tableModel(surface.text());
+  const runs = alignedRuns(model);
+  if (!runs.length) return false;
   const {from, to} = surface.caret();
-  const caret = [caretThrough(text, runs, from), caretThrough(text, runs, to)];
+  const caret = [caretThrough(model, runs, from), caretThrough(model, runs, to)];
   for (const run of [...runs].reverse()) surface.splice(run.from, run.to, run.put);
   surface.setCaret(caret[0], caret[1]);
+  return true;
 }
 
 // --- the table the caret is in, and the Table button's four edits -----------
 
-// The top-level table containing offset `at`: where its first line starts,
-// where its last line ends, and the caret's row (0 is the header, 1 the
-// delimiter) and column. `null` outside one.
+// The top-level table containing offset `at`, or `null` outside one: where its
+// first line starts and its last line ends, the caret's row (0 is the header, 1
+// the delimiter) and column, and the scan it was found in, so an edit made from
+// it does not scan the body again.
 function tableAt(text, at) {
-  const lines = text.split('\n');
-  const starts = tableLineStarts(lines);
-  let line = starts.length - 1;
-  while (line > 0 && starts[line] > at) line--;
-  const table = topTables(lines).find(one => one.first <= line && line < one.last);
+  const model = tableModel(text);
+  const line = tableLineOf(model, at);
+  const table = topTables(model.lines).find(one => one.first <= line && line < one.last);
   if (!table) return null;
   return {
-    start: starts[table.first],
-    end: starts[table.last - 1] + lines[table.last - 1].length,
+    model,
+    table,
+    start: model.starts[table.first],
+    end: model.starts[table.last - 1] + model.lines[table.last - 1].length,
     row: line - table.first,
-    column: tableCellAt(lines[line], at - starts[line]).column,
+    column: tableCellAt(model.lines[line], at - model.starts[line]).column,
   };
 }
 
 // The four edits the Table button's menu offers, each on the caret's row or
 // column, each answered with the table re-aligned so a new cell is already the
-// right width. `{text, caret}`; `{refused}` with the sentence to say when the
-// edit cannot be made here; `null` outside a table.
+// right width: `{run, caret}`, or `{refused}` with the sentence to say when the
+// edit cannot be made here.
 //
 // The caret goes where the next thing is typed: into the new row or the new
 // column, in the column or row the caret was in; after a deletion, into the row
@@ -579,19 +615,19 @@ const TABLE_EDITS = {
   'delete-column': {label: 'Delete column', said: 'The column is deleted.'},
 };
 
-function tableEdit(text, at, op) {
-  const lines = text.split('\n');
-  const starts = tableLineStarts(lines);
-  const here = tableAt(text, at);
-  if (!here) return null;
-  const table = topTables(lines).find(one => starts[one.first] === here.start);
-  const matrix = tableMatrix(lines, table);
+function tableEdit(here, op) {
+  const {model, table} = here;
+  const matrix = tableMatrix(model.lines, table);
   const count = matrix.head.length;
-  matrix.body = matrix.body.map(cells =>
-    cells.length >= count ? cells : cells.concat(Array(count - cells.length).fill('')));
-  const column = Math.min(here.column, count - 1);
+  const column = here.column;
   let row = here.row;
-  let to = here.column;
+  let to = column;
+  // A long row's extra cell is in no column the page draws, so there is no
+  // column there to add beside or take away.
+  if (column >= count && (op === 'column-right' || op === 'delete-column')) {
+    return {refused: 'The caret is past the last column of this table, so there is no '
+                     + 'column here to change.'};
+  }
   if (op === 'row-below') {
     const below = Math.max(0, row - 1);
     matrix.body.splice(below, 0, Array(count).fill(''));
@@ -609,21 +645,18 @@ function tableEdit(text, at, op) {
     if (count === 1) return {refused: 'A table needs a column, so its last one stays.'};
     matrix.head.splice(column, 1);
     matrix.aligns.splice(column, 1);
-    for (const cells of matrix.body) if (cells.length > column) cells.splice(column, 1);
+    for (const cells of matrix.body) cells.splice(column, 1);
     to = Math.min(column, count - 2);
-  } else {
-    return null;
   }
   const now = tableLines(matrix);
   if (!tableRewritable(now)) {
     return {refused: 'This table’s header is all dashes, so it is left as typed.'};
   }
-  const put = now.join('\n');
-  const offset = now.slice(0, row).reduce((n, line) => n + line.length + 1, 0);
+  const join = model.breaks[table.first] || '\n';
+  const offset = now.slice(0, row).reduce((n, line) => n + line.length + join.length, 0);
   return {
-    text: text.slice(0, here.start) + put + text.slice(here.end),
-    caret: here.start + offset + tableCellOffset(now[row], to, 0),
-    run: {from: here.start, to: here.end, put},
+    run: {from: here.start, to: here.end, put: now.join(join)},
+    caret: here.start + offset + tableCellOffset(now[row], {column: to, into: 0, edge: null}),
   };
 }
 
@@ -635,11 +668,12 @@ function tableEdit(text, at, op) {
 // press, rather than when the menu opened — somebody in the room may have typed
 // in between.
 function editTable(surface, op) {
-  const edit = tableEdit(surface.text(), surface.caret().from, op);
-  if (!edit) {
+  const here = tableAt(surface.text(), surface.caret().from);
+  if (!here) {
     announce('The caret is not in a table any more, so nothing was changed.');
     return;
   }
+  const edit = tableEdit(here, op);
   if (edit.refused) { announce(edit.refused); return; }
   surface.splice(edit.run.from, edit.run.to, edit.run.put);
   surface.setCaret(edit.caret);
@@ -648,35 +682,28 @@ function editTable(surface, op) {
 
 // The `▤` button, which is two buttons in one: outside a top-level table it
 // inserts the starter table it always has, through `applyMark`; inside one it
-// opens the menu of four. No shortcut — the comment on its `FORMATS` entry says
-// why — so the keyboard path is the button itself: Tab to it, Enter, the arrows
-// in the menu, Escape back.
-//
-// `menuUnder` binds the button's click to open and close its menu, and this
-// binds it again, because here a press asks the caret first. mousedown and not
-// click for the pointer, for the reason every mark on the bar is: a click comes
-// after the box has lost the focus, and a press that moved the caret would be
-// asking about the wrong place. A click with `detail === 0` is Enter or Space.
-function attachTableButton(surface, button, mark) {
+// opens the menu of four. Answers what a press does, and `attachEditing` binds
+// it the way it binds every mark. No shortcut — the comment on its `FORMATS`
+// entry says why — so the keyboard path is the button itself: Tab to it, Enter,
+// the arrows in the menu, Escape back.
+function tablePress(surface, button, mark) {
   const menu = menuUnder(button, 'tablemenu', 'Table', () =>
     Object.entries(TABLE_EDITS).map(([op, edit]) => ({
       text: edit.label,
       choose: () => editTable(surface, op),
     })));
-  const press = () => {
+  return () => {
     if (menu.shown()) { menu.close(); return; }
     if (tableAt(surface.text(), surface.caret().from)) menu.open();
     else applyMark(surface, mark);
   };
-  button.onmousedown = event => { event.preventDefault(); press(); };
-  button.onclick = event => { if (event.detail === 0) press(); };
 }
 
-// An explicit save — the Save button and Ctrl-S / ⌘S, which both call `save()`
-// — aligns every top-level table first, when this person has not switched it
-// off. Never the room's quiet commit: that is the server's, twenty seconds after
-// the last keystroke, and realigning a table under somebody still typing in it
-// is exactly what this must not do. Never the server either: a commit that
+// An explicit save — the Save button and Ctrl-S / ⌘S, while an edit is open —
+// aligns every top-level table first, when this person has not switched it off.
+// Never the room's quiet commit: that is the server's, twenty seconds after the
+// last keystroke, and realigning a table under somebody still typing in it is
+// exactly what this must not do. Never the server either: a commit that
 // rewrote the body would move text under co-editors' cursors and reformat files
 // people edit in git.
 //
@@ -687,10 +714,8 @@ function attachTableButton(surface, button, mark) {
 // Save is not asking to be put back in the document.
 function alignForSave(surface) {
   if (EDITOR.tables !== 'on') return;
-  const runs = alignedRuns(surface.text());
-  if (!runs.length) return;
   const was = document.activeElement;
-  spliceTables(surface, runs);
+  if (!alignSurface(surface)) return;
   if (was && was !== document.activeElement && !surface.el.contains(was) && was.focus) {
     was.focus();
   }

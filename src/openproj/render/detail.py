@@ -2822,7 +2822,12 @@ async function save() {
   // frame, and without one the PATCH sends what the box now holds. After the
   // check above and not before it, so a save that stops there has not edited
   // the document either.
-  alignForSave(SURFACE);
+  //
+  // **And only in an edit session.** Ctrl-S reaches `save()` from the reading
+  // view as well, where the box is hidden and nothing has been typed; aligning
+  // there turned "nothing changed" into a commit of a reformat the reader never
+  // saw, of a file they never opened.
+  if (FORM.closest('article.record').classList.contains('editing')) alignForSave(SURFACE);
   // While a room is live the body is not this tab's to send: it is the room's,
   // and Save is one commit made over the socket against the room's base, with
   // the fields from this form. Sending both down this path would be two commits
@@ -2927,8 +2932,6 @@ async function save() {
 // box sits inside `<form>` here, so the field loop collects `title` too — the
 // explicit `TITLED` line below then overwrites it with the same trimmed value.
 async function createRecord() {
-  // The create form's Save is an explicit save as well, so it aligns too.
-  alignForSave(SURFACE);
   const fields = {kind: KIND.value};
   // `OPENS` and not a word typed here: it is declared once beside `markRequired`
   // in `_REQUIRED_JS`, which this script already depends on for `labelOf`, and
@@ -2970,6 +2973,10 @@ async function createRecord() {
     PROBLEMS.replaceChildren(line);
     return;
   }
+  // The create form's Save is an explicit save as well, so it aligns too — here,
+  // after every refusal above, for the rule `save()` keeps: a save that was
+  // refused has not edited the document.
+  alignForSave(SURFACE);
   // The shell's banner is told before the request goes and the sha after,
   // because the server announces a commit to the event stream before it
   // answers the request that made it.
@@ -4475,7 +4482,8 @@ def render_detail(
         # `linkable=True`: this is a page with a document being written in it, so
         # the blob carries the list `attachBodyCompletion` completes records from.
         combobox=_combobox_html(index, linkable=True, live=base_commit is not None),
-        tables=_TABLES if base_commit is not None else Markup(""),
+        # Gated in the template, with the toolbar it serves.
+        tables=_TABLES,
         required=_REQUIRED_JS,
         hill=_HILL_JS,
         # The popup every date box here opens, and only where there is a box to

@@ -21,6 +21,7 @@ import pytest
 from browser import chrome, measured_in
 from fastapi.testclient import TestClient
 from test_coedit import _welcome, in_chrome_room, shown_body, stored
+from test_editor import _before_the_page_runs
 from test_injection import run_js
 from test_store import commit_directly
 from test_web import PATH, SECRET, SEED, TASK
@@ -57,16 +58,37 @@ def client(plan: Path):
         yield served
 
 
+# A surface that is a string: the seven operations `alignSurface` and
+# `editTable` use, so the tests call the same functions the save and the menu
+# call, in the same composition, and count the splices they make.
+_SURFACE = """
+const surfaceOf = (text, from = 0, to = from) => {
+  const box = {
+    value: text, from, to, splices: 0, el: {contains: () => false},
+    text: () => box.value,
+    caret: () => ({from: box.from, to: box.to}),
+    splice(at, end, put) {
+      box.splices++;
+      box.value = box.value.slice(0, at) + put + box.value.slice(end);
+    },
+    setCaret(at, end = at) { box.from = at; box.to = end; },
+  };
+  return box;
+};
+const aligned = text => { const box = surfaceOf(text); alignSurface(box); return box.value; };
+"""
+
+
 def shipped(page: str, expression: str) -> object:
     """What the page's own script answers. `expression` sees every global the
-    page declared, `alignTables` and `tableEdit` among them."""
-    answer = run_js(page, expression)
+    page declared, and `surfaceOf` and `aligned` above."""
+    answer = run_js(page, f"(() => {{ {_SURFACE}\n return ({expression}); }})()")
     assert answer["value"] is not None, f"the page answered nothing: {answer['errors']}"
     return answer["value"]
 
 
 def aligned(page: str, text: str) -> str:
-    return shipped(page, f"alignTables({json.dumps(text)})")
+    return shipped(page, f"aligned({json.dumps(text)})")
 
 
 # --------------------------------------------------------------------------- #
@@ -147,14 +169,34 @@ def test_a_short_row_is_padded_and_a_long_row_keeps_its_cells(page: str):
 
 
 def test_a_body_with_nothing_to_align_gets_no_edit_at_all(page: str):
-    """The same string, `===`, and not merely equal: a save with nothing to align
-    must not be an edit, and the save path asks exactly this."""
+    """Not an edit that happens to change nothing: no splice at all, which is
+    what a save with nothing to align must make."""
     already = "| a   | b   |\n| --- | --- |\n| c   | d   |\n"
     for text in ["", "Just prose.\n", already, "```\n|a|b|\n|-|-|\n```\n", "> |a|b|\n> |-|-|\n"]:
-        assert shipped(
-            page, f"(() => {{ const t = {json.dumps(text)}; return alignTables(t) === t; }})()"
-        ), text
-        assert shipped(page, f"alignedRuns({json.dumps(text)}).length") == 0, text
+        got = shipped(
+            page,
+            f"(() => {{ const box = surfaceOf({json.dumps(text)});"
+            " return [alignSurface(box), box.splices]; })()",
+        )
+        assert got == [False, 0], text
+
+
+def test_whitespace_is_trimmed_as_python_trims_it(page: str):
+    """markdown-it-py trims rows and cells with `str.strip()`, which keeps U+FEFF
+    where JavaScript's `trim()` drops it. A byte-order mark in a cell is part of
+    the cell and is written back; one before a row makes the row a paragraph,
+    which `test_the_formatter_and_markdown_it_agree_on_every_table` holds."""
+    # U+FEFF draws nothing, so the cell is one column wide and padded to three.
+    assert aligned(page, "| a\ufeff | b |\n|---|---|\n") == "| a\ufeff   | b   |\n| --- | --- |\n"
+
+
+def test_a_table_with_windows_line_endings_keeps_them(page: str):
+    """markdown-it reads `\\r\\n` as one line ending, and so does the formatter:
+    the table is found, aligned and written back with the endings it had."""
+    text = "|a|b|\r\n|-|-|\r\n|cell|d|\r\n\r\nafter\r\n"
+    assert aligned(page, text) == (
+        "| a    | b   |\r\n| ---- | --- |\r\n| cell | d   |\r\n\r\nafter\r\n"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -201,6 +243,18 @@ CORPUS = {
     "after a reference": "[ref]: /url\n2. two\n--|--\n--|--\n",
     "no delimiter": "| a | b |\n| c | d |\n",
     "a delimiter one short": "| a | b |\n|---|\n",
+    # `dollarmath_plugin` as `_MD` configures it: a display block runs across
+    # blank lines to the next line ending in `$$`, so both of these are maths.
+    "maths across a blank line": "$$\na = b\n\n| x | y |\n|-|-|\n$$\n",
+    "maths opened and closed mid-sentence": (
+        "$$E = mc^2$$ is the famous one.\n\n| a | b |\n|-|-|\n| 1 | 2 |\n\n"
+        "And the other is $$F = ma$$\n"
+    ),
+    "maths that never closes": "$$\na = b\n\n| x | y |\n|-|-|\n",
+    "a byte-order mark in a cell": "| a\ufeff | b |\n|---|---|\n",
+    "a byte-order mark before a row": "\ufeff| a | b |\n|---|---|\n",
+    "a fence with Windows endings": "```\r\n| a | b |\r\n|---|---|\r\n",
+    "a table with Windows endings": "|a|b|\r\n|-|-|\r\n|c|d|\r\n",
 }
 
 
@@ -226,7 +280,7 @@ def _rendered_tables(text: str) -> list[dict]:
 
 
 _FORMATTER_TABLES = """Object.fromEntries(Object.entries(CORPUS).map(([name, text]) => {
-  const lines = text.split('\\n');
+  const lines = tableModel(text).lines;
   return [name, topTables(lines).map(table => ({
     lines: [table.first, table.last],
     // Every row but the delimiter, as `escapedSplit` hands the renderer its
@@ -235,8 +289,7 @@ _FORMATTER_TABLES = """Object.fromEntries(Object.entries(CORPUS).map(([name, tex
                                       (_, k) => table.first + 2 + k)]
       .map(i => {
         const {text: row} = tableRow(lines[i]);
-        return tableCells(row).map(cell =>
-          row.slice(cell.from, cell.to).trim().split('\\\\|').join('|'));
+        return tableCells(row).map(cell => cellSpan(row, cell).said.split('\\\\|').join('|'));
       }),
   }))];
 }))
@@ -276,6 +329,10 @@ def test_the_formatter_and_markdown_it_agree_on_every_table(page: str):
         "a fence in an item",
         "indented code",
         "maths",
+        "maths across a blank line",
+        "maths opened and closed mid-sentence",
+        "a byte-order mark before a row",
+        "a fence with Windows endings",
     ]
     for name in untouched:
         assert aligned(page, CORPUS[name]) == CORPUS[name], f"{name} was rewritten"
@@ -292,7 +349,7 @@ def test_aligning_twice_changes_nothing(page: str):
     bodies = [*CORPUS.values(), dashed]
     got = shipped(
         page,
-        f"{json.dumps(bodies)}.map(t => [alignTables(t), alignTables(alignTables(t))])",
+        f"{json.dumps(bodies)}.map(t => [aligned(t), aligned(aligned(t))])",
     )
     for body, (once, twice) in zip(bodies, got, strict=True):
         assert once == twice, f"aligning {body!r} twice moved it again: {once!r} then {twice!r}"
@@ -375,7 +432,7 @@ def test_aligning_never_changes_what_the_page_draws(page: str):
     it read as something else, shows up as a page that changed."""
     rng = random.Random(20261128)
     bodies = [_body(rng) for _ in range(600)]
-    got = shipped(page, f"{json.dumps(bodies)}.map(alignTables)")
+    got = shipped(page, f"{json.dumps(bodies)}.map(aligned)")
     changed = [b for b, a in zip(bodies, got, strict=True) if _MD.render(b) != _MD.render(a)]
     assert not changed, f"aligning changed what {len(changed)} bodies draw, first {changed[0]!r}"
     assert sum(b != a for b, a in zip(bodies, got, strict=True)) > 200, (
@@ -390,14 +447,20 @@ def test_aligning_never_changes_what_the_page_draws(page: str):
 _TABLE = "Intro\n\n|a|b|\n|-|-|\n|cell one|x|\n|two|y|\n\nEnd\n"
 
 
-def edit(page: str, op: str, text: str = _TABLE, word: str = "one") -> dict:
-    """`tableEdit` with the caret on `word`, and what is right of the caret."""
+def edit(page: str, op: str, text: str = _TABLE, word: str = "one") -> dict | str:
+    """The menu's edit, `editTable`, with the caret on `word`: what it wrote and
+    what is right of the caret afterwards; `{refused}` when `tableEdit` refuses;
+    `no edit` outside a table."""
     return shipped(
         page,
-        f"(() => {{ const t = {json.dumps(text)};"
-        f" const e = tableEdit(t, t.indexOf({json.dumps(word)}), {json.dumps(op)});"
-        " if (e === null) return 'no edit';"
-        " return e.text ? {...e, after: e.text.slice(e.caret).split('\\n')[0]} : e; })()",
+        f"(() => {{ const t = {json.dumps(text)}; const at = t.indexOf({json.dumps(word)});"
+        " const here = tableAt(t, at);"
+        " if (here === null) return 'no edit';"
+        f" const made = tableEdit(here, {json.dumps(op)});"
+        " if (made.refused) return made;"
+        f" const box = surfaceOf(t, at); editTable(box, {json.dumps(op)});"
+        " return {text: box.value, after: box.value.slice(box.from).split('\\n')[0],"
+        " splices: box.splices}; })()",
     )
 
 
@@ -465,8 +528,10 @@ def test_the_caret_is_found_in_the_cell_it_is_in_whatever_is_before_it(page: str
     text = "| 👍🏽 | 表 | c |\n|---|---|---|\n| 👍 | 🇨🇭 | z |\n"
     got = shipped(
         page,
-        f"(() => {{ const t = {json.dumps(text)}; return [tableAt(t, t.indexOf('z')),"
-        " tableAt(t, t.indexOf('表')), tableAt(t, 0), tableAt(t + '\\nafter', t.length + 2)]; })()",
+        f"(() => {{ const t = {json.dumps(text)};"
+        " const at = n => { const h = tableAt(t + '\\nafter', n);"
+        " return h && {start: h.start, end: h.end, row: h.row, column: h.column}; };"
+        " return [at(t.indexOf('z')), at(t.indexOf('表')), at(0), at(t.length + 2)]; })()",
     )
     assert got[0] == {
         "start": 0,
@@ -486,13 +551,50 @@ def test_the_caret_keeps_its_place_in_its_cell_when_the_table_is_aligned(page: s
     text = "|a|b|\n|-|-|\n|cell one|x|\n\nAfter 👍 here\n"
     got = shipped(
         page,
-        f"(() => {{ const t = {json.dumps(text)}; const runs = alignedRuns(t);"
-        " const now = alignTables(t);"
-        " const inCell = caretThrough(t, runs, t.indexOf('one') + 1);"
-        " const after = caretThrough(t, runs, t.indexOf('here'));"
-        " return [now.slice(inCell - 6, inCell), now.slice(after, after + 4)]; })()",
+        f"(() => {{ const t = {json.dumps(text)}; const near = at => {{"
+        " const box = surfaceOf(t, at); alignSurface(box);"
+        " return [box.value.slice(0, box.from).split('\\n').pop(),"
+        " box.value.slice(box.from).split('\\n')[0]]; };"
+        " return [near(t.indexOf('one') + 1), near(t.indexOf('here'))]; })()",
     )
-    assert got == ["cell o", "here"]
+    assert got == [["| cell o", "ne | x   |"], ["After 👍 ", "here"]]
+
+
+def test_a_caret_outside_the_cells_stays_outside_them(page: str):
+    """After a row's closing pipe is where somebody is who has just typed the
+    row, and Enter is what they press next: a save that moved the caret into the
+    last cell would have Enter split the row in two. Before the opening pipe is
+    the same on the other side."""
+    text = "|a|b|\n|-|-|\n|long cell|x|\nafter"
+    got = shipped(
+        page,
+        f"(() => {{ const t = {json.dumps(text)}; const near = at => {{"
+        " const box = surfaceOf(t, at); alignSurface(box);"
+        " return [box.value.slice(0, box.from).split('\\n').pop(),"
+        " box.value.slice(box.from).split('\\n')[0]]; };"
+        " return [near(t.indexOf('|x|') + 3), near(t.indexOf('|long')), near(5)]; })()",
+    )
+    assert got == [
+        ["| long cell | x   |", ""],
+        ["", "| long cell | x   |"],
+        ["| a         | b   |", ""],
+    ]
+
+
+def test_a_column_edit_past_the_header_s_columns_is_refused(page: str):
+    """A long row's extra cell is in no column the page draws. Adding a column
+    beside it or deleting its column would act on a column the caret is not in,
+    so both say so instead; a row edit there is still a row edit."""
+    text = "| a | b |\n|---|---|\n| 1 | 2 | three |\n"
+    refused = {
+        "refused": "The caret is past the last column of this table, so there is no "
+        "column here to change."
+    }
+    assert edit(page, "column-right", text=text, word="three") == refused
+    assert edit(page, "delete-column", text=text, word="three") == refused
+    assert edit(page, "row-below", text=text, word="three")["text"] == (
+        "| a   | b   |\n| --- | --- |\n| 1   | 2   | three |\n|     |     |\n"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -568,10 +670,6 @@ _GROWN = (
 )
 
 
-def _with_stub(html: str, stub: str) -> str:
-    return html.replace('<link rel="icon"', f'<script>{stub}</script><link rel="icon"', 1)
-
-
 @pytest.mark.parametrize("editor", ["plain", "ace"])
 def test_save_aligns_the_tables_in_the_body(client: TestClient, tmp_path: Path, editor: str):
     """The Save button and Ctrl-S both align before the body goes, on both
@@ -580,7 +678,7 @@ def test_save_aligns_the_tables_in_the_body(client: TestClient, tmp_path: Path, 
     html = client.get(f"/detail/{TASK}?editor={editor}").text
     got = measured_in(
         chrome(),
-        _with_stub(html, _NO_ROOM),
+        _before_the_page_runs(html, _NO_ROOM),
         tmp_path / f"saved-{editor}.html",
         1400,
         _SAVED.replace("RAGGED", json.dumps(_RAGGED)).replace("MORE", json.dumps(_MORE)),
@@ -703,6 +801,83 @@ def test_the_room_idle_commit_does_not_align(client: TestClient, plan: Path):
             room.apply(base64.b64decode(frame["u"]), "ann")
     assert room.body() == typed
     assert "save" not in [frame["t"] for frame in answer["value"]["sent"]]
+
+
+_READING = """(async () => {
+  const box = document.querySelector('[name=body]');
+  const reading = !document.querySelector('article.record').classList.contains('editing');
+  // What Ctrl-S calls, from any view.
+  await save();
+  return {reading, box: box.value, said: document.getElementById('state').textContent};
+})()"""
+
+
+def test_ctrl_s_in_the_reading_view_aligns_nothing(client: TestClient, plan: Path):
+    """Ctrl-S reaches `save()` from the reading view too, where the body is
+    hidden and nobody has typed. A ragged table stored in git stays ragged, no
+    write goes out, and the answer is the one a press with nothing to save has
+    always had: a reader must not commit a reformat of a file they never opened."""
+    body = "Intro.\n\n|a|b|\n|-|-|\n|cell one|x|\n"
+    front, _ = split_front_matter(stored(plan))
+    commit_directly(plan, {**SEED, PATH: f"---\n{front}\n---\n\n{body}"}, "a ragged table")
+    page = client.get(f"/detail/{TASK}?editor=plain").text
+    answer = run_js(page, _READING, page=True)
+    assert answer["settled"], answer["errors"]
+    assert answer["value"]["reading"], "the page opened in an edit session"
+    assert answer["value"]["box"] == shown_body(client), "the hidden box was realigned"
+    assert [call for call in answer["calls"] if call["method"] == "PATCH"] == []
+    assert answer["value"]["said"] == "nothing changed"
+
+
+_REFUSED_CREATE = """(async () => {
+  const box = document.querySelector('[name=body]');
+  box.value = RAGGED;
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  await save();
+  // The shim keeps a child's text out of its parent's, so the list is asked
+  // whether it is showing rather than what it says.
+  return {box: box.value, refused: !document.getElementById('problems').hidden};
+})()"""
+
+
+def test_a_create_refused_for_a_missing_title_has_not_edited_the_body(
+    page: str, client: TestClient
+):
+    """The create form aligns as it creates, and only then: a press that is
+    refused for a missing title leaves the table as it was typed, as a refused
+    save on a record does."""
+    form = client.get("/new?kind=task&editor=plain").text
+    answer = run_js(form, _REFUSED_CREATE.replace("RAGGED", json.dumps(_RAGGED)), page=True)
+    assert answer["settled"], answer["errors"]
+    assert answer["value"]["refused"], "the create was not refused"
+    assert answer["value"]["box"] == _RAGGED, "a refused create rewrote the body"
+    assert [call for call in answer["calls"] if call["method"] == "POST"] == []
+
+
+_TOOLBAR_PAGES = (
+    f"/detail/{TASK}",
+    f"/detail/{TASK}?view=slide",
+    "/new?kind=task",
+    "/table",
+    "/graph",
+    "/cycles",
+    "/",
+)
+
+
+def test_every_page_with_a_toolbar_carries_the_table_button(client: TestClient):
+    """`attachEditing` draws the Table button wherever it is handed `#marks`, and
+    the button's press is `tablePress` in `tables.py`. The slide editor drew the
+    bar without the block once, and the press threw while the bar was being
+    built, so every page that draws the bar has to carry it."""
+    with_a_bar = []
+    for route in _TOOLBAR_PAGES:
+        served = client.get(route).text
+        if 'id="marks"' not in served:
+            continue
+        with_a_bar.append(route)
+        assert "function tablePress(" in served, f"{route} draws the toolbar without tables.py"
+    assert len(with_a_bar) >= 3, f"only {with_a_bar} draw a toolbar, so this asked nothing"
 
 
 _SAVED_AS_TYPED = """(async () => {

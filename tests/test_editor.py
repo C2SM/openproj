@@ -1954,12 +1954,15 @@ def test_a_toolbar_button_keeps_the_selection_it_acts_on(client: TestClient):
     the mark is supposed to wrap."""
     page = client.get(f"/detail/{TASK}").text
 
-    bound = "button.onmousedown = event => { event.preventDefault(); applyMark(surface, mark); };"
+    # One press function per mark, bound twice: `applyMark` for a mark, and for
+    # the Table button `tablePress`, which asks the caret first.
+    assert "? tablePress(surface, button, mark) : () => applyMark(surface, mark);" in page
+    bound = "button.onmousedown = event => { event.preventDefault(); press(); };"
     assert bound in page
     # And a click as well, which is the only thing Enter and Space produce.
     # `detail === 0` is how a click synthesised from a key is told from one a
     # pointer made, so the two bindings cannot both fire for one press.
-    keyed = "button.onclick = event => { if (event.detail === 0) applyMark(surface, mark); };"
+    keyed = "button.onclick = event => { if (event.detail === 0) press(); };"
     assert keyed in page
     assert "event.detail" in page
 

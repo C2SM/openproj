@@ -1198,8 +1198,8 @@ const FORMATS = [
   // are about to replace is already selected.
   //
   // `table`: two buttons in one since 2026-11-28 — outside a table it inserts
-  // this, inside one it opens a menu that edits the table (`attachTableButton`
-  // in `tables.py`). Still an `insert` mark, so `applyMark` is what writes the
+  // this, inside one it opens a menu that edits the table (`tablePress` in
+  // `tables.py`). Still an `insert` mark, so `applyMark` is what writes the
   // starter table and a mark sweep that presses it outside a table sees it write.
   {label: '▤', title: 'Table', table: true,
    insert: '| Heading | Heading |\n| --- | --- |\n| Cell | Cell |', chooses: [2, 7]},
@@ -1277,9 +1277,11 @@ function lineRange(surface) {
 // How much blank line is missing on each side of a block about to be written in.
 //
 // A block only is one if it stands apart: `---` written directly under a line of
-// text is a setext heading rather than a rule, and a table cannot interrupt a
-// paragraph at all — so both of the toolbar's templates and a pasted grid would
-// otherwise go in and render as punctuation. One function because that is one
+// text is a setext heading rather than a rule — so the rule would otherwise go in
+// and render as an underline. A table is the other case: `_MD` lets one interrupt
+// a paragraph (markdown-it-py's `table` rule lists `paragraph` among the rules it
+// may end), but CommonMark-only readers of the same file do not, and a table
+// standing apart is a table in every one of them. One function because that is one
 // rule about markdown, and the two callers would have been the same four
 // conditionals twice.
 function blockPadding(before, after) {
@@ -2252,8 +2254,6 @@ function attachEditing(surface, bar, templates) {
         button.id = 'drawing';
         button.innerHTML = DRAW_ART;
         button.setAttribute('aria-label', mark.title);
-      } else if (mark.table) {
-        attachTableButton(surface, button, mark);
       } else if (mark.upload) {
         // Named as what it IS, beside `hist`, and not left to be told apart by
         // its copy. `test_the_toolbar_and_the_keymap_do_not_cancel_each_other`
@@ -2266,13 +2266,17 @@ function attachEditing(surface, bar, templates) {
         button.classList.add('upload');
         button.onclick = () => area.dispatchEvent(new Event('openproj:pick-image'));
       } else {
-        button.onmousedown = event => { event.preventDefault(); applyMark(surface, mark); };
+        // What a press does: the mark, or for the Table button the question of
+        // whether the caret is in a table first (`tablePress` in `tables.py`).
+        const press = mark.table
+          ? tablePress(surface, button, mark) : () => applyMark(surface, mark);
+        button.onmousedown = event => { event.preventDefault(); press(); };
         // And the keyboard, which `onmousedown` alone left out: Enter and Space
         // on a focused button produce a click and no mousedown at all, so every
         // mark in this bar was a focus stop that did nothing. `detail === 0` is
         // how a click synthesised from a key is told from one a pointer made, so
         // a mouse press still applies the mark exactly once.
-        button.onclick = event => { if (event.detail === 0) applyMark(surface, mark); };
+        button.onclick = event => { if (event.detail === 0) press(); };
       }
       bar.append(button);
     }
@@ -3312,7 +3316,9 @@ function refreshDrawing(path) {
 // runs `choose` — which is free to move the focus somewhere else again.
 function menuUnder(button, className, label, rows) {
   const menu = document.createElement('div');
-  menu.className = className;
+  // `barmenu` is what the stylesheet draws; the other class is the menu's own
+  // name, which a reader or a test asks for.
+  menu.className = `${className} barmenu`;
   menu.hidden = true;
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', label);
@@ -3388,7 +3394,8 @@ function menuUnder(button, className, label, rows) {
   });
 
   // For a button that decides for itself when its menu opens, which the Table
-  // button does: it opens one only when the caret is in a table.
+  // button does: it opens one only when the caret is in a table, so it binds its
+  // press again over the toggle above.
   return {open, close, shown: () => !menu.hidden};
 }
 
