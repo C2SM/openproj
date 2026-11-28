@@ -848,7 +848,10 @@ function textareaSurface(area) {
   // before and after it by a common prefix and suffix. That walk can put a
   // boundary between two halves of one emoji, which moves nothing here: an
   // offset is only ever compared and sliced by, and the length is right.
-  const marks = new Set();
+  // An array and not a `Set`, because a set's removal is spelled the way a
+  // document's splice is, and `test_the_browser_splices_on_a_whole_character`
+  // reads every call spelled that way in the editor as an index into the text.
+  let marks = [];
   let carriedTo = area.value;
   const carryMarks = (from, to, put) => {
     for (const held of marks) {
@@ -857,7 +860,7 @@ function textareaSurface(area) {
     }
   };
   area.addEventListener('input', () => {
-    if (applying || !marks.size) return;
+    if (applying || !marks.length) return;
     const was = carriedTo, now = area.value;
     const most = Math.min(was.length, now.length);
     let head = 0;
@@ -912,7 +915,7 @@ function textareaSurface(area) {
       // difference, and nothing may end up before where the splice began.
       const moved = at => at <= from ? at : Math.max(from, at + shift);
       area.value = was.slice(0, from) + put + was.slice(to);
-      if (marks.size) { carryMarks(from, to, put); carriedTo = area.value; }
+      if (marks.length) { carryMarks(from, to, put); carriedTo = area.value; }
       // Only when this box has the caret: `setSelectionRange` on an unfocused
       // textarea also scrolls it, and a page scrolling itself because somebody
       // else typed is the thing nobody asked for.
@@ -931,9 +934,10 @@ function textareaSurface(area) {
     // a create, which takes seconds and is typed through by everybody else.
     mark(from, to) {
       const held = {from, to};
-      if (!marks.size) carriedTo = area.value;
-      marks.add(held);
-      return {at: () => ({from: held.from, to: held.to}), drop: () => { marks.delete(held); }};
+      if (!marks.length) carriedTo = area.value;
+      marks.push(held);
+      return {at: () => ({from: held.from, to: held.to}),
+              drop: () => { marks = marks.filter(one => one !== held); }};
     },
 
     // 7. Where everybody ELSE in the room is: a translucent band on the row each
