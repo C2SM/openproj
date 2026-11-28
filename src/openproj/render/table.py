@@ -683,6 +683,8 @@ function shown(row, key) {
   // is what silently turned the PR column into plain text.
   if (key === 'title')
     return prMarkOf(row.id) + `<a href="{{ links.record }}${esc(row.id)}">${esc(row.title)}</a>`;
+  // A record closed without a PR says so, where a dash would say one is missing.
+  if (key === NO_PR_FIELD && closedWithoutPr(row)) return esc(NO_PR.said);
   if (key === 'prs') return clamped((value || []).map(prLink), 'pull request', 'pull requests');
   // No kind chip here. `pitch-0c0001` already says pitch, in a prefix the model
   // guarantees agrees with the kind, so the chip was restating the first word of
@@ -1764,15 +1766,32 @@ async function refreshProblems() {
 // rather than written beside it — the same map the detail page marks its labels
 // from.
 //
-// `review_waived` is honoured here for the reason it is honoured there: it is the
-// escape hatch from the reviewer rule, and asking for reviewers on a row that has
-// waived them is a nag rather than a question.
+// A waived field is honoured here for the reason it is honoured there: the
+// switch is the escape hatch from that rule, and asking for reviewers on a row
+// that has waived them, or a PR of a row closed without one, is a nag rather than
+// a question. `WAIVERS` (the shell) says which switch is whose.
 function missingFor(row, status) {
   return Object.entries((DATA.required || {})[row.kind] || {})
     .filter(([field, statuses]) => statuses.includes(status))
     .map(([field]) => field)
-    .filter(field => EDITABLE[field] && !(field === 'reviewers' && row.review_waived))
+    .filter(field => EDITABLE[field] && !(WAIVERS[field] && row[WAIVERS[field]]))
     .filter(field => !holds(row, field));
+}
+
+// Cancel on the question. The editor that was left still shows the rung that
+// was picked, and the row still holds the one it had, so the cell is drawn again
+// from the row before the keyboard goes back to it — or it reads Done over a
+// Ready row, and leaving it again asks again.
+function unasked(cell) {
+  draw();
+  rove(cell, true);
+  announce('nothing was changed');
+}
+
+// What the panel's answers and the question's waiver become on the wire: a
+// typed answer is coerced by its column, and a waiver is already the bool it is.
+function wired(name, raw) {
+  return typeof raw === 'boolean' ? raw : coerce(EDITABLE[name], raw);
 }
 
 // Whether this row has a value for that field at all. Lifted out of the filter
@@ -1974,8 +1993,7 @@ async function saveCells(cell, value, extra) {
   try {
     coerced = coerce(EDITABLE[field], value);
     sending = {[field]: coerced};
-    for (const [name, raw] of Object.entries(extra || {}))
-      sending[name] = coerce(EDITABLE[name], raw);
+    for (const [name, raw] of Object.entries(extra || {})) sending[name] = wired(name, raw);
   } catch (error) {
     announce(`${field} ${error.message}`);
     return;
@@ -2035,11 +2053,19 @@ async function saveCells(cell, value, extra) {
   // between somebody and the overwrite; it is now true rather than load-bearing,
   // because every row it reaches is a row that was missing the field.
   if (field === 'status' && !extra) {
-    const wanted = [...new Set(ids.flatMap(id => missingFor(DATA.rows[id] || {}, coerced)))];
+    // **A missing PR is not a field to answer but a question to ask**, and it is
+    // asked once for the batch: "these were finished with nothing merged" is one
+    // decision, like "these all finished today". So it is taken out of what the
+    // two refusals below weigh — it is never something this panel types — and
+    // put to `answerTheGate` once both have passed. The server writes the waiver
+    // only to the rows that have no PR (`save_many`), which is what lets it
+    // travel in this one field map.
+    const missing = new Map(ids.map(id => [id, missingFor(DATA.rows[id] || {}, coerced)]));
+    const owed = id => missing.get(id).filter(name => name !== NO_PR_FIELD);
+    const wanted = [...new Set(ids.flatMap(owed))];
     const cannot = wanted.filter(name => EDITABLE[name] !== 'date');
     if (cannot.length) {
-      const short = ids.filter(id =>
-        missingFor(DATA.rows[id] || {}, coerced).some(name => cannot.includes(name)));
+      const short = ids.filter(id => owed(id).some(name => cannot.includes(name)));
       box.hidden = false;
       // By title. Every row this names is selected and on the screen behind the
       // banner, and both remedies — fix it, or take it out of the selection —
@@ -2071,12 +2097,21 @@ async function saveCells(cell, value, extra) {
         + `${held.length === 1 ? 'it' : 'them'} on ${held.length === 1 ? 'its' : 'their'} own.`;
       return;
     }
-    if (wanted.length) {
-      askFor(cell, value, wanted, answers => saveCells(cell, value, answers),
-        `${human(coerced)} needs ${wanted.length === 1 ? 'this' : 'these'} `
-        + `for all ${ids.length} selected record${ids.length === 1 ? '' : 's'}`);
-      return;
-    }
+    const union = [...new Set([...missing.values()].flat())];
+    return new Promise(done => answerTheGate(union, () => askNoPr(cell), gate => {
+      if (!gate) { unasked(cell); done(); return; }
+      const waiver = gate.waived ? {[WAIVERS[NO_PR_FIELD]]: true} : {};
+      if (gate.rest.length) {
+        askFor(cell, value, gate.rest, answers => saveCells(cell, value, {...answers, ...waiver}),
+          `${human(coerced)} needs ${gate.rest.length === 1 ? 'this' : 'these'} `
+          + `for all ${ids.length} selected record${ids.length === 1 ? '' : 's'}`);
+        done();
+        return;
+      }
+      // Answered, with nothing left to type: written as an answered gate, so the
+      // second pass does not ask again. `{}` when nothing was waived.
+      done(saveCells(cell, value, waiver));
+    }));
   }
   dispatchEvent(new Event('openproj:writing'));
   let committed = null;
@@ -2108,7 +2143,10 @@ async function saveCells(cell, value, extra) {
     BASE.value = answer.commit;
     for (const id of ids) {
       markSaved(answer, id);
-      Object.assign(DATA.rows[id], sending);
+      // The waiver as the server wrote it: only onto a row with no PR.
+      const own = {...sending};
+      if (holds(DATA.rows[id], NO_PR_FIELD)) delete own[WAIVERS[NO_PR_FIELD]];
+      Object.assign(DATA.rows[id], own);
     }
     announce(`${ids.length} ${(FIELD_LABELS[field] || field).toLowerCase()} `
       + `cell${ids.length === 1 ? '' : 's'} saved in one commit`);
@@ -2184,17 +2222,22 @@ async function saveCell(cell, value, extra) {
   // write. Asked once — `extra` is what came back from asking, and a second pass
   // through here with it must not ask again.
   if (field === 'status' && !extra) {
-    const wanted = missingFor(DATA.rows[cell.dataset.record] || {}, coerced);
-    if (wanted.length) {
-      askFor(cell, value, wanted, answers => saveCell(cell, value, answers));
-      return;
-    }
+    const missing = missingFor(DATA.rows[cell.dataset.record] || {}, coerced);
+    return new Promise(done => answerTheGate(missing, () => askNoPr(cell), gate => {
+      if (!gate) { unasked(cell); done(); return; }
+      const waiver = gate.waived ? {[WAIVERS[NO_PR_FIELD]]: true} : {};
+      if (gate.rest.length) {
+        askFor(cell, value, gate.rest, answers => saveCell(cell, value, {...answers, ...waiver}));
+        done();
+        return;
+      }
+      done(saveCell(cell, value, waiver));
+    }));
   }
   let sending;
   try {
     sending = {[field]: coerced};
-    for (const [name, raw] of Object.entries(extra || {}))
-      sending[name] = coerce(EDITABLE[name], raw);
+    for (const [name, raw] of Object.entries(extra || {})) sending[name] = wired(name, raw);
   } catch (error) {
     announce(`${field} ${error.message}`);
     return;
@@ -2534,7 +2577,10 @@ function openEditor(cell) {
       if (e.key === 'Escape') e.stopPropagation();
       return;
     }
-    if (e.key === 'Enter') { RETURN = true; input.blur(); }
+    // `preventDefault`, because the save this blur runs can open a question with
+    // the focus on its yes button, and the rest of this press — the keypress a
+    // button is activated by — would answer it before anybody saw it.
+    if (e.key === 'Enter') { e.preventDefault(); RETURN = true; input.blur(); }
     if (e.key === 'Escape') {
       // Escape means discard. Redrawing first would fire blur with the partial
       // value still in the box, and the edit somebody just abandoned gets saved.

@@ -46,6 +46,7 @@ from .env import _fragment
 from .markdown import _inlined_assets
 from .shell import ROUTES, Links, _page
 from .styles import _DETAIL_STYLE
+from .tables import _TABLES
 from .tokens import _human
 
 
@@ -1100,6 +1101,10 @@ def render_slide_editor(
         # `![figure](assets/…){width=60}` something somebody can produce here
         # rather than only type.
         + (_combobox_html(index) if editable else Markup(""))
+        # And `tables.py`, which the toolbar above calls into when it draws the
+        # Table button, so the button inserts and edits tables here as it does on
+        # the record page. This page's own Save does not call `alignForSave`.
+        + (_TABLES if editable else Markup(""))
         + _fragment(
             _SLIDE_SCRIPT,
             e=view,

@@ -113,7 +113,7 @@ from openproj.render import (
 )
 from openproj.render.env import PHONE
 from openproj.render.rows import _row
-from openproj.render.tokens import _SIZE_FIELD_NAME
+from openproj.render.tokens import _SIZE_FIELD_NAME, NO_PR_ASKED, NO_PR_NO, NO_PR_YES
 from openproj.web import SESSION_COOKIE, create_app
 
 # The columns the table draws that nobody may type into. Kept as an expectation
@@ -3378,7 +3378,9 @@ def test_the_editor_discards_on_escape_and_commits_on_tab(page: str):
     body = script(page)
     editor = re.search(r"input\.onkeydown = e => \{.*?\n  \};", body, re.S).group(0)
 
-    assert "if (e.key === 'Enter') { RETURN = true; input.blur(); }" in editor
+    # `preventDefault`, or the rest of the press activates whatever the save it
+    # runs has just put the focus on — see the trusted-Enter test.
+    assert "if (e.key === 'Enter') { e.preventDefault(); RETURN = true; input.blur(); }" in editor
     assert "abandoned = true;" in editor, "Escape discards rather than saving the partial value"
     assert "if (e.key === 'Tab')" in editor and "e.preventDefault();" in editor
     assert "e.shiftKey ? -1 : 1" in editor, "and backwards"
@@ -8050,23 +8052,345 @@ def test_the_bulk_panel_still_refuses_what_it_cannot_ask_for(page: str):
     An owner, an appetite and a reviewer are one fact PER record, so prefilling
     nine rows with one of them would commit a number nobody meant, in one commit,
     on a protected branch. The refusal names the rows, which is what lets somebody
-    fix them and try again; it is the shared corpus here, whose two ready tasks
-    cite no pull request.
+    fix them and try again; it is the shared corpus here, where nobody is on
+    either task, and `in_progress` needs somebody on it.
+
+    It was `done` over two tasks that cite no pull request until a missing PR
+    became a question rather than a field (`askNoPr`), and the question is one
+    fact about the batch: see the test below this one.
     """
     answer = drive_table(
         page,
-        "(async () => {" + PICK_BOTH + "  await saveCells(cell, 'done');" + f"  {SETTLE}"
+        "(async () => {" + PICK_BOTH + "  await saveCells(cell, 'in_progress');" + f"  {SETTLE}"
         "  return {shown: !document.getElementById('askfor').hidden,"
         "          said: document.getElementById('row-conflict').textContent};"
         "})()",
     )
 
     assert answer["value"]["shown"] is False, "it asked for a field nobody can answer in bulk"
-    assert (
-        "can be Done yet" in answer["value"]["said"]
-        or "cannot be Done yet" in (answer["value"]["said"])
-    ), answer["value"]["said"]
+    assert "can be In progress yet" in answer["value"]["said"], answer["value"]["said"]
     assert not [call for call in answer["calls"] if call["method"] == "PATCH"]
+
+
+# --------------------------------------------------------------------------- #
+# The done-without-a-PR question, driven
+#
+# Shared by every door's tests here and imported by `test_writes` and `test_pop`,
+# so the words come from `tokens.py` and the presses are made one way.
+# --------------------------------------------------------------------------- #
+
+# `drive.js` has no dialogs, so the shell's `<dialog>` is given the two methods it
+# calls — the smallest stub that lets the shipped `askNoPr` run unchanged.
+NO_PR_MODAL = (
+    "NO_PR_BOX.showModal = function () { this.open = true; this.setAttribute('open', ''); };"
+    " NO_PR_BOX.close = function () { this.open = false; this.removeAttribute('open'); };"
+)
+# The question opens on a timer, after the event that asked has finished, and the
+# shim's clock moves only when it is told to.
+NO_PR_OPENS = f"{SETTLE} __tick(); {SETTLE}"
+# A press the way a pointer makes one: a click with a `detail`. A click a key
+# makes (`detail` 0) is refused unless that key went down inside the question,
+# which is the defence this suite's trusted-Enter test is about.
+NO_PR_PRESS = (
+    "(b => b.dispatchEvent(new (window.MouseEvent || Event)"
+    "('click', {bubbles: true, cancelable: true, detail: 1})))"
+)
+
+
+def no_pr_answer(yes: bool, face: str = "dialog") -> str:
+    """JavaScript pressing one of the question's two buttons: in the shell's
+    dialog, or in the right-click box's own confirmation face (`face="pop"`)."""
+    button = (
+        f"document.getElementById('noprask-{'yes' if yes else 'no'}')"
+        if face == "dialog"
+        else f"POP.querySelector('[data-kind=\"confirm-nopr-{'yes' if yes else 'no'}\"]')"
+    )
+    return f"{NO_PR_PRESS}({button});"
+
+
+NO_PR_STATE = (
+    "{open: !!NO_PR_BOX.open, said: document.getElementById('noprask-q').textContent,"
+    " buttons: [document.getElementById('noprask-yes').textContent,"
+    "           document.getElementById('noprask-no').textContent],"
+    " panel: !document.getElementById('askfor').hidden}"
+)
+LANDS = [
+    {"status": 200, "json": {"outcome": "committed", "commit": "b" * 40, "conflict": None,
+                             "pushed": True}},
+    {"status": 200, "json": {"rows": {}, "problems": []}},
+    {"status": 200, "json": {"problems": []}},
+]
+ON_OTHER = (
+    f"  const at = () => tbody.querySelector('td[data-record=\"{OTHER}\"][data-field=\"status\"]');"
+    "  const cell = at();"
+)
+
+
+def test_done_on_a_row_with_no_pr_asks_before_it_asks_for_the_date(page: str):
+    """The table's status cell, on a ready task that cites nothing.
+
+    The question comes first and alone — the date panel is not up behind it —
+    because whether this is done at all with nothing merged is what decides
+    whether there is a day it ended. Yes opens the panel on what is left, and
+    the one PATCH that panel sends carries the waiver with the status and the
+    date, so the plan never holds a done record waiting for its waiver.
+    """
+    answer = drive_table(
+        page,
+        "(async () => {" + NO_PR_MODAL + ON_OTHER + "  saveCell(cell, 'done');" + NO_PR_OPENS
+        + f"  const asked = {NO_PR_STATE};"
+        + no_pr_answer(True) + NO_PR_OPENS
+        + "  const panel = document.getElementById('askfor');"
+        "  const fields = [...panel.querySelectorAll('input')].map(i => i.dataset.field);"
+        "  panel.querySelector('input').value = '2026-08-21';"
+        f"  panel.querySelector('#asked').onclick(); {SETTLE}"
+        "  return {asked, fields, open: !!NO_PR_BOX.open};"
+        "})()",
+        replies=LANDS,
+    )
+
+    asked = answer["value"]["asked"]
+    assert asked["open"], "Done on a row with no PR wrote, or opened the date panel, unasked"
+    assert asked["said"] == NO_PR_ASKED
+    assert asked["buttons"] == [NO_PR_YES, NO_PR_NO]
+    assert asked["panel"] is False, "the date was asked for before the question was answered"
+    assert answer["value"]["open"] is False
+    assert answer["value"]["fields"] == ["end_date"], "the PR is not a box any more"
+    wrote = [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert len(wrote) == 1, "one answer, one commit"
+    assert json.loads(wrote[0]["body"])["fields"] == {
+        "status": "done",
+        "end_date": "2026-08-21",
+        "prs_waived": True,
+    }
+
+
+def test_cancelling_the_question_puts_the_cell_back_to_what_the_row_holds(page: str):
+    """Cancel leaves the status where git has it — and the CELL has to say so.
+
+    The editor that was left still showed the rung that was picked, so after
+    Cancel the cell read Done over a row that is Ready, and leaving it again
+    asked again. Driven through the cell's own editor rather than by calling the
+    save, because a save called from outside never drew Done in the cell to
+    begin with, and the test would pass with the defect in place.
+    """
+    answer = drive_table(
+        page,
+        "(async () => {" + NO_PR_MODAL + ON_OTHER
+        + "  openEditor(cell);"
+        "  const picker = at().querySelector('.rungpick');"
+        "  picker.value = 'done';"
+        "  rungFace(picker);"
+        "  const face = picker.querySelector('.chipword').textContent;"
+        "  picker.onblur();" + NO_PR_OPENS
+        + "  const asked = !!NO_PR_BOX.open;"
+        + no_pr_answer(False) + NO_PR_OPENS
+        + "  return {face, asked, open: !!NO_PR_BOX.open,"
+        "          words: [...at().querySelectorAll('.chipword')].map(one => one.textContent),"
+        "          editing: !!at().querySelector('.rungpick'),"
+        f"          status: DATA.rows['{OTHER}'].status,"
+        "          said: document.getElementById('state').textContent};"
+        "})()",
+    )
+
+    got = answer["value"]
+    assert not [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert got["face"] == HUMAN["done"] and got["asked"], got
+    assert got["open"] is False
+    assert got["words"] == [HUMAN["ready"]], f"the cell reads {got['words']} over a Ready row"
+    assert got["editing"] is False, "the editor that was left is still in the cell"
+    assert got["status"] == "ready"
+    assert got["said"] == "nothing was changed"
+
+
+def test_a_row_that_cites_a_pr_is_not_asked(half_linked_page: str):
+    """The control: a row with a PR goes straight to the date, as it did before
+    there was a question at all."""
+    answer = drive_table(
+        half_linked_page,
+        "(async () => {" + NO_PR_MODAL
+        + f'  const cell = tbody.querySelector(\'td[data-record="{TASK}"][data-field="status"]\');'
+        "  saveCell(cell, 'done');" + NO_PR_OPENS
+        + "  return {open: !!NO_PR_BOX.open, panel: !document.getElementById('askfor').hidden};"
+        "})()",
+    )
+
+    assert answer["value"] == {"open": False, "panel": True}
+
+
+def test_a_key_that_went_down_before_the_question_cannot_answer_it(page: str):
+    """`askNoPr`'s own defence, asked of the dialog without any door's help: a
+    click a key made counts only if that key went down inside the question. The
+    trusted-Enter test below is the door's half."""
+    answer = drive_table(
+        page,
+        "(async () => {" + NO_PR_MODAL + ON_OTHER + "  saveCell(cell, 'done');" + NO_PR_OPENS
+        + "  document.getElementById('noprask-yes').onclick({detail: 0});"
+        + "  const typed = !!NO_PR_BOX.open;"
+        + "  NO_PR_BOX.dispatchEvent(new Event('keydown', {key: 'Enter'}));"
+        + "  document.getElementById('noprask-yes').onclick({detail: 0});" + NO_PR_OPENS
+        + "  return {typed, keyed: !!NO_PR_BOX.open,"
+        "          panel: !document.getElementById('askfor').hidden};"
+        "})()",
+    )
+
+    assert answer["value"] == {"typed": True, "keyed": False, "panel": True}, answer["value"]
+
+
+def test_enter_that_commits_done_does_not_also_answer_the_question(page: str, tmp_path: Path):
+    """**Reproduced in Chrome before it was fixed**: Enter in the status cell runs
+    the save inside its own keydown, the save opened the question with the focus
+    on its yes button, and Chrome delivered the rest of that press — the keypress
+    a button is activated by — to that button. The question was answered yes
+    before anybody saw it, and the waiver committed.
+
+    A trusted key through DevTools, because a synthetic `KeyboardEvent` runs no
+    default action and so cannot activate anything: the defect is entirely in
+    what the browser does with the rest of the press.
+    """
+    import time
+
+    from browser import _devtools, _evaluated
+
+    where = tmp_path / "enter.html"
+    where.write_text(page)
+    setup = """(() => {
+window.__sent = [];
+window.fetch = (url, options) => {
+  window.__sent.push({url: String(url), method: (options || {}).method || 'GET'});
+  return Promise.resolve(new Response(
+    JSON.stringify({outcome: 'committed', commit: 'c0ffee', rows: {}, problems: []}),
+    {status: 200, headers: {'content-type': 'application/json'}}));
+};
+const cell = tbody.querySelector('td[data-record="RECORD"][data-field="status"]');
+openEditor(cell);
+const picker = cell.querySelector('.rungpick');
+picker.value = 'done';
+rungFace(picker);
+picker.focus();
+return document.activeElement === picker;
+})()""".replace("RECORD", OTHER)
+    with _devtools(chrome(), where.as_uri(), tmp_path / "profile", ("--window-size=1400,900",)) as (
+        call,
+        said,
+    ):
+        time.sleep(2)
+        assert _evaluated(call, setup) is True, "the picker did not take the keyboard"
+        for kind in ("rawKeyDown", "char", "keyUp"):
+            call(
+                "Input.dispatchKeyEvent",
+                {
+                    "type": kind,
+                    "key": "Enter",
+                    "code": "Enter",
+                    "text": "\r" if kind == "char" else "",
+                    "windowsVirtualKeyCode": 13,
+                },
+            )
+        time.sleep(1.5)
+        got = _evaluated(
+            call,
+            "({open: NO_PR_BOX.open, focused: document.activeElement.id,"
+            " panel: !document.getElementById('askfor').hidden,"
+            " sent: window.__sent.filter(one => one.method !== 'GET').length})",
+        )
+
+    assert got == {"open": True, "focused": "noprask-yes", "panel": False, "sent": 0}, (
+        f"the Enter that committed the cell also answered the question: {got}; {said}"
+    )
+
+
+@pytest.fixture
+def half_linked_page() -> str:
+    """Two in-progress tasks, one citing a pull request and one citing none: the
+    selection a bulk Done is asked about, and the one whose waiver must reach
+    only the row that needs it."""
+    from openproj.render import render_table
+
+    common = dict(
+        kind="task",
+        parent=PITCH,
+        status="in_progress",
+        owner="ann",
+        developers=["ann"],
+        reviewers=["bo"],
+        person_weeks=1.0,
+        start_date=date(2026, 8, 3),
+    )
+    records = [
+        Pitch(
+            id=PITCH,
+            kind="pitch",
+            title="Verify the aroma transport port",
+            status="ready",
+            owner="ann",
+            developers=["ann"],
+            reviewers=["bo"],
+            person_weeks=3.0,
+        ),
+        Task(id=TASK, title="Reproduce the seam artefact", prs=["kilnlab/kiln4py#1"], **common),
+        Task(id=OTHER, title="Downgrade numpy for global sums", **common),
+    ]
+    # `ROUTES`: the question's dialog ships only on a page a server stands
+    # behind, which is the only kind of page that can write a status.
+    return render_table(
+        build_index(records, Config(), date(2026, 8, 17)),
+        ROUTES,
+        base_commit="0" * 40,
+        may_write=True,
+    )
+
+
+def test_one_question_covers_a_selection_and_the_waiver_travels_in_its_one_write(
+    half_linked_page: str,
+):
+    """A bulk Done over rows some of which cite no PR used to be refused outright,
+    naming them — a PR is one fact per record and no box can type one for nine.
+    Whether they were finished with nothing merged is one decision about the
+    batch, though, so it is asked once, before the date panel, and the waiver
+    goes in the same field map as the status. Which rows it lands on is the
+    server's to decide (`save_many`), because one field map is the whole point
+    of that route.
+    """
+    answer = drive_table(
+        half_linked_page,
+        "(async () => {" + NO_PR_MODAL + PICK_BOTH + "  saveCells(cell, 'done');" + NO_PR_OPENS
+        + f"  const asked = {NO_PR_STATE};"
+        "  const refused = document.getElementById('row-conflict').textContent;"
+        + no_pr_answer(True) + NO_PR_OPENS
+        + "  const panel = document.getElementById('askfor');"
+        "  const about = panel.querySelector('.asking').textContent;"
+        "  panel.querySelector('input').value = '2026-08-21';"
+        f"  panel.querySelector('#asked').onclick(); {SETTLE}"
+        "  return {asked, refused, about};"
+        "})()",
+        replies=LANDS,
+    )
+
+    asked = answer["value"]["asked"]
+    assert asked["open"] and asked["said"] == NO_PR_ASKED, asked
+    assert answer["value"]["refused"] == "", "the selection was refused instead of asked"
+    assert "all 2 selected records" in answer["value"]["about"]
+    wrote = [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert len(wrote) == 1, "one gesture, one commit"
+    sent = json.loads(wrote[0]["body"])
+    assert sorted(sent["ids"]) == sorted([TASK, OTHER])
+    assert sent["fields"] == {"status": "done", "end_date": "2026-08-21", "prs_waived": True}
+
+
+def test_cancelling_the_batch_question_writes_nothing_and_keeps_the_selection(
+    half_linked_page: str,
+):
+    answer = drive_table(
+        half_linked_page,
+        "(async () => {" + NO_PR_MODAL + PICK_BOTH + "  saveCells(cell, 'done');" + NO_PR_OPENS
+        + no_pr_answer(False) + NO_PR_OPENS
+        + "  return {picked: PICKED.size, panel: !document.getElementById('askfor').hidden};"
+        "})()",
+    )
+
+    assert not [call for call in answer["calls"] if call["method"] == "PATCH"]
+    assert answer["value"] == {"picked": 2, "panel": False}
 
 
 @pytest.fixture

@@ -1783,6 +1783,61 @@ def test_a_field_the_client_did_not_send_is_not_rewritten(client: TestClient, re
     assert "developers" not in stored  # an untouched default is not materialised
 
 
+def test_done_without_a_pr_is_one_write_that_reads_back(client: TestClient, repo_path: Path):
+    """What every status door sends once somebody has said "Mark done without a
+    PR": the status and the waiver together, in one commit, so the plan never
+    holds a done record the validator refuses.
+
+    Asserted against the hand-formatted file, because a key the file did not have
+    is the case `patch_text` has to add rather than rewrite: one new line, the
+    status line changed, and every comment, blank line and list style the person
+    wrote left exactly where it was.
+    """
+    base = head(client)
+    before = file_at(repo_path, base, PATH)
+    saved = save(client, TASK, {"status": "done", "prs_waived": True}, base=base)
+
+    assert saved.status_code == 200, saved.text
+    after = file_at(repo_path, saved.json()["commit"], PATH).splitlines()
+    assert after.count("prs_waived: true") == 1, after
+    assert [line for line in after if line != "prs_waived: true"] == [
+        "status: done" if line == "status: in_progress" else line for line in before.splitlines()
+    ]
+    problems = [p for p in index_of(client)["problems"] if p["record_id"] == TASK]
+    assert not [p for p in problems if p["field"] == "prs"], problems
+
+
+def test_a_bulk_waiver_lands_only_on_the_records_with_no_pr(
+    client: TestClient, repo_path: Path
+):
+    """One question covers a selection, so one field map carries the waiver to
+    every id in it — and a row that cites a PR was never short of one. Written
+    there, the waiver would be a line in its file claiming it was closed with
+    nothing merged. The route drops it per record, in the same single commit.
+    """
+    linked = save(client, TASK, {"prs": ["kilnlab/kiln4py#7"]}).json()["commit"]
+    written = save_many(client, [TASK, OTHER], {"status": "done", "prs_waived": True}, base=linked)
+
+    assert written.status_code == 200, written.text
+    commit = written.json()["commit"]
+    assert str(commit_at(repo_path, commit).parents[0].id) == linked, "one commit"
+    cited = file_at(repo_path, commit, PATH)
+    bare = file_at(repo_path, commit, f"tasks/{OTHER}.md")
+    assert "status: done" in cited and "prs_waived" not in cited, cited
+    assert "status: done" in bare and "prs_waived: true" in bare, bare
+
+
+def test_a_waiver_that_is_not_true_or_false_is_refused(client: TestClient, repo_path: Path):
+    """The same door `review_waived` has: `prs_waived: "yes"` is valid YAML that
+    the model would read as a string, and a string is not a switch."""
+    before = git_head(repo_path)
+    refused = save(client, DONE, {"prs_waived": "yes"}, base=before)
+
+    assert refused.status_code == 422
+    assert "prs_waived must be true or false" in refused.text
+    assert git_head(repo_path) == before, "a refusal writes nothing"
+
+
 # --------------------------------------------------------------------------- #
 # 4. Creation, where the required fields actually bite
 #

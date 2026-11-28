@@ -13,6 +13,7 @@ from ..model import (
     NOTE_STATES,
     PARENT_KINDS,
     RUNG,
+    WAIVERS,
     Record,
     a_number,
     checklist,
@@ -35,10 +36,11 @@ from .editor import (
 )
 from .env import PHONE, _compiled, _fragment
 from .hill import _HILL_JS, _LADDER_OF, _STATE_HINT, _hill_html
-from .markdown import _body_html, _pr_link
+from .markdown import _body_html, _prs_shown
 from .pop import _POP_CORE_STYLE, _pop_js
 from .shell import ROUTES, STATIC, Links, _page
 from .styles import _DETAIL_STYLE, _SUGGEST_STYLE
+from .tables import _TABLES
 from .tokens import (
     _KIND_MODELS,
     _SIZE_FIELD_NAME,
@@ -630,6 +632,10 @@ async function askPreview() {
   // What does move the pane is text getting SHORTER than the offset, and no
   // amount of saving fixes that — there is nowhere to put it back to.
   VIEW_PANE.innerHTML = html;
+  // The link a card was opened from may be gone or point somewhere else now, and
+  // a redraw is not a pointer leaving it, so nothing else would say so. The
+  // table's redraw does the same.
+  hideCardNow();
   previewPoints = null;
   // After the content, because the room is padding on the same box and a
   // `scrollHeight` measured before it is the old document's.
@@ -1434,7 +1440,8 @@ _DETAIL = """
   {#- The form opens ABOVE the heading so the title box can live inside it and
       still be one of `FORM`'s own controls — `CONTROLS` is a `querySelectorAll`
       over the form's subtree, and a title outside it is a title no save sends. -#}
-  <form id="edit" data-id="{{ e.id }}" onsubmit="return false">
+  <form id="edit" data-id="{{ e.id }}" data-waived="{{ e.waived|join(' ') }}"
+        onsubmit="return false">
     <input type="hidden" name="base_commit" value="{{ base_commit }}">
   {% endif %}
   {#- The header, BELOW the two bars of controls — jcanton, 2026-08-24: the
@@ -1748,6 +1755,8 @@ _DETAIL = """
           and this is where the settings are. -#}
       <p class="field bodybar statusbar" id="statusbar">
         {% if not creating %}<button type="button" id="draftevery"></button>{% endif %}
+        {#- On the create form too: its Save aligns the tables it creates with. -#}
+        <button type="button" id="tablefmt" class="tablefmt"></button>
       </p>
       {#- No draft and no 409-with-a-report on a create; a refused create lands
           in `#problems` above. -#}
@@ -2064,7 +2073,8 @@ grip.ondblclick = () => {
     reader at 4.19x their page for a keymap whose every save is a 403. -#}
 {% if ace %}<script>{{ ace }}</script>
 {{ acesurface }}{% endif %}
-{% if editable %}{{ combobox }}{% endif %}
+{#- The table formatter, beside the toolbar that reaches it: see `tables.py`. -#}
+{% if editable %}{{ tables }}{{ combobox }}{% endif %}
 {% if editable %}<script>{{ required }}</script><script>{{ hill }}</script>{% endif %}
 {#- Empty unless this page drew a date box — the gate is at `calendar=` below,
     where the reason is, the way `{{ pop }}` on the table is gated at `pop=`. -#}
@@ -2741,23 +2751,47 @@ for (const article of document.querySelectorAll('article.record')) {
 // box as well as on the press that could not: a value the page wrote is a value
 // nobody has read yet, and committing it unseen is the prefill deciding rather
 // than offering.
+//
+// **And the done-without-a-PR question is put first**, through the doors' one
+// seam (`answerHere`), before any date is offered: a waiver it answers yes to
+// goes into `fields`, and Cancel stops the save. A promise only while that
+// question is up; otherwise the answer, in the same turn as the press.
 function stillNeeded(fields) {
   if (!('status' in fields)) return false;
   const status = FORM.querySelector('[name=status]')?.value || OPENS;
-  const waived = FORM.querySelector('[name=review_waived]')?.checked;
-  const filled = [];
-  const missing = [];
-  let first = null;
+  const gated = [];
   for (const control of FORM.querySelectorAll('[data-required-at]')) {
     // A field this kind does not have is not empty, it is absent — the same
     // skip `createRecord` makes, for the same reason.
     if (control.closest('[data-kinds]')?.hidden) continue;
     if (!control.dataset.requiredAt.split(' ').includes(status)) continue;
-    // review_waived is the escape hatch from the reviewer rule, honoured here
-    // exactly as `markRequired` honours it: otherwise this is a nag.
-    if (control.name === 'reviewers' && waived) continue;
+    // A waived field is the escape hatch from its rule, honoured here exactly as
+    // `markRequired` honours it: otherwise this is a nag.
+    if (waivedOn(FORM, control.name)) continue;
     const value = read(control);
     if (!(value === null || (Array.isArray(value) && !value.length))) continue;
+    gated.push(control);
+  }
+  const gate = answerHere(gated.map(control => control.name), status);
+  return gate instanceof Promise
+    ? gate.then(answer => offerTheRest(fields, gated, answer, status))
+    : offerTheRest(fields, gated, gate, status);
+}
+
+// What `stillNeeded` does once the question, if there was one, is answered:
+// offer today in a gated date box, name what no box can be prefilled with, and
+// say whether the save stops here.
+function offerTheRest(fields, gated, gate, status) {
+  if (!gate) {
+    announce('not saved');
+    return true;
+  }
+  if (gate.waived) fields[WAIVERS[NO_PR_FIELD]] = true;
+  const filled = [];
+  const missing = [];
+  let first = null;
+  for (const control of gated) {
+    if (!gate.rest.includes(control.name)) continue;
     if (control.dataset.type === 'date') {
       control.value = today();
       filled.push(labelOf(control));
@@ -2790,6 +2824,28 @@ function stillNeeded(fields) {
   return true;
 }
 
+// A yes to the done-without-a-PR question this page has not written yet, as the
+// status it was given for. Kept across the press that stops to offer the end
+// date, so the press after it does not ask again; dropped by Reset and by the end
+// of the session, and spent when a save lands (`savedHere`).
+let WAIVING = null;
+addEventListener('openproj:reverted', () => { WAIVING = null; });
+addEventListener('openproj:session', event => { if (!event.detail) WAIVING = null; });
+
+// The doors' one seam (`gateAnswered`, the shell), for this page's two: Save and
+// Create. A yes already given for this status answers without asking.
+function answerHere(names, status) {
+  const ask = () => WAIVING === status
+    ? Promise.resolve(true)
+    : askNoPr(document.getElementById('save'));
+  const kept = gate => {
+    WAIVING = gate && gate.waived ? status : null;
+    return gate;
+  };
+  const gate = gateAnswered(names, ask);
+  return gate instanceof Promise ? gate.then(kept) : kept(gate);
+}
+
 // What both save paths do with the fields a commit took, and the flag that says
 // the read view is now behind: see `STALE` in `_VIEWS`. The fields the request
 // SENT and not what the form holds now, for the reason the body is: a field
@@ -2797,6 +2853,18 @@ function stillNeeded(fields) {
 function savedHere(fields) {
   for (const [name, value] of Object.entries(fields || {})) {
     ORIGINAL[name] = JSON.stringify(value);
+  }
+  // A waiver no box carries is now what the record holds, so the next press
+  // that moves the status back is not asked again — `missingFor` (`table.py`)
+  // reads the same switch off the row. The marks follow only when one moved.
+  const held = (FORM.dataset.waived || '').split(' ').filter(Boolean);
+  const landed = Object.values(WAIVERS)
+    .filter(name => fields && fields[name] === true && !held.includes(name)
+                    && !FORM.querySelector(`[name="${name}"]`));
+  if (landed.length) {
+    FORM.dataset.waived = [...held, ...landed].join(' ');
+    WAIVING = null;
+    markRequired(FORM);
   }
   STALE = true;
   dirty();
@@ -2823,7 +2891,19 @@ async function save() {
   // the ordinary case — so a check written after that branch would be a check on
   // the surface nobody uses, which is exactly how a start date typed into the
   // past came to be refused by one door and committed by the other.
-  if (stillNeeded(fields)) return;
+  const stops = stillNeeded(fields);
+  if (stops instanceof Promise ? await stops : stops) return;
+  // The tables, aligned as an edit this person made, before either write path
+  // reads the body: in a room the splices go up the socket ahead of the save
+  // frame, and without one the PATCH sends what the box now holds. After the
+  // check above and not before it, so a save that stops there has not edited
+  // the document either.
+  //
+  // **And only in an edit session.** Ctrl-S reaches `save()` from the reading
+  // view as well, where the box is hidden and nothing has been typed; aligning
+  // there turned "nothing changed" into a commit of a reformat the reader never
+  // saw, of a file they never opened.
+  if (FORM.closest('article.record').classList.contains('editing')) alignForSave(SURFACE);
   // While a room is live the body is not this tab's to send: it is the room's,
   // and Save is one commit made over the socket against the room's base, with
   // the fields from this form. Sending both down this path would be two commits
@@ -2935,7 +3015,7 @@ async function createRecord() {
   // is how the form comes to check the gates of a status the server will not
   // give the record it is about to create.
   const status = FORM.querySelector('[name=status]')?.value || OPENS;
-  const missing = [];
+  const gated = [];
   for (const control of FORM.querySelectorAll('[data-type]')) {
     // A field this kind does not have is not empty, it is absent — sending it
     // would ask the server to set an attribute the model does not define.
@@ -2943,15 +3023,23 @@ async function createRecord() {
     let value;
     try { value = read(control); } catch (error) { announce(error.message); return; }
     const empty = value === null || (Array.isArray(value) && !value.length);
-    const waived = control.name === 'reviewers' &&
-      FORM.querySelector('[name=review_waived]')?.checked;
     // The same gates the labels are marked from, so what the form refuses and
     // what it warned you about cannot be two different lists.
     const gates = control.dataset.requiredAt;
-    if (gates && empty && !waived && gates.split(' ').includes(status))
-      missing.push(labelOf(control));
+    if (gates && empty && !waivedOn(FORM, control.name) && gates.split(' ').includes(status))
+      gated.push(control);
     if (!empty) fields[control.name] = value;
   }
+  // The question first, as at Save: a record can be created done with nothing
+  // merged, if somebody says so, and the rest is refused by name after it.
+  let gate = answerHere(gated.map(control => control.name), status);
+  if (gate instanceof Promise) gate = await gate;
+  if (!gate) {
+    announce('not created');
+    return;
+  }
+  if (gate.waived) fields[WAIVERS[NO_PR_FIELD]] = true;
+  const missing = gated.filter(control => gate.rest.includes(control.name)).map(labelOf);
   if (TITLED.value.trim()) fields.title = TITLED.value.trim(); else missing.push('Title');
   if (missing.length) {
     // The words on the page, not the words in the file: `person_weeks` is what
@@ -2969,6 +3057,10 @@ async function createRecord() {
     PROBLEMS.replaceChildren(line);
     return;
   }
+  // The create form's Save is an explicit save as well, so it aligns too — here,
+  // after every refusal above, for the rule `save()` keeps: a save that was
+  // refused has not edited the document.
+  alignForSave(SURFACE);
   // The shell's banner is told before the request goes and the sha after,
   // because the server announces a commit to the event stream before it
   // answers the request that made it.
@@ -3195,6 +3287,15 @@ if (!CREATING) {
              });
 }
 
+// Beside the draft interval, on both pages.
+statusPick(document.getElementById('tablefmt'), 'Format tables on save', TABLE_FORMATS,
+           EDITOR.tables, chosen => {
+             rememberEditor({tables: chosen});
+             announce(chosen === 'on'
+               ? 'Save aligns the tables in this document first.'
+               : 'Save leaves the tables in this document as they are typed.');
+           });
+
 // No restore on the create page: with no stored record there is no id, and a
 // draft key built from an empty id would be every create page's at once. The
 // restore-forces-a-session rule for stored records is untouched by this gate.
@@ -3317,6 +3418,37 @@ function show() {
 addEventListener('hashchange', show);
 show();
 </script>{% endif %}
+{#- A link in a body to a record opens that record's card, after the delay a row
+    of the table waits. Only where there is a server to ask for the card, so the
+    static export carries none of it. In the reading view and the preview pane,
+    which is the create form's pane too, and not in a card's own body: a card in
+    a card is a box over the box being read. -#}
+{% if links.body %}<script>
+// `data-record` is `_link`'s (`markdown.py`), on every link whose target is an id
+function bodyLinkAt(target) {
+  const link = target && target.closest ? target.closest('a[data-record]') : null;
+  return link && link.closest('.doc.read, #body-preview') ? link : null;
+}
+// On the document and not on the two boxes, because the preview pane's links are
+// replaced on every keystroke that reaches the server.
+document.addEventListener('pointerover', event => {
+  const link = bodyLinkAt(event.target);
+  if (link) queueCardFor(link.dataset.record, event.clientX, event.clientY);
+});
+document.addEventListener('pointerout', event => {
+  const link = bodyLinkAt(event.target);
+  if (!link) return;
+  // Into something inside the same link, a `code` span say, is not leaving it
+  const into = event.relatedTarget;
+  if (into && into.closest && into.closest('a[data-record]') === link) return;
+  hideCard();
+});
+// The browser's own menu, which this page is never told has closed. The card goes
+// now, and one still waiting on its delay goes with it.
+document.addEventListener('contextmenu', event => {
+  if (bodyLinkAt(event.target)) hideCardNow();
+});
+</script>{% endif %}
 """
 
 
@@ -3424,7 +3556,7 @@ def _fact_rows(index: Index, record: Record, links: Links, signed_in: str = "") 
             # id is not an answer anybody can press.
             display = _link_lines(getattr(record, name), index, links) or empty
         elif name == "prs":
-            display = Markup(", ").join(_pr_link(ref, links) for ref in record.prs) or empty
+            display = Markup(", ").join(_prs_shown(record, links)) or empty
         elif name == "review_waived":
             display = Markup("waived") if record.review_waived else empty
         elif name == "status":
@@ -4380,6 +4512,7 @@ def render_detail(
                     [row for row in blank_rows if creating in row["kinds"].split()],
                 ),
                 "raw_body": "",
+                "waived": [],
                 "also": [],
                 "reach": [],
                 # Explicit rather than riding Jinja's default Undefined
@@ -4403,6 +4536,11 @@ def render_detail(
                 record.state(index.records), record.priority, record.owner, row["rows"]
             )
             row["raw_body"] = record.body
+            # Which gates the record has switched off, for `waivedOn` — read by
+            # Save and by the marks on the labels. A switch with a box of its own
+            # (`review_waived`) is read off the box instead; `prs_waived` has none,
+            # because it is set by answering the question.
+            row["waived"] = [name for name in WAIVERS.values() if getattr(record, name, False)]
             # What deleting it would take with it, drawn into the confirmation
             # before anybody presses anything — the ids that go back to the
             # server as `data-also`, and the sentences that name the same
@@ -4475,6 +4613,8 @@ def render_detail(
         # `linkable=True`: this is a page with a document being written in it, so
         # the blob carries the list `attachBodyCompletion` completes records from.
         combobox=_combobox_html(index, linkable=True, live=base_commit is not None),
+        # Gated in the template, with the toolbar it serves.
+        tables=_TABLES,
         required=_REQUIRED_JS,
         hill=_HILL_JS,
         # The popup every date box here opens, and only where there is a box to

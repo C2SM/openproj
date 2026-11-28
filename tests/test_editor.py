@@ -501,8 +501,10 @@ def test_the_status_a_row_is_set_to_says_what_it_will_be_refused_without(page: s
     assert 'data-required-at="ready in_progress"' in control(page, "reviewers")
     assert "function markRequired(form)" in page
     assert "form.addEventListener('change', () => markRequired(form));" in page
-    # The waiver is a rule being let off, not a rule being broken.
-    assert "control.name === 'reviewers' && waived" in page
+    # The waiver is a rule being let off, not a rule being broken — read through
+    # the one map of which switch turns off which gate, for every field.
+    assert "&& !waivedOn(form, control.name);" in page
+    assert 'const WAIVERS = {"reviewers": "review_waived", "prs": "prs_waived"};' in page
 
 
 def test_a_date_box_is_the_only_copy_of_the_day_it_holds(page: str):
@@ -1954,12 +1956,15 @@ def test_a_toolbar_button_keeps_the_selection_it_acts_on(client: TestClient):
     the mark is supposed to wrap."""
     page = client.get(f"/detail/{TASK}").text
 
-    bound = "button.onmousedown = event => { event.preventDefault(); applyMark(surface, mark); };"
+    # One press function per mark, bound twice: `applyMark` for a mark, and for
+    # the Table button `tablePress`, which asks the caret first.
+    assert "? tablePress(surface, button, mark) : () => applyMark(surface, mark);" in page
+    bound = "button.onmousedown = event => { event.preventDefault(); press(); };"
     assert bound in page
     # And a click as well, which is the only thing Enter and Space produce.
     # `detail === 0` is how a click synthesised from a key is told from one a
     # pointer made, so the two bindings cannot both fire for one press.
-    keyed = "button.onclick = event => { if (event.detail === 0) applyMark(surface, mark); };"
+    keyed = "button.onclick = event => { if (event.detail === 0) press(); };"
     assert keyed in page
     assert "event.detail" in page
 
@@ -5892,7 +5897,8 @@ flipEditing();
 // mean a character and not a UTF-16 code unit.
 area.value = 'one\ntwo\nthe \u{1F44D} is one character\n';
 area.dispatchEvent(new Event('input'));
-const lines = item(3);
+// Fourth from the left since "Format tables on save" joined the draft interval.
+const lines = item(4);
 
 const caretAt = at => {
   area.setSelectionRange(at, at);
@@ -5956,7 +5962,7 @@ def test_the_status_bar_says_where_the_caret_is_how_long_it_is_and_what_tab_type
     )
 
     assert got["drawn"], "the status bar is not drawn in an editing session"
-    assert got["order"] == ["span", "button", "draftevery", "span"], (
+    assert got["order"] == ["span", "button", "draftevery", "tablefmt", "span"], (
         "the strip is caret, the indent picker, whatever the page put in it, and "
         f"the length — in that order: {got['order']}"
     )

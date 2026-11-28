@@ -1424,6 +1424,14 @@ class Record(BaseModel):
     cycle: int | None = None
     tags: list[str] = []
     prs: list[str] = []
+    # Closed on purpose with nothing merged: a decision, an investigation, work
+    # done outside any repository. The same shape as `review_waived` and for the
+    # same reason it is stored rather than inferred — git then says the record
+    # was closed without a PR deliberately, where a done rule demoted to a
+    # warning would have made "closed on purpose" and "forgot the PR" look the
+    # same for ever. Only read at `done`, and a PR added later leaves it where it
+    # is: it relaxes a rule and cannot make anything wrong.
+    prs_waived: bool = False
 
     body: str = ""
     # What this record contributes to its cycle's review deck, or `None` where
@@ -1736,7 +1744,6 @@ class Rung(NamedTuple):
     staffed: bool  # do people work on it directly
     depends: bool  # may it wait on anything
     sized: bool  # may it carry person_weeks
-    carded: bool  # does a hover show its shaping document
     planned: bool  # does it appear in the plan: table, graph, timeline, people, scheduler
     statuses: tuple[str, ...]  # the status vocabulary this kind reads; () means status is not read
     # The field that answers "who is behind this record". Per rung because the
@@ -1765,7 +1772,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=False,
         sized=False,
-        carded=False,
         planned=True,
         statuses=(),
         who="owner",
@@ -1780,7 +1786,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=True,
         sized=False,
-        carded=True,
         planned=True,
         statuses=STATUS_ORDER,
         who="owner",
@@ -1795,7 +1800,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=True,
         depends=True,
         sized=True,
-        carded=True,
         planned=True,
         statuses=STATUS_ORDER,
         who="owner",
@@ -1814,7 +1818,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=True,
         depends=True,
         sized=True,
-        carded=True,
         planned=True,
         statuses=STATUS_ORDER,
         who="owner",
@@ -1829,7 +1832,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=False,
         sized=False,
-        carded=False,
         planned=False,
         statuses=ISSUE_STATUS,
         who="reported_by",
@@ -1844,7 +1846,6 @@ KINDS: tuple[Rung, ...] = (
         staffed=False,
         depends=False,
         sized=False,
-        carded=False,
         planned=False,
         statuses=NOTE_STATUS,
         who="written_by",
@@ -2262,7 +2263,37 @@ _WORK_FIELDS = (
     "cycle",
     "priority",
     "prs",
+    # Beside `prs` for the reason `review_waived` sits in `_PEOPLE_FIELDS`: it is
+    # the switch for that field's gate and not a fact of its own, so a rung that
+    # does not read `prs` does not read the switch either.
+    "prs_waived",
 )
+
+
+# Which stored switch turns off which status gate, field by field: the reviewer
+# rule and the done rule's PR. One map, because each door that asks what a status
+# still needs has to skip a field its record has waived, and five doors each
+# writing out `field === 'reviewers' && row.review_waived` is how the sixth door
+# forgets the second waiver. `_status_problems` reads it through `waived`, and the
+# pages are handed the same map beside `required_at` (`WAIVERS` in the shell).
+WAIVERS = {"reviewers": "review_waived", "prs": "prs_waived"}
+
+
+def waived(record: Record, field: str) -> bool:
+    """Whether this record has switched off the gate on `field`."""
+    return field in WAIVERS and bool(getattr(record, WAIVERS[field], False))
+
+
+def closed_without_a_pr(record: Record) -> bool:
+    """Whether the PRs this record would draw are instead the waiver's words.
+
+    Done, waived and empty, all three. A waiver on a record that has since gained
+    a PR leaves it where it is and draws the PR, and a waived record that went
+    back to work is not done. The browser's copy is `closedWithoutPr` in the
+    shell, which the table and the card ask of a row this page may have just
+    written without a reload.
+    """
+    return record.status == "done" and waived(record, "prs") and not record.prs
 
 
 def unread_fields(kind: str) -> tuple[str, ...]:
@@ -4183,7 +4214,7 @@ def _status_problems(
         # jcanton, 2026-08-22.
         if staffed and not record.developers:
             yield "blocker", "developers", "a ready record needs somebody on it", 2
-        if staffed and not (record.review_waived or reviews):
+        if staffed and not (waived(record, "reviewers") or reviews):
             yield "blocker", "reviewers", "a ready record needs a reviewer, or review waived", 1
         yield from _appetite_problem(record, f"a ready {record.kind} needs an appetite")
         # No shaped_by gate any more: a pitch's owner IS who shaped it, and the
@@ -4203,7 +4234,7 @@ def _status_problems(
         yield from _appetite_problem(record, "work in progress needs an appetite")
         if staffed and not record.developers:
             yield "blocker", "developers", "work in progress needs somebody on it", 2
-        if staffed and not record.review_waived and not (set(reviews) - {record.owner}):
+        if staffed and not waived(record, "reviewers") and not (set(reviews) - {record.owner}):
             yield (
                 "blocker",
                 "reviewers",
@@ -4211,7 +4242,10 @@ def _status_problems(
                 1,
             )
     elif record.status == "done":
-        if not record.prs:
+        # `prs_waived` answers this rule the way `review_waived` answers the
+        # reviewer one. No version of its own: a waiver only relaxes the rule, so
+        # nothing written before it is newly invalid.
+        if not record.prs and not waived(record, "prs"):
             yield "blocker", "prs", "a done record needs at least one PR", 1
         # And the day it ended, which is the one fact a finished record holds
         # that nothing can work out for itself. Without it a done record's span
