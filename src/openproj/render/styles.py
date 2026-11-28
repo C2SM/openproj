@@ -1641,23 +1641,21 @@ article.record .toolrow .commitbar {
    them for four rules.
 
    `.tplmenu` is the template button's and `.tablemenu` the Table button's, built
-   by the same `menuUnder` and drawn by the same rules. A class of its own rather
-   than a second `.drawmenu`, because "the drawings menu" is a thing a test or a
-   reader finds by asking for that class, and the first of two would be
-   whichever was parked first. */
-.drawmenu, .tplmenu, .tablemenu {
+   by the same `menuUnder`, which gives every menu it builds `.barmenu` as well:
+   that is the class drawn here, so a fourth menu needs no new selector. Each
+   keeps a name of its own because "the drawings menu" is a thing a test or a
+   reader finds by asking for that class. */
+.barmenu {
   position: absolute; z-index: 20; min-width: 10rem; max-height: 16rem;
   overflow-y: auto; display: flex; flex-direction: column; padding: .25rem 0;
   background: var(--surface); border: 1px solid var(--line-strong);
   border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.12); font-size: 13px;
 }
-.drawmenu button, .tplmenu button, .tablemenu button {
+.barmenu button {
   display: block; width: 100%; text-align: left; font: inherit; color: inherit;
   background: none; border: none; padding: .35rem .75rem; cursor: pointer;
 }
-.drawmenu button:hover, .drawmenu button:focus-visible,
-.tplmenu button:hover, .tplmenu button:focus-visible,
-.tablemenu button:hover, .tablemenu button:focus-visible {
+.barmenu button:hover, .barmenu button:focus-visible {
   background: var(--accent); color: var(--on-accent); outline: none;
 }
 /* `[hidden]` written out explicitly, exactly as `.drawhead .drawask[hidden]`
@@ -1672,7 +1670,7 @@ article.record .toolrow .commitbar {
    collapses to its own padding and border and no more. Measured in Chrome at
    1200px — open 162x71, closed 162x10 — which is the thin bordered bar under
    the button in jcanton's screenshot, not a rendering artefact. */
-.drawmenu[hidden], .tplmenu[hidden], .tablemenu[hidden] { display: none; }
+.barmenu[hidden] { display: none; }
 /* The popup `openDrawing` mounts Excalidraw into. `position: fixed; inset: 0`
    over the whole page rather than parked beside the button the way
    `.drawmenu` is: a menu is a few words under where you pressed, and an
