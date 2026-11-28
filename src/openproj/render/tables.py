@@ -447,9 +447,9 @@ function tableRun(lines, starts, first, now) {
 // **A header made of dashes is left as typed.** `- | -` under a paragraph is a
 // table's header, because a delimiter row may not open with `- `; written
 // `| - | - |` it IS a delimiter row, and the paragraph line above it becomes the
-// header of a table it was never part of. The fuzz that found this is in
-// `test_aligning_twice_changes_nothing`. Such a header is a table nobody meant,
-// so it is not worth a rule of its own to rescue.
+// header of a table it was never part of. Found by fuzzing this against the
+// renderer, and pinned in `test_aligning_twice_changes_nothing`. Such a header
+// is a table nobody meant, so it is not worth a rule of its own to rescue.
 function tableRewritable(now) {
   return delimiterOf(now[0]) === null;
 }

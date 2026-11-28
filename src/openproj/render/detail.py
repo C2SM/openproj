@@ -2803,7 +2803,7 @@ async function save() {
   // a record that does not exist yet is POSTed whole. The branch is the entire
   // difference between the two modes' write paths — everything around it,
   // Cmd+S included, is shared.
-  if (CREATING) { alignForSave(SURFACE); await createRecord(); return; }
+  if (CREATING) { await createRecord(); return; }
   let fields;
   try {
     fields = changed();
@@ -2927,6 +2927,8 @@ async function save() {
 // box sits inside `<form>` here, so the field loop collects `title` too — the
 // explicit `TITLED` line below then overwrites it with the same trimmed value.
 async function createRecord() {
+  // The create form's Save is an explicit save as well, so it aligns too.
+  alignForSave(SURFACE);
   const fields = {kind: KIND.value};
   // `OPENS` and not a word typed here: it is declared once beside `markRequired`
   // in `_REQUIRED_JS`, which this script already depends on for `labelOf`, and

@@ -531,6 +531,10 @@ const opened = SURFACE.text();
 SURFACE.splice(opened.length, opened.length, RAGGED);
 SURFACE.setCaret(SURFACE.text().indexOf('cell one') + 6);
 const typed = SURFACE.text();
+// A moment between typing and pressing Save, as there always is. Ace groups
+// every delta of one tick into one undo step, so without it the table and its
+// alignment would undo together, which says nothing about what a person gets.
+await wait(100);
 document.getElementById('save').focus();
 document.getElementById('save').click();
 await wait(300);
@@ -651,7 +655,10 @@ def test_the_alignment_reaches_the_room_as_splices_of_the_table_only(
     room.apply(below, "bob")
 
     table = "| a        | b   |\n| -------- | --- |\n| cell one | x   |"
-    assert answer["frames"][-1] == "save" and "update" in answer["frames"], answer["frames"]
+    # `at` is where the caret is, sent whenever it moves; the order of the rest
+    # is the claim: the alignment's updates, then the save.
+    said = [frame for frame in answer["frames"] if frame != "at"]
+    assert said[-1] == "save" and set(said[:-1]) == {"update"}, answer["frames"]
     assert room.body() == body.replace("Intro line.", "Intro line, by bob.").replace(
         "|a|b|\n|-|-|\n|cell one|x|", table
     ).replace("After.", "After, and more."), f"the room holds {room.body()!r}"

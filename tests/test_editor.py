@@ -5892,7 +5892,8 @@ flipEditing();
 // mean a character and not a UTF-16 code unit.
 area.value = 'one\ntwo\nthe \u{1F44D} is one character\n';
 area.dispatchEvent(new Event('input'));
-const lines = item(3);
+// Fourth from the left since "Format tables on save" joined the draft interval.
+const lines = item(4);
 
 const caretAt = at => {
   area.setSelectionRange(at, at);
