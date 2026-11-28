@@ -375,15 +375,22 @@ def pr_href(ref: str, links: Links) -> str:
 
 # A link to a pull request or an issue as the forge's own page spells it, after the
 # repository's page: Forgejo's `/pulls/`, GitHub's `/pull/`, `/issues/` on both, and
-# whatever trails the number — `/files`, a `#discussion_r…` — because a link is
-# copied from wherever somebody was reading
-_PAGE_REF = re.compile(r"/(?:pulls?|issues)/([0-9]+)(?:[/?#]\S*)?", re.IGNORECASE)
+# what trails the number when a link is copied from wherever somebody was reading:
+# a tab (`/files`), a query, an anchor (`#discussion_r…`).
+#
+# **The trailing path is plain segments only, never `.` or `%`.** `/pull/1/../../x/y/
+# pull/9` was drawn `a/b#1` and the browser resolved it to another pull request,
+# with nothing on the page left to say so. **And `re.ASCII`**, because under
+# `IGNORECASE` a str pattern lets `i` match `ı`: `https://gıthub.com/…` was drawn as
+# a GitHub reference linking to `xn--gthub-n4a.com`, and `\w` took `ä` where the
+# page's copy of the rule took neither.
+_TRAILER = r"(?:/[\w-]*)*(?:[?#]\S*)?"
+_PAGE_REF = re.compile(r"/(?:pulls?|issues)/([0-9]+)" + _TRAILER, re.IGNORECASE | re.ASCII)
 # A github.com one names its repository whether or not the plan lists it, because
 # `owner/repo#N` for an unlisted name already means GitHub (`pr_href`)
 _GITHUB_REF = re.compile(
-    r"https?://(?:www\.)?github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/([0-9]+)"
-    r"(?:[/?#]\S*)?",
-    re.IGNORECASE,
+    r"https?://(?:www\.)?github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/([0-9]+)" + _TRAILER,
+    re.IGNORECASE | re.ASCII,
 )
 
 

@@ -32,6 +32,7 @@ def seed_index(seed_root: Path) -> Index:
 FORGEJO = "https://git.example.org/jacopo/watchface"
 GITLAB = "https://gitlab.com/someone/thing"
 GITHUB = "https://github.com/C2SM/icon4py"
+UNREACHABLE = "https://git.example.me/j/site"
 
 LISTED = ROUTES.model_copy(
     update={
@@ -39,6 +40,7 @@ LISTED = ROUTES.model_copy(
             (GITHUB, "github"),
             (FORGEJO, "forgejo"),
             (GITLAB, "unsupported"),
+            (UNREACHABLE, "unreachable"),
         )
     }
 )
@@ -112,9 +114,13 @@ def test_the_page_links_a_reference_where_the_server_does(seed_index):
 # its Forgejo pull requests as full URLs and the page drew them that way. A listed
 # repository's page with GitHub's or Forgejo's spelling, an issue, a trailing tab
 # or anchor, a host in capitals; GitHub's whether listed or not; and the near
-# misses that must stay as written: a repository whose name only STARTS like a
-# listed one, a number with a letter on it, GitLab's own spelling, and anything
-# that is already a reference or is not a link at all.
+# misses that must stay as written: a dot segment that would send the link to
+# another pull request than the one drawn, a host that only LOOKS like github.com
+# (a dotless ı, which Python's case folding let through), a name that is not
+# ASCII, a repository whose name only STARTS like a listed one, a number with a
+# letter on it, GitLab's own spelling, and anything that is already a reference or
+# is not a link at all. A repository whose forge could not be asked is drawn short
+# too: the href is still the URL.
 SHORTENED = {
     "https://git.example.org/jacopo/watchface/pulls/3": "jacopo/watchface#3",
     "https://git.example.org/jacopo/watchface/issues/7": "jacopo/watchface#7",
@@ -122,6 +128,11 @@ SHORTENED = {
     "https://github.com/C2SM/icon4py/pull/12#discussion_r1": "C2SM/icon4py#12",
     "https://github.com/GridTools/gt4py/pull/5": "GridTools/gt4py#5",
     "https://github.com/GridTools/gt4py/issues/6?x=1": "GridTools/gt4py#6",
+    "https://git.example.me/j/site/pulls/1": "j/site#1",
+    "https://github.com/a/b/pull/1/../../x/y/pull/9": "",
+    "https://github.com/a/b/pull/1/%2e%2e/9": "",
+    "https://gıthub.com/C2SM/icon4py/pull/1": "",
+    "https://github.com/ä/b/pull/1": "",
     "https://git.example.org/jacopo/watchface-two/pulls/3": "",
     "https://git.example.org/jacopo/watchface/pulls/3x": "",
     "https://gitlab.com/someone/thing/-/merge_requests/4": "",
@@ -170,8 +181,8 @@ def test_the_table_draws_a_stored_url_as_its_number(seed_index):
 
 
 def test_the_prs_box_writes_a_pasted_url_as_the_reference_it_names(seed_index):
-    """Whatever the forge answered: the box used to read the plan's pages out of its
-    own copy of the rule, and it is the shell's `prReference` now."""
+    """The box used to read the plan's pages out of its own copy of the rule, and it
+    is the shell's `prReference` now."""
     from test_injection import run_js
 
     from openproj.render import render_detail
@@ -181,9 +192,12 @@ def test_the_prs_box_writes_a_pasted_url_as_the_reference_it_names(seed_index):
         seed_index, LISTED, only=next(iter(seed_index.plan)), base_commit="deadbee", may_write=True
     )
 
-    assert run_js(page, f"asReference({json.dumps(url)})", page=True)["value"] == (
-        "jacopo/watchface#3"
-    )
+    unread = f"{UNREACHABLE}/pulls/1"
+    said = run_js(page, f"[asReference({json.dumps(url)}), asReference({json.dumps(unread)})]",
+                  page=True)["value"]
+
+    # And a paste from a forge that cannot be linked by reference keeps its URL
+    assert said == ["jacopo/watchface#3", None]
 
 
 def test_a_bare_url_in_prose_reads_as_its_reference_and_written_words_are_kept():

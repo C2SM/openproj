@@ -3377,9 +3377,11 @@ const PR_PAGES = (() => {
   try { return JSON.parse(document.getElementById('prpages').textContent); }
   catch (error) { return {}; }
 })();
-const PR_PAGE_REF = /^\\/(?:pulls?|issues)\\/([0-9]+)(?:[\\/?#]\\S*)?$/i;
-const PR_GITHUB_REF =
-  /^https?:\\/\\/(?:www\\.)?github\\.com\\/([\\w.-]+\\/[\\w.-]+)\\/(?:pull|issues)\\/([0-9]+)(?:[\\/?#]\\S*)?$/i;
+// `_TRAILER` and its two reasons are `markdown.py`'s: plain path segments after the
+// number, so a dot segment cannot send the link somewhere the reference does not say
+const PR_PAGE_REF = /^\\/(?:pulls?|issues)\\/([0-9]+)(?:\\/[\\w-]*)*(?:[?#]\\S*)?$/i;
+const PR_GITHUB_REF = new RegExp('^https?://(?:www\\\\.)?github\\\\.com/([\\\\w.-]+/[\\\\w.-]+)'
+  + '/(?:pull|issues)/([0-9]+)(?:/[\\\\w-]*)*(?:[?#]\\\\S*)?$', 'i');
 function prReference(ref) {
   const said = String(ref).trim();
   for (const [name, page] of Object.entries(PR_PAGES)) {
