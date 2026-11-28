@@ -226,8 +226,9 @@ different question from how a URL is drawn.
   `/pull/N`, or `/issues/N`), or to a github.com pull request or issue, is drawn as `owner/repo#N`
   and links to the URL as written. Decided by the URL's shape against `repositories:`, so it needs
   no answer from the forge and covers entries already stored. No file is rewritten.
-- One rule in Python beside `pr_href`, and the page script reading the same data the way
-  `pr_bases` is shared now — not a second spelling of the rule in JavaScript.
+- One rule, `pr_reference` in `model.py` beside `repository_name`, read wherever a reference is
+  read: drawn (facts, table, slide, prose), asked about (`/api/pr-states`) and searched. The page's
+  `prReference` is built from the same pattern source through `Links.pr_rule`, not retyped.
 
 ## Left to the builder
 
