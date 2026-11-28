@@ -200,6 +200,13 @@ def test_an_unknown_subcommand_fails_rather_than_doing_something(capsys):
     assert main(["frobnicate"]) == 2
 
 
+def test_asking_for_help_is_not_a_failure(capsys):
+    """`0 or 2` is 2, so every --help used to exit as a bad command line."""
+    assert main(["--help"]) == 0
+    assert main(["check", "--help"]) == 0
+    assert "usage: openproj check" in capsys.readouterr().out
+
+
 def test_the_shipped_demo_corpus_validates_clean(demo_root: Path, capsys):
     """The demo is the first thing anyone runs. A demo that fails its own check
     teaches people the check is noise.
